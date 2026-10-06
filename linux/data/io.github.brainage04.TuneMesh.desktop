@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=TuneMesh
+GenericName=Music Player
+Comment=Play and download music in your synced TuneMesh library
+Exec=tunemesh %U
+Icon=io.github.brainage04.TuneMesh
+Terminal=false
+Categories=AudioVideo;Audio;Player;GTK;
+Keywords=music;player;spotify;playlist;syncthing;
+StartupNotify=true
+StartupWMClass=io.github.brainage04.TuneMesh
+DBusActivatable=false
