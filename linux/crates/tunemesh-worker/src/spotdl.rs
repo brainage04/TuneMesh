@@ -29,11 +29,17 @@ fn spotdl() -> Command {
     Command::new("spotdl")
 }
 
+/// `--lyrics` with no providers, last on the command line so it consumes
+/// nothing after it: TuneMesh shows no lyrics, and the default providers
+/// (Genius, AZLyrics, Musixmatch) cost about 30 s per spotDL run, most of it
+/// AZLyrics timing out.
+const NO_LYRICS: &str = "--lyrics";
+
 /// Fetches the song list for a Spotify URL into `<dir>/songs.spotdl`.
 fn save(job: &Job, url: &str) -> Result<Option<Vec<Song>>, String> {
     let file = job.dir.join("songs.spotdl");
     let mut cmd = spotdl();
-    cmd.args(["save", url, "--log-level", "ERROR", "--save-file"]).arg(&file).current_dir(&job.dir);
+    cmd.args(["save", url, "--log-level", "ERROR", "--save-file"]).arg(&file).arg(NO_LYRICS).current_dir(&job.dir);
     let id = job.req.id.clone();
     let outcome = child::run(&mut cmd, |_, line| log!("[{id}] spotdl: {line}"), || job.cancelled())
         .map_err(|e| format!("Could not run spotdl: {e}"))?;
@@ -100,6 +106,7 @@ pub fn run(job: &mut Job, url: &str) -> SourceResult {
             "--log-level",
             "INFO",
             "--print-errors",
+            NO_LYRICS,
         ])
         .current_dir(&out_dir);
         let id = job.req.id.clone();
