@@ -13,7 +13,10 @@ implementations disagree, this file decides.
 | Linux hosts | `/home/thomas/Music/TuneMesh` |
 | Android | `/storage/emulated/0/Music/TuneMesh` |
 
-Both apps let the user change the path; these are the defaults.
+Both apps let the user change the path; these are the defaults. On Android the
+folder must have Syncthing's "Ignore permissions" set: shared storage reports
+every file as 0660, which Syncthing otherwise treats as a local change and
+turns into conflict copies of request and status files.
 
 ```text
 <root>/
