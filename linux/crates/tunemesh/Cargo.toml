@@ -16,6 +16,7 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
 adw = { package = "libadwaita", version = "0.9", features = ["v1_7"] }
 async-channel = "2"
 libc = "0.2"
+glib-unix = "0.22"
 mpris-server = "0.10"
 notify-debouncer-mini = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }

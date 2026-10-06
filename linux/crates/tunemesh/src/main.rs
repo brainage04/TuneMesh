@@ -79,6 +79,15 @@ fn main() -> glib::ExitCode {
         }
         let app = App::new(gtk_app, config);
         mpris::start(&app);
+        // Logging out or `systemctl stop` sends SIGTERM: save the queue and
+        // position first, like closing the window does.
+        for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+            let a = app.clone();
+            glib_unix::unix_signal_add_local_once(signal, move || {
+                a.player.shutdown();
+                a.gtk_app.quit();
+            });
+        }
         app.present();
         *inst.borrow_mut() = Some(app);
     });

@@ -62,6 +62,11 @@ library). Playlist tracks and queue entries reorder by drag and drop.
 MPRIS: the app registers `org.mpris.MediaPlayer2.tunemesh`, so media keys and
 KDE's media controls work and show title, artist, cover and position.
 
+Memory: GTK draws with the GPU (Vulkan) by default; while playing, the app
+uses about 130 MiB PSS on an NVIDIA desktop, most of it the GPU driver.
+`GSK_RENDERER=cairo tunemesh` draws in software instead: about 80 MiB PSS,
+at roughly twice the CPU time for redraws.
+
 The application also exports its actions on D-Bus
 (`io.github.brainage04.TuneMesh`, object `/io/github/brainage04/TuneMesh`,
 interface `org.gtk.Actions`): `play-pause`, `next`, `previous`,
