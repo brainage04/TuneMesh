@@ -37,15 +37,17 @@ Both apps let the user change the path; these are the defaults.
   title = file name without extension and without a trailing ` [<id>]`;
   album = parent directory name (or `Unknown Album` at the root);
   artist = grandparent directory name (or `Unknown Artist`).
-- Albums group by (album artist, falling back to artist; album). Artists list
-  album artist, falling back to the first artist.
+- The first artist is the first artist tag value, split on `;` (and NUL),
+  trimmed. Albums group by (album artist, falling back to the first artist;
+  album). Artists list album artist, falling back to the first artist.
 - Cover art: the embedded picture; otherwise `cover.jpg`, `cover.png`,
   `folder.jpg` or `folder.png` in the track's directory; otherwise a generated
   placeholder.
 - File and directory names written by TuneMesh never contain
   `/ \ : * ? " < > |` or control characters (Android's shared storage rejects
-  them), never end in `.` or space, and each component is at most 120 bytes.
-  Replace offending characters with `_`.
+  them), never start with `.` (readers skip hidden names), never end in `.` or
+  space, and each component is at most 120 bytes. Replace offending
+  characters with `_`.
 
 ## Playlists
 
