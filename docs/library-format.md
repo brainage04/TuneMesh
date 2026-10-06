@@ -51,6 +51,10 @@ turns into conflict copies of request and status files.
   them), never start with `.` (readers skip hidden names), never end in `.` or
   space, and each component is at most 120 bytes. Replace offending
   characters with `_`.
+- Android's shared storage is case-insensitive, so two names in one directory
+  must never differ only in letter case (Syncthing refuses to sync the
+  second). A writer creating a directory reuses an existing one whose name
+  matches case-insensitively.
 
 ## Playlists
 

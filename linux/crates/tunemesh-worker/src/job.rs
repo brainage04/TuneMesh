@@ -100,12 +100,12 @@ impl Job<'_> {
             Some(id) => (&stem[..stem.len() - id.len() - 3], format!(" [{id}].{ext}")),
             None => (stem, format!(".{ext}")),
         };
-        let target_rel = format!(
-            "{}/{}/{}",
-            sanitize::component(artist),
-            sanitize::component(album),
-            sanitize::file_name(title, &suffix)
-        );
+        // Android's shared storage is case-insensitive: "XI" and "xi" are one
+        // directory there and Syncthing refuses to sync the second, so an
+        // artist or album directory that exists in another casing is reused.
+        let artist_dir = existing_casing(self.root, &sanitize::component(artist));
+        let album_dir = existing_casing(&self.root.join(&artist_dir), &sanitize::component(album));
+        let target_rel = format!("{artist_dir}/{album_dir}/{}", sanitize::file_name(title, &suffix));
         if let Some(existing) = id.as_deref().and_then(|id| self.existing(id)) {
             fs::remove_file(produced)?;
             return Ok(existing);
@@ -121,6 +121,20 @@ impl Job<'_> {
         }
         Ok(target_rel)
     }
+}
+
+/// `name`, or the name of an existing directory in `parent` that differs from
+/// it only in letter case.
+fn existing_casing(parent: &Path, name: &str) -> String {
+    let folded = name.to_lowercase();
+    fs::read_dir(parent)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .find(|existing| existing.to_lowercase() == folded)
+        .unwrap_or_else(|| name.to_owned())
 }
 
 /// Finds the downloaded audio file carrying `[id]` below `dir`.
@@ -327,6 +341,33 @@ mod tests {
         let produced = work.path().join("Other/Album./T: x [id2].m4a");
         fs::write(&produced, b"x").unwrap();
         assert_eq!(job.place(&produced).unwrap(), "Other/Album_/T_ x [id2].m4a");
+    }
+
+    #[test]
+    fn place_reuses_directories_that_differ_only_in_case() {
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        fs::create_dir_all(lib.path().join("XI/Parousia")).unwrap();
+        let req = Request::new("x", None, false, "t");
+        let status = Status::new(&req, RequestState::Downloading);
+        let mut job = Job {
+            root: lib.path(),
+            dir: work.path().to_path_buf(),
+            req,
+            status,
+            ids: HashMap::new(),
+            last_write: Instant::now(),
+        };
+        let produced = work.path().join("xi/parousia/Other [id3].opus");
+        fs::create_dir_all(produced.parent().unwrap()).unwrap();
+        fs::write(&produced, b"x").unwrap();
+        assert_eq!(job.place(&produced).unwrap(), "XI/Parousia/Other [id3].opus");
+        let produced = work.path().join("xi/New Album/Song [id4].opus");
+        fs::create_dir_all(produced.parent().unwrap()).unwrap();
+        fs::write(&produced, b"x").unwrap();
+        assert_eq!(job.place(&produced).unwrap(), "XI/New Album/Song [id4].opus");
+        let dirs: Vec<_> = fs::read_dir(lib.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(dirs, vec!["XI"]);
     }
 
     #[test]
