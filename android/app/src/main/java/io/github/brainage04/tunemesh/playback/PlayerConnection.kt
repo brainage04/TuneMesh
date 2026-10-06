@@ -27,12 +27,17 @@ data class PlayerUiState(
     val currentIndex: Int = -1,
     val isPlaying: Boolean = false,
     val playWhenReady: Boolean = false,
+    val playbackState: Int = Player.STATE_IDLE,
     val durationMs: Long = 0,
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val shuffle: Boolean = false,
 ) {
     val current: MediaItem? get() = queue.getOrNull(currentIndex)
     val currentPath: String? get() = current?.let(QueueItems::path)
+
+    /** Pause is offered while playback is requested and can continue (not after the queue ended or failed). */
+    val showPause: Boolean
+        get() = playWhenReady && (playbackState == Player.STATE_READY || playbackState == Player.STATE_BUFFERING)
 }
 
 /**
@@ -104,6 +109,7 @@ class PlayerConnection(private val context: Context, private val state: Playback
             currentIndex = if (queue.isEmpty()) -1 else player.currentMediaItemIndex,
             isPlaying = player.isPlaying,
             playWhenReady = player.playWhenReady,
+            playbackState = player.playbackState,
             durationMs = player.duration.takeIf { it > 0 } ?: (player.currentMediaItem?.mediaMetadata?.durationMs ?: 0),
             repeatMode = player.repeatMode,
             shuffle = state.shuffle,
@@ -202,7 +208,7 @@ class PlayerConnection(private val context: Context, private val state: Playback
     }
 
     fun togglePlay() = withController { player ->
-        if (player.isPlaying) {
+        if (player.playWhenReady && (player.playbackState == Player.STATE_READY || player.playbackState == Player.STATE_BUFFERING)) {
             player.pause()
         } else {
             if (player.playbackState == Player.STATE_IDLE) player.prepare()

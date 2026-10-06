@@ -92,7 +92,7 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
             }
             if (track != null) LikeButton(track.path in library.liked, { viewModel.toggleLike(track) })
             IconButton(onClick = { viewModel.player.togglePlay() }) {
-                Icon(if (ui.playWhenReady) AppIcons.Pause else AppIcons.Play, if (ui.playWhenReady) "Pause" else "Play")
+                Icon(if (ui.showPause) AppIcons.Pause else AppIcons.Play, if (ui.showPause) "Pause" else "Play")
             }
         }
         LinearProgressIndicator(
@@ -188,7 +188,7 @@ fun NowPlayingScreen() {
             IconButton(onClick = { viewModel.player.previous() }, modifier = Modifier.size(56.dp)) {
                 Icon(AppIcons.Previous, "Previous", modifier = Modifier.size(40.dp))
             }
-            PlayCircle(playing = ui.playWhenReady, onClick = { viewModel.player.togglePlay() }, size = 68.dp, color = Color.White)
+            PlayCircle(playing = ui.showPause, onClick = { viewModel.player.togglePlay() }, size = 68.dp, color = Color.White)
             IconButton(onClick = { viewModel.player.next() }, modifier = Modifier.size(56.dp)) {
                 Icon(AppIcons.Next, "Next", modifier = Modifier.size(40.dp))
             }

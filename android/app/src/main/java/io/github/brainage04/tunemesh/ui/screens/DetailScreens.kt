@@ -54,7 +54,7 @@ import androidx.compose.material3.DropdownMenu
 @Composable
 private fun playingContext(name: String): Boolean {
     val viewModel = LocalAppViewModel.current
-    return viewModel.playingFrom == name && LocalPlayerUi.current.playWhenReady
+    return viewModel.playingFrom == name && LocalPlayerUi.current.showPause
 }
 
 @Composable
