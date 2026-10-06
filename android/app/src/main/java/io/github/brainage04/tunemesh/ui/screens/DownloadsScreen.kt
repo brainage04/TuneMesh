@@ -45,6 +45,7 @@ import io.github.brainage04.tunemesh.data.LibraryRepository
 import io.github.brainage04.tunemesh.library.DownloadItem
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.ui.AppIcons
+import io.github.brainage04.tunemesh.ui.ClearFocusWhenImeHidden
 import io.github.brainage04.tunemesh.ui.LocalAppViewModel
 import io.github.brainage04.tunemesh.ui.LocalLibrary
 import io.github.brainage04.tunemesh.ui.ScreenTitle
@@ -125,6 +126,7 @@ fun RequestForm(
     showInput: Boolean = true,
 ) {
     var pickerOpen by remember { mutableStateOf(false) }
+    ClearFocusWhenImeHidden()
     Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         if (showInput) {
             OutlinedTextField(

@@ -45,6 +45,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.ui.AppIcons
+import io.github.brainage04.tunemesh.ui.ClearFocusWhenImeHidden
 import io.github.brainage04.tunemesh.ui.LikedSongsArt
 import io.github.brainage04.tunemesh.ui.CoverArt
 import io.github.brainage04.tunemesh.ui.DialogRequest
@@ -65,6 +66,7 @@ fun SearchScreen(contentPadding: PaddingValues) {
     val library = LocalLibrary.current
     var query by rememberSaveable { mutableStateOf("") }
     val index = library.index
+    ClearFocusWhenImeHidden()
     Column(Modifier.fillMaxSize()) {
         ScreenTitle("Search")
         TextField(
