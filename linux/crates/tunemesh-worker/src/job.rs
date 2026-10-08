@@ -193,9 +193,11 @@ pub fn classify(input: &str) -> Input {
 }
 
 /// Appends `tracks` to the playlist `name` (Liked Songs: inserted at the
-/// top), creating it if needed. Returns the playlist's sanitised name.
+/// top), creating it if needed. A playlist whose name differs only in letter
+/// case is the same playlist. Returns the name of the playlist written.
 pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result<String> {
     let name = playlist::sanitize_name(name);
+    let name = playlist::existing_name(root, &name).unwrap_or(name);
     let mut p = match Playlist::read(root, &name) {
         Ok(p) => p,
         Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist { name: name.clone(), entries: Vec::new() },
@@ -386,5 +388,21 @@ mod tests {
         let liked = Playlist::read(root, LIKED_SONGS).unwrap();
         let order: Vec<_> = liked.entries.iter().map(|e| e.track.clone().unwrap()).collect();
         assert_eq!(order, vec!["A/B/one [1].opus", "A/B/two [2].opus", "old.mp3"]);
+    }
+
+    #[test]
+    fn playlist_names_match_case_insensitively() {
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let tracks = vec!["A/B/one [1].opus".to_owned()];
+        Playlist::create(root, "Road Trip").unwrap();
+        assert_eq!(add_to_playlist(root, "road trip", &tracks).unwrap(), "Road Trip");
+        // "liked songs" typed into a request is Liked Songs, with its insert-at-top rule.
+        assert_eq!(add_to_playlist(root, "liked songs", &tracks).unwrap(), LIKED_SONGS);
+        assert_eq!(playlist::list_names(root), vec!["Road Trip"]);
+        assert_eq!(Playlist::read(root, "Road Trip").unwrap().entries.len(), 1);
+        assert!(Playlist::read(root, LIKED_SONGS).unwrap().contains("A/B/one [1].opus"));
+        let files: Vec<_> = fs::read_dir(playlist::playlists_dir(root)).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(files.len(), 2);
     }
 }

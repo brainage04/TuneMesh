@@ -104,7 +104,9 @@ A client asks for a download by creating
 - `input`: a URL (YouTube, YouTube Music, Spotify track/album/playlist,
   SoundCloud, Bandcamp, anything yt-dlp supports) or free search text.
 - `playlist`: optional playlist name; downloaded tracks are appended to it,
-  creating it if needed.
+  creating it if needed. An existing playlist whose name differs only in
+  letter case is that playlist (`liked songs` is Liked Songs), as for every
+  name in one directory (see "Audio files").
 - `playlistFromSource`: when true and `playlist` is null, the worker creates or
   appends to a playlist named after the source playlist/album title.
 - `requestedBy`: device name, for display only.

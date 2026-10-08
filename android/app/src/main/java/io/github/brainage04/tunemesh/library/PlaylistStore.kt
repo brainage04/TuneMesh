@@ -74,26 +74,37 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         AtomicFiles.write(file(name), M3u8.write(entries, lookup))
     }
 
+    /**
+     * The playlist whose name equals [name] ignoring letter case (Liked Songs included, whether or not its file
+     * exists yet). Shared storage is case-insensitive, so such a playlist is the same file.
+     */
+    private fun existingName(name: String): String? {
+        if (name.equals(LibraryFormat.LIKED_SONGS, ignoreCase = true)) return LibraryFormat.LIKED_SONGS
+        return directory.list()?.firstNotNullOfOrNull { fileName ->
+            fileName.takeIf {
+                it.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(it) && !LibraryFormat.isConflictCopy(it)
+            }?.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)?.takeIf { it.equals(name, ignoreCase = true) }
+        }
+    }
+
     /** Creates an empty playlist and returns its (sanitised) name. */
     fun create(name: String): String {
         val fileName = LibraryFormat.playlistFileName(name)
         val finalName = fileName.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)
         if (name.isBlank()) throw PlaylistException("Enter a playlist name")
-        if (file(finalName).exists()) throw PlaylistException("A playlist called \"$finalName\" already exists")
+        existingName(finalName)?.let { throw PlaylistException("A playlist called \"$it\" already exists") }
         write(finalName, emptyList())
         return finalName
     }
 
+    /** Renames a playlist; changing only the letter case of its name is allowed. */
     fun rename(from: String, to: String): String {
         if (from == LibraryFormat.LIKED_SONGS) throw PlaylistException("Liked Songs cannot be renamed")
         if (to.isBlank()) throw PlaylistException("Enter a playlist name")
         val finalName = LibraryFormat.playlistFileName(to).removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)
         if (finalName == from) return from
-        val target = file(finalName)
-        if (target.exists() && !target.canonicalPath.equals(file(from).canonicalPath)) {
-            throw PlaylistException("A playlist called \"$finalName\" already exists")
-        }
-        Files.move(file(from).toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE)
+        existingName(finalName)?.takeIf { it != from }?.let { throw PlaylistException("A playlist called \"$it\" already exists") }
+        Files.move(file(from).toPath(), file(finalName).toPath(), StandardCopyOption.ATOMIC_MOVE)
         return finalName
     }
 

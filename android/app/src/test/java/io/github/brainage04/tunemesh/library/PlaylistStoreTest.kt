@@ -95,6 +95,21 @@ class PlaylistStoreTest {
     }
 
     @Test
+    fun namesNeverDifferOnlyInCase() {
+        val store = store()
+        store.create("Road Trip")
+        assertThrows(PlaylistException::class.java) { store.create("road trip") }
+        // Liked Songs is reserved even before its file exists.
+        assertThrows(PlaylistException::class.java) { store.create("LIKED SONGS") }
+        store.create("Drive")
+        assertThrows(PlaylistException::class.java) { store.rename("Drive", "ROAD trip") }
+        assertThrows(PlaylistException::class.java) { store.rename("Drive", "liked songs") }
+        // Changing only the case of its own name is a rename, not a clash.
+        assertEquals("road trip", store.rename("Road Trip", "road trip"))
+        assertEquals(listOf("Drive", "road trip"), store.list().map { it.name })
+    }
+
+    @Test
     fun listIgnoresConflictCopiesAndPutsLikedSongsFirst() {
         val store = store()
         store.create("Zebra")

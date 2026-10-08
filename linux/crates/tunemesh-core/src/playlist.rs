@@ -131,6 +131,14 @@ pub fn sanitize_name(name: &str) -> String {
     file[..file.len() - EXT.len()].to_owned()
 }
 
+/// Whether a directory entry name is a playlist file readers use.
+fn playlist_stem(name: &str) -> Option<&str> {
+    if name.starts_with('.') || is_conflict_copy(name) {
+        return None;
+    }
+    name.strip_suffix(EXT).filter(|stem| !stem.is_empty())
+}
+
 /// Names of all playlists, sorted case-insensitively, Liked Songs excluded.
 pub fn list_names(root: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(playlists_dir(root)) else { return Vec::new() };
@@ -138,15 +146,29 @@ pub fn list_names(root: &Path) -> Vec<String> {
         .flatten()
         .filter_map(|e| {
             let name = e.file_name().into_string().ok()?;
-            if name.starts_with('.') || is_conflict_copy(&name) || !e.file_type().ok()?.is_file() {
+            if !e.file_type().ok()?.is_file() {
                 return None;
             }
-            let stem = name.strip_suffix(EXT)?;
-            (stem != LIKED_SONGS && !stem.is_empty()).then(|| stem.to_owned())
+            playlist_stem(&name).filter(|stem| *stem != LIKED_SONGS).map(str::to_owned)
         })
         .collect();
     names.sort_by_cached_key(|n| crate::search::fold(n));
     names
+}
+
+/// The playlist whose name equals `name` ignoring letter case (Liked Songs
+/// included, whether or not its file exists yet). Android's shared storage is
+/// case-insensitive, so such a playlist is the same file there.
+pub fn existing_name(root: &Path, name: &str) -> Option<String> {
+    let folded = name.to_lowercase();
+    if folded == LIKED_SONGS.to_lowercase() {
+        return Some(LIKED_SONGS.to_owned());
+    }
+    fs::read_dir(playlists_dir(root))
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .find_map(|n| playlist_stem(&n).filter(|stem| stem.to_lowercase() == folded).map(str::to_owned))
 }
 
 impl Playlist {
@@ -168,18 +190,20 @@ impl Playlist {
         atomic::write(&playlist_path(root, &self.name), serialize(&self.entries, info).as_bytes())
     }
 
-    /// Creates an empty playlist with the sanitised `name`; fails if it exists.
+    /// Creates an empty playlist with the sanitised `name`; fails if a
+    /// playlist with that name, in any letter case, exists.
     pub fn create(root: &Path, name: &str) -> io::Result<Self> {
         let name = sanitize_name(name);
-        if playlist_path(root, &name).exists() {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{name}” already exists")));
+        if let Some(existing) = existing_name(root, &name) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{existing}” already exists")));
         }
         let p = Self { name, entries: Vec::new() };
         p.write(root, &|_| None)?;
         Ok(p)
     }
 
-    /// Renames a playlist file; returns the sanitised new name.
+    /// Renames a playlist file; returns the sanitised new name. Changing only
+    /// the letter case of a name is allowed.
     pub fn rename(root: &Path, old: &str, new: &str) -> io::Result<String> {
         if old == LIKED_SONGS {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Liked Songs cannot be renamed"));
@@ -188,11 +212,10 @@ impl Playlist {
         if new == old {
             return Ok(new);
         }
-        let target = playlist_path(root, &new);
-        if target.exists() || new == LIKED_SONGS {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{new}” already exists")));
+        if let Some(existing) = existing_name(root, &new).filter(|e| e != old) {
+            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{existing}” already exists")));
         }
-        fs::rename(playlist_path(root, old), target)?;
+        fs::rename(playlist_path(root, old), playlist_path(root, &new))?;
         Ok(new)
     }
 
@@ -320,6 +343,26 @@ mod tests {
         Playlist::delete(root, "Drive").unwrap();
         assert!(list_names(root).is_empty());
         assert!(Playlist::read(root, LIKED_SONGS).unwrap().entries.is_empty());
+    }
+
+    #[test]
+    fn names_never_differ_only_in_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        Playlist::create(root, "Road Trip").unwrap();
+        assert_eq!(existing_name(root, "road TRIP").as_deref(), Some("Road Trip"));
+        assert_eq!(existing_name(root, "Drive"), None);
+        // Liked Songs is reserved even before its file exists.
+        assert_eq!(existing_name(root, "liked songs").as_deref(), Some(LIKED_SONGS));
+        assert_eq!(Playlist::create(root, "road trip").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(Playlist::create(root, "LIKED SONGS").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+
+        Playlist::create(root, "Drive").unwrap();
+        assert_eq!(Playlist::rename(root, "Drive", "ROAD trip").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(Playlist::rename(root, "Drive", "liked songs").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        // Changing only the case of its own name is a rename, not a clash.
+        assert_eq!(Playlist::rename(root, "Road Trip", "road trip").unwrap(), "road trip");
+        assert_eq!(list_names(root), vec!["Drive", "road trip"]);
     }
 
     #[test]
