@@ -9,8 +9,10 @@ Follows `/home/thomas/01_TM/Coding/Android Apps/AGENTS.md`. Project-specific not
 
   ```sh
   env -u ANDROID_HOME ANDROID_SDK_ROOT=/home/thomas/.local/share/android-sdk \
-    "/home/thomas/01_TM/Coding/Android Apps/tools/android-cycle" run android
+    "/home/thomas/01_TM/Coding/Android Apps/tools/android-cycle" run android --skip-phone
   ```
+
+  Drop `--skip-phone` only when the task asks for phone deployment.
 
 - `minSdk` is 30 (app and baseline profile module): the app reads and writes the Syncthing folder directly
   with `MANAGE_EXTERNAL_STORAGE`, which does not exist before Android 11.
@@ -24,4 +26,5 @@ Follows `/home/thomas/01_TM/Coding/Android Apps/AGENTS.md`. Project-specific not
   as a `METADATA_BLOCK_PICTURE` tag) under `/tmp` and pushed to `/sdcard/Music/TuneMesh` on the emulator only.
   Never commit audio fixtures.
 - JVM unit tests cover the library contract (`app/src/test`): playlists, Liked Songs, sanitising, metadata
-  fallbacks, request/status JSON. Keep `library/` free of Android imports so they stay JVM tests.
+  fallbacks, request/status JSON. Keep the `io.github.brainage04.tunemesh.library` package
+  (`app/src/main/java/io/github/brainage04/tunemesh/library/`) free of Android imports so they stay JVM tests.
