@@ -161,6 +161,11 @@ The worker runs on exactly one host (thomas-server). It:
 6. Skips a download when a file with the same `[<id>]` already exists and
    reports the existing path in `tracks`.
 7. On start, resumes requests whose status is `queued` or `downloading`.
+8. Refuses (state `failed`) URLs that are not http(s) or whose host is or
+   resolves to a loopback, private, link-local, CGNAT/Tailscale
+   (`100.64.0.0/10`) or IPv6 unique-local address, and skips playlist entries
+   that do: a request must never make the worker reach its own host or the
+   tailnet.
 
 ## Local state
 

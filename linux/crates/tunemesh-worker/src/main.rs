@@ -6,6 +6,7 @@
 
 mod child;
 mod job;
+mod netguard;
 mod spotdl;
 mod ytdlp;
 

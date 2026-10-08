@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::child::{self, End, Stream};
 use crate::job::{ItemResult, Job, SourceResult};
-use crate::log;
+use crate::{log, netguard};
 
 /// `<Artist>/<Album or Singles>/<Title> [<id>].<ext>` from YouTube Music
 /// fields with uploader/title fallbacks. Fields are capped in bytes so the
@@ -114,6 +114,10 @@ fn parse_progress(line: &str) -> Option<f64> {
 /// Downloads one item into the job's scratch directory and moves it into
 /// the library.
 fn download(job: &mut Job, item: &Item, index: usize, total: usize) -> ItemResult {
+    // Playlist entries can point anywhere, not just at the listed site.
+    if let Err(e) = netguard::check_url(&item.url) {
+        return ItemResult::Failed(e);
+    }
     let mut cmd = yt_dlp();
     cmd.args([
         "--newline",
@@ -221,6 +225,9 @@ fn download_all(job: &mut Job, items: &[Item], result: &mut SourceResult) {
 
 pub fn run_url(job: &mut Job, url: &str) -> SourceResult {
     let mut result = SourceResult::default();
+    if let Err(e) = netguard::check_url(url) {
+        return SourceResult { fatal: Some(e), ..result };
+    }
     let listing = match list(job, url, false) {
         Ok(Some(l)) => l,
         Ok(None) => return SourceResult { cancelled: true, ..result },

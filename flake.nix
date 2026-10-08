@@ -156,6 +156,28 @@
                 before they are moved into place. Created and owned by `user`.
               '';
             };
+            memoryMax = lib.mkOption {
+              type = lib.types.str;
+              default = "2G";
+              description = "systemd MemoryMax for the worker and its downloaders.";
+            };
+            allowedAddresses = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [
+                "100.100.100.100/32"
+                "fd7a:115c:a1e0::53/128"
+                "127.0.0.53/32"
+              ];
+              description = ''
+                Addresses the worker may reach although they are in a blocked
+                private range: the DNS resolvers (Tailscale MagicDNS and the
+                systemd-resolved stub by default). Everything else on
+                loopback, link-local, RFC 1918, CGNAT/Tailscale (100.64.0.0/10)
+                and IPv6 unique-local addresses is unreachable, so a request
+                (or a redirect it follows) cannot reach services on the host
+                or the tailnet.
+              '';
+            };
           };
 
           config = lib.mkIf cfg.enable {
@@ -170,6 +192,12 @@
               wantedBy = [ "multi-user.target" ];
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];
+              # yt-dlp's cache and spotDL's config live in the work directory,
+              # the only writable place besides the library.
+              environment = {
+                XDG_CACHE_HOME = "${cfg.workDir}/.cache";
+                XDG_CONFIG_HOME = "${cfg.workDir}/.config";
+              };
               serviceConfig = {
                 User = cfg.user;
                 Group = config.users.users.${cfg.user}.group;
@@ -181,6 +209,56 @@
                 UMask = "0022";
                 Nice = 10;
                 IOSchedulingClass = "idle";
+                MemoryMax = cfg.memoryMax;
+
+                # The worker runs downloaders on input any synced device can
+                # write: it may touch the library and the work directory only.
+                ProtectSystem = "strict";
+                ProtectHome = "read-only";
+                ReadWritePaths = [
+                  cfg.libraryPath
+                  cfg.workDir
+                ];
+                PrivateTmp = true;
+                PrivateDevices = true;
+                PrivateIPC = true;
+                NoNewPrivileges = true;
+                CapabilityBoundingSet = "";
+                AmbientCapabilities = "";
+                ProtectKernelTunables = true;
+                ProtectKernelModules = true;
+                ProtectKernelLogs = true;
+                ProtectControlGroups = true;
+                ProtectClock = true;
+                ProtectHostname = true;
+                ProtectProc = "invisible";
+                LockPersonality = true;
+                RestrictRealtime = true;
+                RestrictSUIDSGID = true;
+                RestrictNamespaces = true;
+                RestrictAddressFamilies = [
+                  "AF_INET"
+                  "AF_INET6"
+                  "AF_UNIX"
+                  "AF_NETLINK"
+                ];
+                SystemCallArchitectures = "native";
+                SystemCallFilter = [
+                  "@system-service"
+                  "~@privileged"
+                ];
+                IPAddressDeny = [
+                  "localhost"
+                  "link-local"
+                  "multicast"
+                  "0.0.0.0/8"
+                  "10.0.0.0/8"
+                  "100.64.0.0/10"
+                  "172.16.0.0/12"
+                  "192.168.0.0/16"
+                  "fc00::/7"
+                ];
+                IPAddressAllow = cfg.allowedAddresses;
               };
             };
           };
