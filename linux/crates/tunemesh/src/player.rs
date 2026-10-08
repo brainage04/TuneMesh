@@ -90,6 +90,33 @@ impl State {
         let start = self.current.map_or(0, |c| c + 1);
         self.items[start.min(self.items.len())..].iter().filter(|i| i.user).cloned().collect()
     }
+
+    /// Drops `paths` from the queue and the context. Returns whether the
+    /// current item was dropped; the current item is then the first kept item
+    /// that followed it (wrapping to the start with `Repeat::All`), or none.
+    fn remove_paths(&mut self, paths: &[String]) -> bool {
+        let cur = self.current;
+        let current_gone = cur.and_then(|c| self.items.get(c)).is_some_and(|i| paths.contains(&i.path));
+        let mut new_cur = None;
+        let mut kept = Vec::with_capacity(self.items.len());
+        for (i, item) in std::mem::take(&mut self.items).into_iter().enumerate() {
+            if paths.contains(&item.path) {
+                continue;
+            }
+            let is_current = cur.is_some_and(|c| if current_gone { i > c } else { i == c });
+            if new_cur.is_none() && is_current {
+                new_cur = Some(kept.len());
+            }
+            kept.push(item);
+        }
+        if current_gone && new_cur.is_none() && self.repeat == Repeat::All && !kept.is_empty() {
+            new_cur = Some(0);
+        }
+        self.items = kept;
+        self.current = new_cur;
+        self.context.retain(|p| !paths.contains(p));
+        current_gone
+    }
 }
 
 type Listener = Rc<dyn Fn(Change)>;
@@ -214,9 +241,6 @@ impl Player {
     }
     pub fn items(&self) -> Vec<QueueItem> {
         self.st.borrow().items.clone()
-    }
-    pub fn has_next(&self) -> bool {
-        self.st.borrow().next_index().is_some()
     }
     pub fn has_track(&self) -> bool {
         self.current_path().is_some()
@@ -707,40 +731,30 @@ impl Player {
         self.emit(&[Change::Queue]);
     }
 
-    /// Drops deleted tracks from the queue; skips the current one if needed.
+    /// Drops deleted tracks from the queue; when the current one goes, plays
+    /// on from the next track that is not deleted too.
     pub fn remove_paths(&self, paths: &[String]) {
-        let current_gone = self.current_path().is_some_and(|p| paths.contains(&p));
+        // Settle an advance mpv already made before queue indices change.
+        self.catch_up();
+        let (current_gone, loaded, play) = {
+            let mut st = self.st.borrow_mut();
+            let (loaded, play) = (st.loaded, st.playing);
+            (st.remove_paths(paths), loaded, play)
+        };
         if current_gone {
-            let has_next = self.has_next();
-            if has_next {
-                self.next();
+            if loaded && self.st.borrow().current.is_some() {
+                self.load_current(0.0, play);
             } else {
-                if let Some(mpv) = &self.mpv {
+                if loaded && let Some(mpv) = &self.mpv {
                     let _ = mpv.command(&["stop"]);
                 }
                 let mut st = self.st.borrow_mut();
                 st.loaded = false;
                 st.playing = false;
+                st.position = 0.0;
                 st.current_entry = None;
                 st.next_entry = None;
             }
-        }
-        {
-            let mut st = self.st.borrow_mut();
-            let cur = st.current;
-            let mut new_cur = None;
-            let mut kept = Vec::new();
-            for (i, item) in std::mem::take(&mut st.items).into_iter().enumerate() {
-                if Some(i) == cur && !paths.contains(&item.path) {
-                    new_cur = Some(kept.len());
-                }
-                if !paths.contains(&item.path) {
-                    kept.push(item);
-                }
-            }
-            st.items = kept;
-            st.current = new_cur;
-            st.context.retain(|p| !paths.contains(p));
         }
         self.update_tick();
         self.sync_next();
@@ -810,5 +824,64 @@ impl Player {
         if let Some(mpv) = &self.mpv {
             mpv.quit();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state(paths: &[&str], current: usize, repeat: Repeat) -> State {
+        State {
+            items: paths.iter().map(|p| QueueItem { path: (*p).to_owned(), user: false }).collect(),
+            current: Some(current),
+            context: paths.iter().map(|p| (*p).to_owned()).collect(),
+            repeat,
+            ..Default::default()
+        }
+    }
+
+    fn paths(st: &State) -> Vec<&str> {
+        st.items.iter().map(|i| i.path.as_str()).collect()
+    }
+
+    fn remove(st: &mut State, gone: &[&str]) -> bool {
+        st.remove_paths(&gone.iter().map(|p| (*p).to_owned()).collect::<Vec<_>>())
+    }
+
+    #[test]
+    fn deleting_the_playing_album_skips_every_deleted_track() {
+        // Playing a1 and deleting its whole album: playback continues at b1,
+        // not at a2, which is about to be deleted too.
+        let mut st = state(&["a1", "a2", "a3", "b1"], 0, Repeat::Off);
+        assert!(remove(&mut st, &["a1", "a2", "a3"]));
+        assert_eq!(paths(&st), vec!["b1"]);
+        assert_eq!(st.current, Some(0));
+        assert_eq!(st.context, vec!["b1"]);
+    }
+
+    #[test]
+    fn current_track_kept_while_others_go() {
+        let mut st = state(&["a", "b", "c", "d"], 2, Repeat::Off);
+        assert!(!remove(&mut st, &["a", "d"]));
+        assert_eq!(paths(&st), vec!["b", "c"]);
+        assert_eq!(st.current, Some(1));
+    }
+
+    #[test]
+    fn nothing_left_after_the_current_track() {
+        let mut st = state(&["a", "b", "c"], 1, Repeat::Off);
+        assert!(remove(&mut st, &["b", "c"]));
+        assert_eq!(paths(&st), vec!["a"]);
+        assert_eq!(st.current, None);
+
+        let mut st = state(&["a", "b", "c"], 1, Repeat::All);
+        assert!(remove(&mut st, &["b", "c"]));
+        assert_eq!(st.current, Some(0));
+
+        let mut st = state(&["a"], 0, Repeat::All);
+        assert!(remove(&mut st, &["a"]));
+        assert!(st.items.is_empty());
+        assert_eq!(st.current, None);
     }
 }
