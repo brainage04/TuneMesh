@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import io.github.brainage04.tunemesh.data.CoverProvider
+import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Track
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -74,11 +75,15 @@ object QueueItems {
         )
     }
 
-    /** Fills in the playable URI for items that crossed the session boundary without one. */
-    fun resolve(item: MediaItem): MediaItem {
-        if (item.localConfiguration != null) return item
-        val uri = item.requestMetadata.mediaUri ?: return item
-        return item.buildUpon().setUri(uri).build()
+    /**
+     * Fills in the playable URI for items that crossed the session boundary without one, or returns null when the
+     * item does not name an audio file inside [root]: the session is exported, so other apps' controllers must not
+     * make the player open arbitrary files or URLs.
+     */
+    fun resolve(item: MediaItem, root: File): MediaItem? {
+        val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return null
+        if (!LibraryUris.isLibraryFile(uri.toString(), root)) return null
+        return if (item.localConfiguration != null) item else item.buildUpon().setUri(uri).build()
     }
 }
 

@@ -136,7 +136,10 @@ class PlaybackService : MediaSessionService() {
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
-        ): ListenableFuture<List<MediaItem>> = Futures.immediateFuture(mediaItems.map(QueueItems::resolve))
+        ): ListenableFuture<List<MediaItem>> {
+            val root = (application as TuneMeshApp).settings.libraryRoot
+            return Futures.immediateFuture(mediaItems.mapNotNull { QueueItems.resolve(it, root) })
+        }
 
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
