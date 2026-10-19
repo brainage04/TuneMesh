@@ -47,12 +47,18 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         let (a, p) = (app.clone(), paths.clone());
         action(&group, "play-next", move || {
             a.player.play_next(&p);
-            a.toast(&format!("{} will play next", plural(p.len(), "song", "songs")));
+            a.toast(&format!(
+                "{} will play next",
+                plural(p.len(), "song", "songs")
+            ));
         });
         let (a, p) = (app.clone(), paths.clone());
         action(&group, "add-queue", move || {
             a.player.add_to_queue(&p);
-            a.toast(&format!("Added {} to queue", plural(p.len(), "song", "songs")));
+            a.toast(&format!(
+                "Added {} to queue",
+                plural(p.len(), "song", "songs")
+            ));
         });
 
         let section = gio::Menu::new();
@@ -65,9 +71,11 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
             let action_name = format!("add-pl-{i}");
             lists.append(Some(&name), Some(&format!("tm.{action_name}")));
             let (a, p) = (app.clone(), paths.clone());
-            action(&group, &action_name, move || match a.store.add_to_playlist(&name, &p) {
-                Ok(()) => a.toast(&format!("Added to {name}")),
-                Err(e) => a.error("Could not add to playlist", e),
+            action(&group, &action_name, move || {
+                match a.store.add_to_playlist(&name, &p) {
+                    Ok(()) => a.toast(&format!("Added to {name}")),
+                    Err(e) => a.error("Could not add to playlist", e),
+                }
             });
         }
         sub.append_section(None, &lists);
@@ -75,25 +83,28 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         let (a, p) = (app.clone(), paths.clone());
         action(&group, "new-playlist", move || {
             let (a2, p2) = (a.clone(), p.clone());
-            ask_text(&a, "New playlist", "", "Create", move |name| match a2.store.create_playlist(&name) {
-                Ok(name) => match a2.store.add_to_playlist(&name, &p2) {
-                    Ok(()) => a2.toast(&format!("Added to {name}")),
-                    Err(e) => a2.error("Could not add to playlist", e),
-                },
-                Err(e) => a2.error("Could not create playlist", e),
+            ask_text(&a, "New playlist", "", "Create", move |name| {
+                match a2.store.create_playlist(&name) {
+                    Ok(name) => match a2.store.add_to_playlist(&name, &p2) {
+                        Ok(()) => a2.toast(&format!("Added to {name}")),
+                        Err(e) => a2.error("Could not add to playlist", e),
+                    },
+                    Err(e) => a2.error("Could not create playlist", e),
+                }
             });
         });
 
         if let Some((name, positions)) = &ctx.playlist
-            && name != LIKED_SONGS {
-                section.append(Some("Remove from this playlist"), Some("tm.remove-pl"));
-                let (a, n, pos) = (app.clone(), name.clone(), positions.clone());
-                action(&group, "remove-pl", move || {
-                    if let Err(e) = a.store.remove_from_playlist(&n, &pos) {
-                        a.error("Could not update playlist", e);
-                    }
-                });
-            }
+            && name != LIKED_SONGS
+        {
+            section.append(Some("Remove from this playlist"), Some("tm.remove-pl"));
+            let (a, n, pos) = (app.clone(), name.clone(), positions.clone());
+            action(&group, "remove-pl", move || {
+                if let Err(e) = a.store.remove_from_playlist(&n, &pos) {
+                    a.error("Could not update playlist", e);
+                }
+            });
+        }
         let all_liked = paths.iter().all(|p| app.store.is_liked(p));
         if all_liked {
             section.append(Some("Remove from Liked Songs"), Some("tm.unlike"));
@@ -130,7 +141,9 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
                     }
                 });
                 let a = app.clone();
-                action(&group, "go-artist", move || a.navigate(Route::Artist(artist.clone())));
+                action(&group, "go-artist", move || {
+                    a.navigate(Route::Artist(artist.clone()))
+                });
             }
         }
 
@@ -172,7 +185,10 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
 pub fn confirm_delete(app: &Rc<App>, paths: Vec<String>) {
     let lib = app.store.library();
     let heading = match paths.as_slice() {
-        [one] => format!("Delete “{}”?", lib.track(one).map_or(one.as_str(), |t| t.title.as_str())),
+        [one] => format!(
+            "Delete “{}”?",
+            lib.track(one).map_or(one.as_str(), |t| t.title.as_str())
+        ),
         many => format!("Delete {} songs?", many.len()),
     };
     let a = app.clone();
@@ -192,7 +208,13 @@ pub fn confirm_delete(app: &Rc<App>, paths: Vec<String>) {
 }
 
 /// A destructive confirmation dialog.
-pub fn confirm(app: &App, heading: &str, body: &str, confirm_label: &str, on_confirm: impl Fn() + 'static) {
+pub fn confirm(
+    app: &App,
+    heading: &str,
+    body: &str,
+    confirm_label: &str,
+    on_confirm: impl Fn() + 'static,
+) {
     let dialog = adw::AlertDialog::new(Some(heading), Some(body));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("confirm", confirm_label);
@@ -208,9 +230,19 @@ pub fn confirm(app: &App, heading: &str, body: &str, confirm_label: &str, on_con
 }
 
 /// Asks for a line of text (playlist names).
-pub fn ask_text(app: &App, heading: &str, initial: &str, ok_label: &str, on_ok: impl Fn(String) + 'static) {
+pub fn ask_text(
+    app: &App,
+    heading: &str,
+    initial: &str,
+    ok_label: &str,
+    on_ok: impl Fn(String) + 'static,
+) {
     let dialog = adw::AlertDialog::new(Some(heading), None);
-    let entry = gtk::Entry::builder().text(initial).activates_default(true).placeholder_text("Name").build();
+    let entry = gtk::Entry::builder()
+        .text(initial)
+        .activates_default(true)
+        .placeholder_text("Name")
+        .build();
     dialog.set_extra_child(Some(&entry));
     dialog.add_response("cancel", "Cancel");
     dialog.add_response("ok", ok_label);

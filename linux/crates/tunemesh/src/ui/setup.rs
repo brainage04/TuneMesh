@@ -26,7 +26,11 @@ struct Setup {
 
 /// Opens the assistant over the main window.
 pub fn open(app: &Rc<App>) {
-    let dialog = adw::Dialog::builder().title("Set Up TuneMesh").content_width(620).content_height(720).build();
+    let dialog = adw::Dialog::builder()
+        .title("Set Up TuneMesh")
+        .content_width(620)
+        .content_height(720)
+        .build();
     let nav = adw::NavigationView::new();
     let toasts = adw::ToastOverlay::new();
     toasts.set_child(Some(&nav));
@@ -55,7 +59,11 @@ pub fn open(app: &Rc<App>) {
 }
 
 fn body_text(text: &str) -> gtk::Label {
-    gtk::Label::builder().label(text).xalign(0.0).wrap(true).build()
+    gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .wrap(true)
+        .build()
 }
 
 fn dim_text(text: &str) -> gtk::Label {
@@ -66,11 +74,20 @@ fn dim_text(text: &str) -> gtk::Label {
 
 /// A copyable command line.
 fn command_row(text: &str) -> gtk::Label {
-    gtk::Label::builder().label(text).xalign(0.0).wrap(true).selectable(true).css_classes(["monospace"]).build()
+    gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .wrap(true)
+        .selectable(true)
+        .css_classes(["monospace"])
+        .build()
 }
 
 fn pill(label: &str, suggested: bool) -> gtk::Button {
-    let b = gtk::Button::builder().label(label).css_classes(["pill"]).build();
+    let b = gtk::Button::builder()
+        .label(label)
+        .css_classes(["pill"])
+        .build();
     if suggested {
         b.add_css_class("suggested-action");
     }
@@ -87,18 +104,37 @@ fn page(tag: &str, title: &str, body: &gtk::Box, buttons: &[&gtk::Button]) -> ad
     body.set_margin_bottom(24);
     body.set_margin_start(48);
     body.set_margin_end(48);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(body).build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(body)
+        .build();
     view.set_content(Some(&scroller));
-    let bar = gtk::Box::builder().spacing(12).halign(gtk::Align::End).margin_top(12).margin_bottom(12).margin_end(18).build();
+    let bar = gtk::Box::builder()
+        .spacing(12)
+        .halign(gtk::Align::End)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_end(18)
+        .build();
     for b in buttons {
         bar.append(*b);
     }
     view.add_bottom_bar(&bar);
-    adw::NavigationPage::builder().tag(tag).title(title).child(&view).build()
+    adw::NavigationPage::builder()
+        .tag(tag)
+        .title(title)
+        .child(&view)
+        .build()
 }
 
 fn heading(text: &str) -> gtk::Label {
-    gtk::Label::builder().label(text).xalign(0.0).wrap(true).css_classes(["title-2"]).build()
+    gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["title-2"])
+        .build()
 }
 
 fn same_dir(a: &Path, b: &Path) -> bool {
@@ -129,7 +165,13 @@ fn qr_texture(text: &str, scale: usize) -> Option<gdk::MemoryTexture> {
         }
     }
     let bytes = glib::Bytes::from_owned(rgba);
-    Some(gdk::MemoryTexture::new(size as i32, size as i32, gdk::MemoryFormat::R8g8b8a8, &bytes, size * 4))
+    Some(gdk::MemoryTexture::new(
+        size as i32,
+        size as i32,
+        gdk::MemoryFormat::R8g8b8a8,
+        &bytes,
+        size * 4,
+    ))
 }
 
 impl Setup {
@@ -156,9 +198,19 @@ impl Setup {
         body.append(&body_text(
             "TuneMesh plays the music in one folder and keeps it, your playlists and likes in sync between your computers and phones with Syncthing. Choose where that folder lives on this computer.",
         ));
-        let group = adw::PreferencesGroup::builder().title("Library folder").build();
-        let entry = adw::EntryRow::builder().title("Folder").text(self.app.store.root().to_string_lossy()).build();
-        let choose = gtk::Button::builder().icon_name("folder-open-symbolic").tooltip_text("Choose…").valign(gtk::Align::Center).css_classes(["flat"]).build();
+        let group = adw::PreferencesGroup::builder()
+            .title("Library folder")
+            .build();
+        let entry = adw::EntryRow::builder()
+            .title("Folder")
+            .text(self.app.store.root().to_string_lossy())
+            .build();
+        let choose = gtk::Button::builder()
+            .icon_name("folder-open-symbolic")
+            .tooltip_text("Choose…")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
         entry.add_suffix(&choose);
         group.add(&entry);
         body.append(&group);
@@ -169,9 +221,16 @@ impl Setup {
 
         let (s, e) = (self.clone(), entry.clone());
         choose.connect_clicked(move |_| {
-            let dialog = gtk::FileDialog::builder().title("Choose the library folder").modal(true).build();
+            let dialog = gtk::FileDialog::builder()
+                .title("Choose the library folder")
+                .modal(true)
+                .build();
             let current = expand_home(e.text().trim());
-            let start = if current.is_dir() { current } else { config::real_home() };
+            let start = if current.is_dir() {
+                current
+            } else {
+                config::real_home()
+            };
             dialog.set_initial_folder(Some(&gio::File::for_path(start)));
             let e = e.clone();
             dialog.select_folder(Some(&s.app.window), None::<&gio::Cancellable>, move |res| {
@@ -202,7 +261,12 @@ impl Setup {
             s.nav.push(&s.syncthing_page());
             s.probe();
         });
-        page("library", "Library", &body, &[&self.skip_button("Skip Setup"), &next])
+        page(
+            "library",
+            "Library",
+            &body,
+            &[&self.skip_button("Skip Setup"), &next],
+        )
     }
 
     // ---- step 2: Syncthing -------------------------------------------------
@@ -236,7 +300,11 @@ impl Setup {
     /// Looks for Syncthing off the main thread and shows the result.
     fn probe(self: &Rc<Self>) {
         let manual = self.endpoint.borrow().clone();
-        self.run("Looking for Syncthing…", move || syncthing::probe(manual), |s, probe| s.show_probe(probe));
+        self.run(
+            "Looking for Syncthing…",
+            move || syncthing::probe(manual),
+            |s, probe| s.show_probe(probe),
+        );
     }
 
     /// Runs `work` on a worker thread with a spinner in the Syncthing
@@ -264,7 +332,9 @@ impl Setup {
                 Ok(v) => done(&s, v),
                 Err(_) => {
                     s.clear_sync_body();
-                    s.sync_body.append(&dim_text("Something went wrong while talking to Syncthing."));
+                    s.sync_body.append(&dim_text(
+                        "Something went wrong while talking to Syncthing.",
+                    ));
                     s.sync_body.append(&s.retry_button());
                 }
             }
@@ -272,7 +342,11 @@ impl Setup {
     }
 
     fn retry_button(self: &Rc<Self>) -> gtk::Button {
-        let b = gtk::Button::builder().label("Check Again").halign(gtk::Align::Start).css_classes(["pill"]).build();
+        let b = gtk::Button::builder()
+            .label("Check Again")
+            .halign(gtk::Align::Start)
+            .css_classes(["pill"])
+            .build();
         let s = self.clone();
         b.connect_clicked(move |_| s.probe());
         b
@@ -295,12 +369,18 @@ impl Setup {
                 for (_, hint) in syncthing::install_hints() {
                     b.append(&command_row(hint));
                 }
-                b.append(&command_row("systemctl --user enable --now syncthing.service"));
+                b.append(&command_row(
+                    "systemctl --user enable --now syncthing.service",
+                ));
                 b.append(&dim_text("Syncthing for Android (for example Syncthing-Fork from F-Droid) syncs the folder to your phone."));
                 b.append(&self.retry_button());
                 b.append(&self.manual_form(false, None));
             }
-            Probe::NotRunning { installed, config, address } => {
+            Probe::NotRunning {
+                installed,
+                config,
+                address,
+            } => {
                 let group = adw::PreferencesGroup::builder()
                     .title("Syncthing is not running")
                     .description(if installed {
@@ -310,7 +390,9 @@ impl Setup {
                     })
                     .build();
                 b.append(&group);
-                b.append(&command_row("systemctl --user enable --now syncthing.service"));
+                b.append(&command_row(
+                    "systemctl --user enable --now syncthing.service",
+                ));
                 b.append(&dim_text("or open Syncthing from your application menu."));
                 if let Some(p) = config {
                     b.append(&dim_text(&format!("Configuration: {}", p.display())));
@@ -336,7 +418,12 @@ impl Setup {
     /// Syncthing's configuration, if any.
     fn manual_form(self: &Rc<Self>, expanded: bool, address: Option<String>) -> gtk::Widget {
         let group = adw::PreferencesGroup::new();
-        let current = self.endpoint.borrow().as_ref().map(|e| e.base.clone()).or(address);
+        let current = self
+            .endpoint
+            .borrow()
+            .as_ref()
+            .map(|e| e.base.clone())
+            .or(address);
         let address = adw::EntryRow::builder()
             .title("Syncthing address")
             .text(current.as_deref().unwrap_or(syncthing::DEFAULT_ADDRESS))
@@ -344,7 +431,11 @@ impl Setup {
         let key = adw::PasswordEntryRow::builder().title("API key").build();
         group.add(&address);
         group.add(&key);
-        let connect = gtk::Button::builder().label("Connect").halign(gtk::Align::Start).css_classes(["pill", "suggested-action"]).build();
+        let connect = gtk::Button::builder()
+            .label("Connect")
+            .halign(gtk::Align::Start)
+            .css_classes(["pill", "suggested-action"])
+            .build();
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 12);
         box_.append(&group);
         box_.append(&connect);
@@ -365,7 +456,10 @@ impl Setup {
         if expanded {
             return box_.upcast();
         }
-        let expander = gtk::Expander::builder().label("Syncthing runs elsewhere or uses another address").child(&box_).build();
+        let expander = gtk::Expander::builder()
+            .label("Syncthing runs elsewhere or uses another address")
+            .child(&box_)
+            .build();
         expander.upcast()
     }
 
@@ -375,13 +469,26 @@ impl Setup {
 
         let folder_group = adw::PreferencesGroup::builder()
             .title("Library folder")
-            .description(format!("Connected to Syncthing {} at {}.", o.version, client.endpoint().base))
+            .description(format!(
+                "Connected to Syncthing {} at {}.",
+                o.version,
+                client.endpoint().base
+            ))
             .build();
-        let row = adw::ActionRow::builder().title(format!("Folder ID “{}”", syncthing::FOLDER_ID)).build();
+        let row = adw::ActionRow::builder()
+            .title(format!("Folder ID “{}”", syncthing::FOLDER_ID))
+            .build();
         match &o.folder {
             None => {
-                row.set_subtitle(&format!("Not set up yet. Share {} under this ID so your other devices can join it.", root.display()));
-                let share = gtk::Button::builder().label("Share Folder").valign(gtk::Align::Center).css_classes(["suggested-action"]).build();
+                row.set_subtitle(&format!(
+                    "Not set up yet. Share {} under this ID so your other devices can join it.",
+                    root.display()
+                ));
+                let share = gtk::Button::builder()
+                    .label("Share Folder")
+                    .valign(gtk::Align::Center)
+                    .css_classes(["suggested-action"])
+                    .build();
                 let (s, ep, id) = (self.clone(), client.endpoint().clone(), o.my_id.clone());
                 share.connect_clicked(move |_| {
                     let (root, ep2, id) = (s.app.store.root(), ep.clone(), id.clone());
@@ -391,7 +498,9 @@ impl Setup {
                             let c = Client::new(ep2.clone());
                             let r = syncthing::ensure_stignore(&root)
                                 .map_err(|e| format!("Could not write .stignore: {e}"))
-                                .and_then(|()| c.create_folder(&root, &id).map_err(|e| e.to_string()));
+                                .and_then(|()| {
+                                    c.create_folder(&root, &id).map_err(|e| e.to_string())
+                                });
                             (r, syncthing::probe(Some(ep2)))
                         },
                         |s, (r, probe)| {
@@ -414,11 +523,17 @@ impl Setup {
                     f.path,
                     root.display()
                 ));
-                let use_it = gtk::Button::builder().label("Use That Folder").valign(gtk::Align::Center).build();
+                let use_it = gtk::Button::builder()
+                    .label("Use That Folder")
+                    .valign(gtk::Align::Center)
+                    .build();
                 let (s, path) = (self.clone(), PathBuf::from(&f.path));
                 use_it.connect_clicked(move |_| {
                     if !path.is_dir() {
-                        s.toast(&format!("{} does not exist on this computer yet", path.display()));
+                        s.toast(&format!(
+                            "{} does not exist on this computer yet",
+                            path.display()
+                        ));
                         return;
                     }
                     s.app.set_library_path(path.clone());
@@ -446,7 +561,11 @@ impl Setup {
             .hexpand(true)
             .css_classes(["monospace"])
             .build();
-        let copy = gtk::Button::builder().icon_name("edit-copy-symbolic").tooltip_text("Copy device ID").valign(gtk::Align::Center).build();
+        let copy = gtk::Button::builder()
+            .icon_name("edit-copy-symbolic")
+            .tooltip_text("Copy device ID")
+            .valign(gtk::Align::Center)
+            .build();
         let (s, id) = (self.clone(), o.my_id.clone());
         copy.connect_clicked(move |btn| {
             btn.clipboard().set_text(&id);
@@ -458,7 +577,12 @@ impl Setup {
         me_box.append(&me);
         me_box.append(&id_row);
         if let Some(tex) = qr_texture(&o.my_id, 4) {
-            let pic = gtk::Picture::builder().paintable(&tex).can_shrink(false).halign(gtk::Align::Center).css_classes(["tm-qr"]).build();
+            let pic = gtk::Picture::builder()
+                .paintable(&tex)
+                .can_shrink(false)
+                .halign(gtk::Align::Center)
+                .css_classes(["tm-qr"])
+                .build();
             pic.set_tooltip_text(Some("This device's Syncthing ID"));
             me_box.append(&pic);
         }
@@ -470,8 +594,16 @@ impl Setup {
             .description("Add another device by its Syncthing device ID (Actions → Show ID in its Syncthing) to share the library with it.")
             .build();
         for d in &o.shared_with {
-            let title = if d.name.is_empty() { "Unnamed device".to_owned() } else { d.name.clone() };
-            let r = adw::ActionRow::builder().title(title).subtitle(&d.device_id).subtitle_selectable(true).build();
+            let title = if d.name.is_empty() {
+                "Unnamed device".to_owned()
+            } else {
+                d.name.clone()
+            };
+            let r = adw::ActionRow::builder()
+                .title(title)
+                .subtitle(&d.device_id)
+                .subtitle_selectable(true)
+                .build();
             r.add_prefix(&gtk::Image::from_icon_name("emblem-shared-symbolic"));
             others.add(&r);
         }
@@ -479,7 +611,11 @@ impl Setup {
         let new_name = adw::EntryRow::builder().title("Name (optional)").build();
         others.add(&new_id);
         others.add(&new_name);
-        let add = gtk::Button::builder().label("Share With This Device").halign(gtk::Align::Start).css_classes(["pill"]).build();
+        let add = gtk::Button::builder()
+            .label("Share With This Device")
+            .halign(gtk::Align::Start)
+            .css_classes(["pill"])
+            .build();
         add.set_sensitive(o.folder.is_some());
         if o.folder.is_none() {
             add.set_tooltip_text(Some("Share the folder first"));
@@ -495,7 +631,9 @@ impl Setup {
             s.run(
                 "Sharing the folder…",
                 move || {
-                    let r = Client::new(ep.clone()).share_with(&id, &name).map_err(|e| e.to_string());
+                    let r = Client::new(ep.clone())
+                        .share_with(&id, &name)
+                        .map_err(|e| e.to_string());
                     (r, syncthing::probe(Some(ep)))
                 },
                 |s, (r, probe)| {

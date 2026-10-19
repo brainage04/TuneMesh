@@ -29,7 +29,9 @@ impl Source {
         match &t.cover {
             CoverSource::Embedded => Source::Embedded(t.path.clone()),
             CoverSource::File(f) => Source::File(f.clone()),
-            CoverSource::None => Source::Placeholder(format!("{}\u{1f}{}", t.listed_artist(), t.album)),
+            CoverSource::None => {
+                Source::Placeholder(format!("{}\u{1f}{}", t.listed_artist(), t.album))
+            }
         }
     }
 
@@ -44,7 +46,11 @@ impl Source {
             .unwrap_or_else(|| Source::Placeholder(a.key()))
     }
 
-    pub fn for_paths<'a>(lib: &Library, paths: impl IntoIterator<Item = &'a str>, seed: &str) -> Self {
+    pub fn for_paths<'a>(
+        lib: &Library,
+        paths: impl IntoIterator<Item = &'a str>,
+        seed: &str,
+    ) -> Self {
         paths
             .into_iter()
             .filter_map(|p| lib.track(p))
@@ -108,13 +114,21 @@ fn placeholder(seed: &str, size: u32) -> Vec<u8> {
     for y in 0..size {
         for x in 0..size {
             let t = (x as f32 + y as f32) / (2.0 * n);
-            let mut c = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+            let mut c = [
+                a[0] + (b[0] - a[0]) * t,
+                a[1] + (b[1] - a[1]) * t,
+                a[2] + (b[2] - a[2]) * t,
+            ];
             let (dx, dy) = (x as f32 - n / 2.0, y as f32 - n / 2.0);
             let r = (dx * dx + dy * dy).sqrt() / n;
             if r < 0.06 {
                 c = [0.85, 0.85, 0.85];
             } else if r < 0.30 {
-                let groove = if ((r * 120.0) as i32) % 2 == 0 { 0.10 } else { 0.07 };
+                let groove = if ((r * 120.0) as i32) % 2 == 0 {
+                    0.10
+                } else {
+                    0.07
+                };
                 c = [groove, groove, groove];
             }
             out.extend(c.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0) as u8));
@@ -139,7 +153,10 @@ fn decode(job: &Job) -> Vec<u8> {
     let (w, h) = (img.width(), img.height());
     let side = w.min(h);
     let square = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
-    square.thumbnail_exact(job.size, job.size).into_rgb8().into_raw()
+    square
+        .thumbnail_exact(job.size, job.size)
+        .into_rgb8()
+        .into_raw()
 }
 
 impl Covers {
@@ -154,7 +171,14 @@ impl Covers {
                 .spawn(move || {
                     while let Ok(job) = rx.recv_blocking() {
                         let pixels = decode(&job);
-                        if tx.send_blocking(Done { source: job.source, size: job.size, pixels }).is_err() {
+                        if tx
+                            .send_blocking(Done {
+                                source: job.source,
+                                size: job.size,
+                                pixels,
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -187,8 +211,15 @@ impl Covers {
 
     /// Drops cached thumbnails of files that changed on disk.
     pub fn invalidate(&self) {
-        self.cache.borrow_mut().retain(|(s, _), _| matches!(s, Source::Placeholder(_)));
-        let bytes = self.cache.borrow().keys().map(|(_, size)| (*size as usize).pow(2) * 3).sum();
+        self.cache
+            .borrow_mut()
+            .retain(|(s, _), _| matches!(s, Source::Placeholder(_)));
+        let bytes = self
+            .cache
+            .borrow()
+            .keys()
+            .map(|(_, size)| (*size as usize).pow(2) * 3)
+            .sum();
         self.cache_bytes.set(bytes);
     }
 
@@ -220,10 +251,14 @@ impl Covers {
             self.cache_bytes.set(self.cache_bytes.get() + bytes);
         }
         while self.cache_bytes.get() > CACHE_BYTES && cache.len() > 1 {
-            let oldest = cache.iter().min_by_key(|(_, (_, t))| *t).map(|(k, _)| k.clone());
+            let oldest = cache
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| k.clone());
             let Some(k) = oldest else { break };
             cache.remove(&k);
-            self.cache_bytes.set(self.cache_bytes.get() - (k.1 as usize).pow(2) * 3);
+            self.cache_bytes
+                .set(self.cache_bytes.get() - (k.1 as usize).pow(2) * 3);
         }
     }
 
@@ -242,7 +277,11 @@ impl Covers {
         let first = !pending.contains_key(&key);
         pending.entry(key.clone()).or_default().push(Box::new(cb));
         if first {
-            let _ = self.jobs.send_blocking(Job { source: key.0, size, root: self.root.borrow().clone() });
+            let _ = self.jobs.send_blocking(Job {
+                source: key.0,
+                size,
+                root: self.root.borrow().clone(),
+            });
         }
     }
 
@@ -257,7 +296,10 @@ impl Covers {
         self.load(source, scaled, move |tex| {
             if let Some(p) = weak.upgrade() {
                 // SAFETY: see above.
-                let current = unsafe { p.data::<String>("tm-cover-source").map(|d| d.as_ref().clone()) };
+                let current = unsafe {
+                    p.data::<String>("tm-cover-source")
+                        .map(|d| d.as_ref().clone())
+                };
                 if current.as_deref() == Some(tag.as_str()) {
                     p.set_paintable(Some(tex));
                 }
@@ -272,7 +314,10 @@ pub fn art_file(root: &std::path::Path, track: &Track) -> Option<PathBuf> {
         CoverSource::File(rel) => Some(root.join(rel)),
         CoverSource::Embedded => {
             let dir = crate::config::cache_dir().join("art");
-            let file = dir.join(format!("{:016x}.img", hash_of(&format!("{}:{}", track.path, track.mtime))));
+            let file = dir.join(format!(
+                "{:016x}.img",
+                hash_of(&format!("{}:{}", track.path, track.mtime))
+            ));
             if !file.exists() {
                 let bytes = tunemesh_core::library::read_embedded_cover(&root.join(&track.path))?;
                 // Only the current track's art is needed; drop older files.

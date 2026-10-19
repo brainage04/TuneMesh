@@ -40,7 +40,10 @@ fn status_error(url: &str, resp: &Body) -> String {
 
 impl Http {
     pub fn new(proxy_url: &str) -> Result<Self, String> {
-        Ok(Self { agent: agent(proxy_url, 5)?, no_redirect: agent(proxy_url, 0)? })
+        Ok(Self {
+            agent: agent(proxy_url, 5)?,
+            no_redirect: agent(proxy_url, 0)?,
+        })
     }
 
     /// GET with extra headers; fails on non-2xx.
@@ -68,14 +71,24 @@ impl Http {
 
     /// GET returning the body as text whatever the status (APIs that
     /// explain errors in the body).
-    pub fn text_any_status(&self, url: &str, headers: &[(&str, &str)], limit: u64) -> Result<String, String> {
+    pub fn text_any_status(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        limit: u64,
+    ) -> Result<String, String> {
         let mut req = self.agent.get(url);
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
         let resp = req.call().map_err(|e| format!("{url}: {e}"))?;
         let status = resp.status().as_u16();
-        let text = resp.into_body().with_config().limit(limit).read_to_string().map_err(|e| format!("{url}: {e}"))?;
+        let text = resp
+            .into_body()
+            .with_config()
+            .limit(limit)
+            .read_to_string()
+            .map_err(|e| format!("{url}: {e}"))?;
         if status == 429 {
             return Err(format!("{url}: rate limited (HTTP 429); try again later").to_owned());
         }
@@ -84,7 +97,11 @@ impl Http {
 
     /// The `Location` of a redirect response, without following it.
     pub fn redirect_location(&self, url: &str) -> Result<String, String> {
-        let resp = self.no_redirect.get(url).call().map_err(|e| format!("{url}: {e}"))?;
+        let resp = self
+            .no_redirect
+            .get(url)
+            .call()
+            .map_err(|e| format!("{url}: {e}"))?;
         if !resp.status().is_redirection() {
             return Err(status_error(url, &resp));
         }
@@ -121,9 +138,13 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let proxy = Proxy::start().unwrap();
         let http = Http::new(&proxy.url()).unwrap();
-        let err = http.text(&format!("http://127.0.0.1:{port}/"), &[], 1000).unwrap_err();
+        let err = http
+            .text(&format!("http://127.0.0.1:{port}/"), &[], 1000)
+            .unwrap_err();
         assert!(err.contains("403"), "{err}");
-        let err = http.text(&format!("https://127.0.0.1:{port}/"), &[], 1000).unwrap_err();
+        let err = http
+            .text(&format!("https://127.0.0.1:{port}/"), &[], 1000)
+            .unwrap_err();
         assert!(!err.is_empty());
         assert_eq!(proxy.take_refusals().len(), 2);
     }

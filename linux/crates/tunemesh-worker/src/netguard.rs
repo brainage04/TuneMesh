@@ -38,7 +38,12 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
     let s = ip.segments();
     // 64:ff9b::/96 (NAT64) reaches the embedded IPv4 address.
     if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        return is_public_v4(Ipv4Addr::new((s[6] >> 8) as u8, s[6] as u8, (s[7] >> 8) as u8, s[7] as u8));
+        return is_public_v4(Ipv4Addr::new(
+            (s[6] >> 8) as u8,
+            s[6] as u8,
+            (s[7] >> 8) as u8,
+            s[7] as u8,
+        ));
     }
     !(ip.is_loopback()
         || ip.is_unspecified()
@@ -73,7 +78,9 @@ pub fn own_addresses() -> Vec<IpAddr> {
                 match i32::from((*addr).sa_family) {
                     libc::AF_INET => {
                         let sin = &*(addr as *const libc::sockaddr_in);
-                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr))));
+                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                            sin.sin_addr.s_addr,
+                        ))));
                     }
                     libc::AF_INET6 => {
                         let sin6 = &*(addr as *const libc::sockaddr_in6);
@@ -121,7 +128,10 @@ pub fn resolve_checked_with(
     resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>,
 ) -> Result<Vec<SocketAddr>, String> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    let literal = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(&host);
+    let literal = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(&host);
     let addresses = match literal.parse::<IpAddr>() {
         Ok(ip) => vec![ip],
         Err(_) => {
@@ -139,7 +149,10 @@ pub fn resolve_checked_with(
             return Err(format!("Refusing {host}: {why} ({ip})"));
         }
     }
-    Ok(addresses.into_iter().map(|ip| SocketAddr::new(ip, port)).collect())
+    Ok(addresses
+        .into_iter()
+        .map(|ip| SocketAddr::new(ip, port))
+        .collect())
 }
 
 /// The host and port of an `http(s)://` URL; IPv6 literals lose their brackets.
@@ -198,7 +211,14 @@ mod tests {
 
     #[test]
     fn classifies_addresses() {
-        for public in ["1.1.1.1", "142.250.70.78", "100.63.255.255", "100.128.0.1", "2a00:1450:4006::200e", "64:ff9b::808:808"] {
+        for public in [
+            "1.1.1.1",
+            "142.250.70.78",
+            "100.63.255.255",
+            "100.128.0.1",
+            "2a00:1450:4006::200e",
+            "64:ff9b::808:808",
+        ] {
             assert!(is_public(ip(public)), "{public}");
         }
         for private in [
@@ -228,8 +248,14 @@ mod tests {
 
     #[test]
     fn parses_hosts() {
-        assert_eq!(host_port("https://www.youtube.com/watch?v=x"), Some(("www.youtube.com".into(), 443)));
-        assert_eq!(host_port("HTTP://user:pw@Example.COM.:8080/a"), Some(("example.com".into(), 8080)));
+        assert_eq!(
+            host_port("https://www.youtube.com/watch?v=x"),
+            Some(("www.youtube.com".into(), 443))
+        );
+        assert_eq!(
+            host_port("HTTP://user:pw@Example.COM.:8080/a"),
+            Some(("example.com".into(), 8080))
+        );
         assert_eq!(host_port("http://[::1]:8384/"), Some(("::1".into(), 8384)));
         assert_eq!(host_port("http://[fe80::1]"), Some(("fe80::1".into(), 80)));
         assert_eq!(host_port("ftp://example.com/x"), None);

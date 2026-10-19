@@ -43,7 +43,9 @@ impl WorkerInfo {
     }
 
     pub fn is_fresh_at(&self, now: SystemTime) -> bool {
-        let Ok(at) = humantime::parse_rfc3339_weak(&self.heartbeat_at) else { return false };
+        let Ok(at) = humantime::parse_rfc3339_weak(&self.heartbeat_at) else {
+            return false;
+        };
         match now.duration_since(at) {
             Ok(age) => age < FRESH_FOR,
             Err(ahead) => ahead.duration() < FRESH_FOR,
@@ -57,7 +59,10 @@ fn open_dir(root: &Path, create: bool) -> io::Result<Dir> {
 
 /// The current `worker.json`, if present and valid.
 pub fn read(root: &Path) -> Option<WorkerInfo> {
-    let bytes = open_dir(root, false).ok()?.read(FILE_NAME, 64 * 1024).ok()?;
+    let bytes = open_dir(root, false)
+        .ok()?
+        .read(FILE_NAME, 64 * 1024)
+        .ok()?;
     serde_json::from_slice(&bytes).ok()
 }
 
@@ -107,8 +112,10 @@ mod tests {
         let i = info(&crate::now_rfc3339());
         write(dir.path(), &i).unwrap();
         assert_eq!(active(dir.path()), Some(i));
-        let v: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(dir.path().join(".tunemesh/worker.json")).unwrap()).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(dir.path().join(".tunemesh/worker.json")).unwrap(),
+        )
+        .unwrap();
         assert!(v.get("heartbeatAt").is_some() && v.get("workerVersion").is_some());
         remove(dir.path()).unwrap();
         assert!(read(dir.path()).is_none());

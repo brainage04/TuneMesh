@@ -20,7 +20,9 @@ pub struct Query {
 
 impl Query {
     pub fn new(text: &str) -> Self {
-        Self { words: fold(text).split_whitespace().map(str::to_owned).collect() }
+        Self {
+            words: fold(text).split_whitespace().map(str::to_owned).collect(),
+        }
     }
 
     pub fn is_empty(&self) -> bool {

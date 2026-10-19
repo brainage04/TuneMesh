@@ -24,7 +24,12 @@ pub struct PlaylistEntry {
 
 impl PlaylistEntry {
     pub fn for_track(track: &str) -> Self {
-        Self { track: Some(track.to_owned()), raw: format!("../{track}"), duration: None, label: None }
+        Self {
+            track: Some(track.to_owned()),
+            raw: format!("../{track}"),
+            duration: None,
+            label: None,
+        }
     }
 }
 
@@ -46,7 +51,7 @@ fn resolve(line: &str, root: &Path) -> Option<String> {
     let mut parts: Vec<&str> = Vec::new();
     let rest = if line.starts_with('/') {
         let root_str = root.to_str()?.trim_end_matches('/');
-        
+
         line.strip_prefix(root_str)?.strip_prefix('/')?
     } else {
         parts.push(PLAYLISTS_DIR);
@@ -76,7 +81,12 @@ pub fn parse(text: &str, root: &Path) -> Vec<PlaylistEntry> {
         }
         if let Some(info) = line.strip_prefix("#EXTINF:") {
             let (dur, label) = info.split_once(',').unwrap_or((info, ""));
-            let dur = dur.trim().parse::<i64>().ok().filter(|d| *d >= 0).map(|d| d as u64);
+            let dur = dur
+                .trim()
+                .parse::<i64>()
+                .ok()
+                .filter(|d| *d >= 0)
+                .map(|d| d as u64);
             let label = Some(label.trim().to_owned()).filter(|l| !l.is_empty());
             pending = Some((dur, label));
             continue;
@@ -85,7 +95,12 @@ pub fn parse(text: &str, root: &Path) -> Vec<PlaylistEntry> {
             continue;
         }
         let (duration, label) = pending.take().unwrap_or((None, None));
-        entries.push(PlaylistEntry { track: resolve(line, root), raw: line.to_owned(), duration, label });
+        entries.push(PlaylistEntry {
+            track: resolve(line, root),
+            raw: line.to_owned(),
+            duration,
+            label,
+        });
     }
     entries
 }
@@ -96,10 +111,13 @@ pub fn serialize(entries: &[PlaylistEntry], info: &dyn Fn(&str) -> Option<TrackI
     for e in entries {
         let known = e.track.as_deref().and_then(info);
         let duration = known.as_ref().and_then(|k| k.duration_secs).or(e.duration);
-        let label = known.map(|k| k.label).or_else(|| e.label.clone()).unwrap_or_else(|| {
-            let path = e.track.as_deref().unwrap_or(&e.raw);
-            title_from_file_name(path.rsplit('/').next().unwrap_or(path))
-        });
+        let label = known
+            .map(|k| k.label)
+            .or_else(|| e.label.clone())
+            .unwrap_or_else(|| {
+                let path = e.track.as_deref().unwrap_or(&e.raw);
+                title_from_file_name(path.rsplit('/').next().unwrap_or(path))
+            });
         let label = label.replace(['\n', '\r'], " ");
         match duration {
             Some(d) => out.push_str(&format!("#EXTINF:{d},{label}\n")),
@@ -153,7 +171,9 @@ fn playlist_stem(name: &str) -> Option<&str> {
 
 /// Stems of the regular playlist files (symlinks and directories skipped).
 fn stems(root: &Path) -> Vec<String> {
-    let Ok(entries) = open_dir(root, false).and_then(|d| d.entries()) else { return Vec::new() };
+    let Ok(entries) = open_dir(root, false).and_then(|d| d.entries()) else {
+        return Vec::new();
+    };
     entries
         .into_iter()
         .filter(|(_, kind)| *kind == Kind::File)
@@ -163,7 +183,10 @@ fn stems(root: &Path) -> Vec<String> {
 
 /// Names of all playlists, sorted case-insensitively, Liked Songs excluded.
 pub fn list_names(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = stems(root).into_iter().filter(|stem| stem != LIKED_SONGS).collect();
+    let mut names: Vec<String> = stems(root)
+        .into_iter()
+        .filter(|stem| stem != LIKED_SONGS)
+        .collect();
     names.sort_by_cached_key(|n| crate::search::fold(n));
     names
 }
@@ -176,7 +199,9 @@ pub fn existing_name(root: &Path, name: &str) -> Option<String> {
     if folded == LIKED_SONGS.to_lowercase() {
         return Some(LIKED_SONGS.to_owned());
     }
-    stems(root).into_iter().find(|stem| stem.to_lowercase() == folded)
+    stems(root)
+        .into_iter()
+        .find(|stem| stem.to_lowercase() == folded)
 }
 
 impl Playlist {
@@ -184,21 +209,29 @@ impl Playlist {
     /// playlist that is a symlink (or below a symlinked `Playlists`) is
     /// refused, so a synced link cannot leak the file it points to.
     pub fn read(root: &Path, name: &str) -> io::Result<Self> {
-        let bytes = open_dir(root, false).and_then(|d| d.read(&file_name(name), MAX_PLAYLIST_BYTES));
+        let bytes =
+            open_dir(root, false).and_then(|d| d.read(&file_name(name), MAX_PLAYLIST_BYTES));
         match bytes {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
-                Ok(Self { name: name.to_owned(), entries: parse(&text, root) })
+                Ok(Self {
+                    name: name.to_owned(),
+                    entries: parse(&text, root),
+                })
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound && name == LIKED_SONGS => {
-                Ok(Self { name: name.to_owned(), entries: Vec::new() })
-            }
+            Err(e) if e.kind() == io::ErrorKind::NotFound && name == LIKED_SONGS => Ok(Self {
+                name: name.to_owned(),
+                entries: Vec::new(),
+            }),
             Err(e) => Err(e),
         }
     }
 
     pub fn write(&self, root: &Path, info: &dyn Fn(&str) -> Option<TrackInfo>) -> io::Result<()> {
-        open_dir(root, true)?.write_atomic(&file_name(&self.name), serialize(&self.entries, info).as_bytes())
+        open_dir(root, true)?.write_atomic(
+            &file_name(&self.name),
+            serialize(&self.entries, info).as_bytes(),
+        )
     }
 
     /// Creates an empty playlist with the sanitised `name`; fails if a
@@ -206,9 +239,15 @@ impl Playlist {
     pub fn create(root: &Path, name: &str) -> io::Result<Self> {
         let name = sanitize_name(name);
         if let Some(existing) = existing_name(root, &name) {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{existing}” already exists")));
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("“{existing}” already exists"),
+            ));
         }
-        let p = Self { name, entries: Vec::new() };
+        let p = Self {
+            name,
+            entries: Vec::new(),
+        };
         p.write(root, &|_| None)?;
         Ok(p)
     }
@@ -217,14 +256,20 @@ impl Playlist {
     /// the letter case of a name is allowed.
     pub fn rename(root: &Path, old: &str, new: &str) -> io::Result<String> {
         if old == LIKED_SONGS {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Liked Songs cannot be renamed"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Liked Songs cannot be renamed",
+            ));
         }
         let new = sanitize_name(new);
         if new == old {
             return Ok(new);
         }
         if let Some(existing) = existing_name(root, &new).filter(|e| e != old) {
-            return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{existing}” already exists")));
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("“{existing}” already exists"),
+            ));
         }
         open_dir(root, false)?.rename(&file_name(old), &file_name(&new))?;
         Ok(new)
@@ -232,13 +277,18 @@ impl Playlist {
 
     pub fn delete(root: &Path, name: &str) -> io::Result<()> {
         if name == LIKED_SONGS {
-            return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Liked Songs cannot be deleted"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Liked Songs cannot be deleted",
+            ));
         }
         open_dir(root, false)?.remove_file(&file_name(name))
     }
 
     pub fn contains(&self, track: &str) -> bool {
-        self.entries.iter().any(|e| e.track.as_deref() == Some(track))
+        self.entries
+            .iter()
+            .any(|e| e.track.as_deref() == Some(track))
     }
 
     /// Liked Songs: liking inserts at the top (no-op when already liked).
@@ -254,7 +304,8 @@ impl Playlist {
     }
 
     pub fn append<'a>(&mut self, tracks: impl IntoIterator<Item = &'a str>) {
-        self.entries.extend(tracks.into_iter().map(PlaylistEntry::for_track));
+        self.entries
+            .extend(tracks.into_iter().map(PlaylistEntry::for_track));
     }
 
     /// Removes the entries at `positions` (any order, duplicates ignored).
@@ -306,16 +357,25 @@ mod tests {
         symlink(outside.path(), playlists_dir(root)).unwrap();
         assert!(Playlist::read(root, "y").is_err());
         assert!(list_names(root).is_empty());
-        let p = Playlist { name: "z".into(), entries: vec![] };
+        let p = Playlist {
+            name: "z".into(),
+            entries: vec![],
+        };
         assert!(p.write(root, &|_| None).is_err());
         assert!(!outside.path().join("z.m3u8").exists());
         assert!(Playlist::delete(root, "y").is_err());
         assert!(outside.path().join("y.m3u8").exists());
-        assert_eq!(fs::read_to_string(&secret).unwrap(), "-----BEGIN KEY-----\nAAAA\n");
+        assert_eq!(
+            fs::read_to_string(&secret).unwrap(),
+            "-----BEGIN KEY-----\nAAAA\n"
+        );
     }
 
     fn info(path: &str) -> Option<TrackInfo> {
-        (path != "Gone/Missing.mp3").then(|| TrackInfo { duration_secs: Some(213), label: format!("A - {path}") })
+        (path != "Gone/Missing.mp3").then(|| TrackInfo {
+            duration_secs: Some(213),
+            label: format!("A - {path}"),
+        })
     }
 
     #[test]
@@ -351,20 +411,41 @@ mod tests {
         // Reading what we wrote gives the same entries (missing ones kept).
         let again = parse(&out, root);
         assert_eq!(again.len(), 5);
-        assert_eq!(again.iter().map(|e| e.track.clone()).collect::<Vec<_>>(), tracks.iter().map(|t| t.map(str::to_owned)).collect::<Vec<_>>());
+        assert_eq!(
+            again.iter().map(|e| e.track.clone()).collect::<Vec<_>>(),
+            tracks
+                .iter()
+                .map(|t| t.map(str::to_owned))
+                .collect::<Vec<_>>()
+        );
         assert_eq!(serialize(&again, &info), out);
     }
 
     #[test]
     fn liked_songs_insert_at_top_and_unlike_removes_all() {
-        let mut p = Playlist { name: LIKED_SONGS.into(), entries: vec![] };
+        let mut p = Playlist {
+            name: LIKED_SONGS.into(),
+            entries: vec![],
+        };
         p.like("a.mp3");
         p.like("b.mp3");
         p.like("a.mp3");
-        assert_eq!(p.entries.iter().map(|e| e.track.as_deref().unwrap()).collect::<Vec<_>>(), vec!["b.mp3", "a.mp3"]);
+        assert_eq!(
+            p.entries
+                .iter()
+                .map(|e| e.track.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["b.mp3", "a.mp3"]
+        );
         p.append(["c.mp3", "b.mp3"]);
         p.unlike("b.mp3");
-        assert_eq!(p.entries.iter().map(|e| e.track.as_deref().unwrap()).collect::<Vec<_>>(), vec!["a.mp3", "c.mp3"]);
+        assert_eq!(
+            p.entries
+                .iter()
+                .map(|e| e.track.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["a.mp3", "c.mp3"]
+        );
     }
 
     #[test]
@@ -378,16 +459,31 @@ mod tests {
         p.append(["Ä/B/c.opus", "Ä/B/c.opus"]);
         p.write(root, &|_| None).unwrap();
         let bytes = fs::read(playlist_path(root, "Road_ Trip_")).unwrap();
-        assert_eq!(String::from_utf8(bytes).unwrap(), "#EXTM3U\n#EXTINF:-1,c\n../Ä/B/c.opus\n#EXTINF:-1,c\n../Ä/B/c.opus\n");
-        fs::write(playlists_dir(root).join("Road_ Trip_.sync-conflict-20260101-000000-X.m3u8"), "").unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            "#EXTM3U\n#EXTINF:-1,c\n../Ä/B/c.opus\n#EXTINF:-1,c\n../Ä/B/c.opus\n"
+        );
+        fs::write(
+            playlists_dir(root).join("Road_ Trip_.sync-conflict-20260101-000000-X.m3u8"),
+            "",
+        )
+        .unwrap();
         fs::write(playlist_path(root, LIKED_SONGS), "#EXTM3U\n").unwrap();
         assert_eq!(list_names(root), vec!["Road_ Trip_"]);
-        assert_eq!(Playlist::rename(root, "Road_ Trip_", "Drive").unwrap(), "Drive");
+        assert_eq!(
+            Playlist::rename(root, "Road_ Trip_", "Drive").unwrap(),
+            "Drive"
+        );
         assert!(Playlist::rename(root, LIKED_SONGS, "x").is_err());
         assert!(Playlist::delete(root, LIKED_SONGS).is_err());
         Playlist::delete(root, "Drive").unwrap();
         assert!(list_names(root).is_empty());
-        assert!(Playlist::read(root, LIKED_SONGS).unwrap().entries.is_empty());
+        assert!(
+            Playlist::read(root, LIKED_SONGS)
+                .unwrap()
+                .entries
+                .is_empty()
+        );
     }
 
     #[test]
@@ -395,27 +491,61 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
         Playlist::create(root, "Road Trip").unwrap();
-        assert_eq!(existing_name(root, "road TRIP").as_deref(), Some("Road Trip"));
+        assert_eq!(
+            existing_name(root, "road TRIP").as_deref(),
+            Some("Road Trip")
+        );
         assert_eq!(existing_name(root, "Drive"), None);
         // Liked Songs is reserved even before its file exists.
-        assert_eq!(existing_name(root, "liked songs").as_deref(), Some(LIKED_SONGS));
-        assert_eq!(Playlist::create(root, "road trip").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(Playlist::create(root, "LIKED SONGS").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            existing_name(root, "liked songs").as_deref(),
+            Some(LIKED_SONGS)
+        );
+        assert_eq!(
+            Playlist::create(root, "road trip").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            Playlist::create(root, "LIKED SONGS").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
 
         Playlist::create(root, "Drive").unwrap();
-        assert_eq!(Playlist::rename(root, "Drive", "ROAD trip").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
-        assert_eq!(Playlist::rename(root, "Drive", "liked songs").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            Playlist::rename(root, "Drive", "ROAD trip")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
+        assert_eq!(
+            Playlist::rename(root, "Drive", "liked songs")
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::AlreadyExists
+        );
         // Changing only the case of its own name is a rename, not a clash.
-        assert_eq!(Playlist::rename(root, "Road Trip", "road trip").unwrap(), "road trip");
+        assert_eq!(
+            Playlist::rename(root, "Road Trip", "road trip").unwrap(),
+            "road trip"
+        );
         assert_eq!(list_names(root), vec!["Drive", "road trip"]);
     }
 
     #[test]
     fn remove_and_move_by_position() {
-        let mut p = Playlist { name: "x".into(), entries: vec![] };
+        let mut p = Playlist {
+            name: "x".into(),
+            entries: vec![],
+        };
         p.append(["a", "b", "a", "c"]);
         p.remove_positions(&[2]);
         p.move_entry(2, 0);
-        assert_eq!(p.entries.iter().map(|e| e.track.as_deref().unwrap()).collect::<Vec<_>>(), vec!["c", "a", "b"]);
+        assert_eq!(
+            p.entries
+                .iter()
+                .map(|e| e.track.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["c", "a", "b"]
+        );
     }
 }

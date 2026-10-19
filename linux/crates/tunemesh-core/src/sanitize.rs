@@ -8,7 +8,9 @@ fn is_forbidden(c: char) -> bool {
 }
 
 fn replace_chars(s: &str) -> String {
-    s.chars().map(|c| if is_forbidden(c) { '_' } else { c }).collect()
+    s.chars()
+        .map(|c| if is_forbidden(c) { '_' } else { c })
+        .collect()
 }
 
 /// Cuts `s` to at most `max` bytes on a character boundary.
@@ -56,7 +58,10 @@ pub fn file_name(stem: &str, suffix: &str) -> String {
     if stem.is_empty() {
         stem.push('_');
     }
-    truncate_bytes(&mut stem, MAX_COMPONENT_BYTES.saturating_sub(suffix.len()).max(1));
+    truncate_bytes(
+        &mut stem,
+        MAX_COMPONENT_BYTES.saturating_sub(suffix.len()).max(1),
+    );
     let mut name = stem + &suffix;
     truncate_bytes(&mut name, MAX_COMPONENT_BYTES);
     fix_ends(&mut name);
@@ -69,7 +74,10 @@ mod tests {
 
     #[test]
     fn replaces_forbidden_and_control_characters() {
-        assert_eq!(component(r#"AC/DC: "Live" <1991>?|*\"#), "AC_DC_ _Live_ _1991_____");
+        assert_eq!(
+            component(r#"AC/DC: "Live" <1991>?|*\"#),
+            "AC_DC_ _Live_ _1991_____"
+        );
         assert_eq!(component("tab\there\u{7}"), "tab_here_");
     }
 

@@ -13,8 +13,8 @@ use gtk::glib;
 use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use serde::{Deserialize, Serialize};
-use tunemesh_core::playlist::{self, LIKED_SONGS, TrackInfo};
 use tunemesh_core::fsx::Dir;
+use tunemesh_core::playlist::{self, LIKED_SONGS, TrackInfo};
 use tunemesh_core::{Library, PLAYLISTS_DIR, Playlist, TUNEMESH_DIR, Track, library};
 
 use crate::config;
@@ -64,7 +64,10 @@ impl Store {
             root: RefCell::new(root),
             lib: RefCell::new(Rc::new(Library::default())),
             playlists: RefCell::new(Vec::new()),
-            liked: RefCell::new(Playlist { name: LIKED_SONGS.into(), entries: Vec::new() }),
+            liked: RefCell::new(Playlist {
+                name: LIKED_SONGS.into(),
+                entries: Vec::new(),
+            }),
             liked_set: RefCell::new(HashSet::new()),
             listeners: RefCell::new(Vec::new()),
             watcher: RefCell::new(None),
@@ -137,8 +140,13 @@ impl Store {
         self.scanning.set(true);
         self.emit(StoreChange::Scanning);
         let root = self.root();
-        let previous: HashMap<String, Track> =
-            self.lib.borrow().tracks.iter().map(|t| (t.path.clone(), t.clone())).collect();
+        let previous: HashMap<String, Track> = self
+            .lib
+            .borrow()
+            .tracks
+            .iter()
+            .map(|t| (t.path.clone(), t.clone()))
+            .collect();
         let generation = self.generation.get();
         let (tx, rx) = async_channel::bounded::<Vec<Track>>(1);
         std::thread::Builder::new()
@@ -177,11 +185,14 @@ impl Store {
             return;
         }
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
-        let debouncer = new_debouncer(Duration::from_millis(700), move |res: DebounceEventResult| {
-            if let Ok(events) = res {
-                let _ = tx.send_blocking(events.into_iter().map(|e| e.path).collect());
-            }
-        });
+        let debouncer = new_debouncer(
+            Duration::from_millis(700),
+            move |res: DebounceEventResult| {
+                if let Ok(events) = res {
+                    let _ = tx.send_blocking(events.into_iter().map(|e| e.path).collect());
+                }
+            },
+        );
         let mut debouncer = match debouncer {
             Ok(d) => d,
             Err(e) => {
@@ -210,13 +221,16 @@ impl Store {
     fn on_fs_events(&self, root: &Path, paths: &[PathBuf]) {
         let (mut tracks, mut playlists, mut downloads) = (false, false, false);
         for p in paths {
-            let Ok(rel) = p.strip_prefix(root) else { continue };
+            let Ok(rel) = p.strip_prefix(root) else {
+                continue;
+            };
             let mut comps = rel.iter().filter_map(|c| c.to_str());
             match comps.next() {
                 Some(PLAYLISTS_DIR) => playlists = true,
                 Some(TUNEMESH_DIR) => downloads = true,
                 Some(first) => {
-                    let hidden = first.starts_with('.') || rel.iter().any(|c| c.to_string_lossy().starts_with('.'));
+                    let hidden = first.starts_with('.')
+                        || rel.iter().any(|c| c.to_string_lossy().starts_with('.'));
                     if !hidden {
                         tracks = true;
                     }
@@ -243,8 +257,10 @@ impl Store {
             .into_iter()
             .filter_map(|name| Playlist::read(&root, &name).ok())
             .collect();
-        let liked = Playlist::read(&root, LIKED_SONGS)
-            .unwrap_or(Playlist { name: LIKED_SONGS.into(), entries: Vec::new() });
+        let liked = Playlist::read(&root, LIKED_SONGS).unwrap_or(Playlist {
+            name: LIKED_SONGS.into(),
+            entries: Vec::new(),
+        });
         (lists, liked)
     }
 
@@ -255,7 +271,11 @@ impl Store {
     }
 
     fn set_liked(&self, liked: Playlist) {
-        *self.liked_set.borrow_mut() = liked.entries.iter().filter_map(|e| e.track.clone()).collect();
+        *self.liked_set.borrow_mut() = liked
+            .entries
+            .iter()
+            .filter_map(|e| e.track.clone())
+            .collect();
         *self.liked.borrow_mut() = liked;
     }
 
@@ -277,7 +297,11 @@ impl Store {
     }
 
     pub fn playlist_names(&self) -> Vec<String> {
-        self.playlists.borrow().iter().map(|p| p.name.clone()).collect()
+        self.playlists
+            .borrow()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
     }
 
     pub fn liked(&self) -> Playlist {
@@ -292,7 +316,11 @@ impl Store {
         if name == LIKED_SONGS {
             return Some(self.liked());
         }
-        self.playlists.borrow().iter().find(|p| p.name == name).cloned()
+        self.playlists
+            .borrow()
+            .iter()
+            .find(|p| p.name == name)
+            .cloned()
     }
 
     pub fn is_liked(&self, path: &str) -> bool {
@@ -408,8 +436,14 @@ impl Store {
     /// directories, then drops them from the in-memory library.
     pub fn delete_tracks(&self, paths: &[String]) -> io::Result<()> {
         let result = delete_files(&self.root(), paths);
-        let remaining: Vec<Track> =
-            self.lib.borrow().tracks.iter().filter(|t| !paths.contains(&t.path)).cloned().collect();
+        let remaining: Vec<Track> = self
+            .lib
+            .borrow()
+            .tracks
+            .iter()
+            .filter(|t| !paths.contains(&t.path))
+            .cloned()
+            .collect();
         *self.lib.borrow_mut() = Rc::new(Library::new(remaining));
         self.emit(StoreChange::Library);
         result
@@ -424,7 +458,12 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
     let mut result = Ok(());
     for rel in paths {
         let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
-        let removed = if parent.is_empty() { top.try_clone() } else { top.sub(parent, false) }.and_then(|d| d.remove_file(name));
+        let removed = if parent.is_empty() {
+            top.try_clone()
+        } else {
+            top.sub(parent, false)
+        }
+        .and_then(|d| d.remove_file(name));
         if let Err(e) = removed
             && e.kind() != io::ErrorKind::NotFound
         {
@@ -435,7 +474,12 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
         let mut dir = parent;
         while !dir.is_empty() {
             let (up, name) = dir.rsplit_once('/').unwrap_or(("", dir));
-            let removed = if up.is_empty() { top.try_clone() } else { top.sub(up, false) }.and_then(|d| d.remove_dir(name));
+            let removed = if up.is_empty() {
+                top.try_clone()
+            } else {
+                top.sub(up, false)
+            }
+            .and_then(|d| d.remove_dir(name));
             if removed.is_err() {
                 break;
             }
@@ -451,7 +495,8 @@ mod tests {
 
     #[test]
     fn deleting_never_follows_a_symlinked_folder() {
-        let base = std::env::temp_dir().join(format!("tunemesh-delete-test-{}", std::process::id()));
+        let base =
+            std::env::temp_dir().join(format!("tunemesh-delete-test-{}", std::process::id()));
         let (root, outside) = (base.join("lib"), base.join("outside"));
         fs::create_dir_all(root.join("Artist/Album")).unwrap();
         fs::create_dir_all(outside.join("Album")).unwrap();
@@ -459,10 +504,19 @@ mod tests {
         fs::write(outside.join("Album/Keep [b].opus"), b"x").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("Linked")).unwrap();
 
-        let r = delete_files(&root, &["Linked/Album/Keep [b].opus".into(), "Artist/Album/Song [a].opus".into()]);
+        let r = delete_files(
+            &root,
+            &[
+                "Linked/Album/Keep [b].opus".into(),
+                "Artist/Album/Song [a].opus".into(),
+            ],
+        );
         assert!(r.is_err(), "the symlinked path must be refused");
         assert!(outside.join("Album/Keep [b].opus").exists());
-        assert!(!root.join("Artist").exists(), "the real track and its empty folders are gone");
+        assert!(
+            !root.join("Artist").exists(),
+            "the real track and its empty folders are gone"
+        );
         fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -24,7 +24,11 @@ fn yes() -> bool {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { library_path: default_library(), downloader: false, setup_done: false }
+        Self {
+            library_path: default_library(),
+            downloader: false,
+            setup_done: false,
+        }
     }
 }
 
@@ -81,7 +85,10 @@ impl Config {
                     c
                 }
                 Err(e) => {
-                    eprintln!("tunemesh: ignoring invalid {}: {e}", config_file().display());
+                    eprintln!(
+                        "tunemesh: ignoring invalid {}: {e}",
+                        config_file().display()
+                    );
                     Self::default()
                 }
             },
@@ -115,7 +122,11 @@ mod tests {
 
     #[test]
     fn new_keys_round_trip() {
-        let c = Config { library_path: "/srv/music".into(), downloader: true, setup_done: true };
+        let c = Config {
+            library_path: "/srv/music".into(),
+            downloader: true,
+            setup_done: true,
+        };
         let back: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert!(back.downloader && back.setup_done);
     }

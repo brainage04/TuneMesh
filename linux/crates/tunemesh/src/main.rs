@@ -73,13 +73,22 @@ fn main() -> glib::ExitCode {
         let display = gdk::Display::default().expect("display");
         // libadwaita 1.6 moved its named colours to CSS variables; 1.5 still
         // uses @define-color.
-        let colors = if adw::minor_version() >= 6 { "colors.css" } else { "colors-adw15.css" };
+        let colors = if adw::minor_version() >= 6 {
+            "colors.css"
+        } else {
+            "colors-adw15.css"
+        };
         for name in [colors, "style.css"] {
             let provider = gtk::CssProvider::new();
             provider.load_from_resource(&format!("/io/github/brainage04/TuneMesh/{name}"));
-            gtk::style_context_add_provider_for_display(&display, &provider, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
         }
-        gtk::IconTheme::for_display(&display).add_resource_path("/io/github/brainage04/TuneMesh/icons");
+        gtk::IconTheme::for_display(&display)
+            .add_resource_path("/io/github/brainage04/TuneMesh/icons");
         gtk::Window::set_default_icon_name(APP_ID);
     });
 

@@ -88,7 +88,11 @@ impl State {
     /// Indices after the current one that the user queued, in order.
     fn upcoming_user(&self) -> Vec<QueueItem> {
         let start = self.current.map_or(0, |c| c + 1);
-        self.items[start.min(self.items.len())..].iter().filter(|i| i.user).cloned().collect()
+        self.items[start.min(self.items.len())..]
+            .iter()
+            .filter(|i| i.user)
+            .cloned()
+            .collect()
     }
 
     /// Drops `paths` from the queue and the context. Returns whether the
@@ -96,7 +100,9 @@ impl State {
     /// that followed it (wrapping to the start with `Repeat::All`), or none.
     fn remove_paths(&mut self, paths: &[String]) -> bool {
         let cur = self.current;
-        let current_gone = cur.and_then(|c| self.items.get(c)).is_some_and(|i| paths.contains(&i.path));
+        let current_gone = cur
+            .and_then(|c| self.items.get(c))
+            .is_some_and(|i| paths.contains(&i.path));
         let mut new_cur = None;
         let mut kept = Vec::with_capacity(self.items.len());
         for (i, item) in std::mem::take(&mut self.items).into_iter().enumerate() {
@@ -151,7 +157,10 @@ impl Player {
             mpv,
             init_error,
             root: RefCell::new(root),
-            st: RefCell::new(State { volume: 70.0, ..Default::default() }),
+            st: RefCell::new(State {
+                volume: 70.0,
+                ..Default::default()
+            }),
             listeners: RefCell::new(Vec::new()),
             tick: RefCell::new(None),
             save_scheduled: Cell::new(false),
@@ -166,7 +175,9 @@ impl Player {
                 .name("mpv-events".into())
                 .spawn(move || {
                     loop {
-                        let Some(ev) = thread_mpv.wait_event() else { continue };
+                        let Some(ev) = thread_mpv.wait_event() else {
+                            continue;
+                        };
                         let shutdown = matches!(ev, Event::Shutdown);
                         if tx.send_blocking(ev).is_err() || shutdown {
                             break;
@@ -213,7 +224,9 @@ impl Player {
 
     pub fn current_path(&self) -> Option<String> {
         let st = self.st.borrow();
-        st.current.and_then(|c| st.items.get(c)).map(|i| i.path.clone())
+        st.current
+            .and_then(|c| st.items.get(c))
+            .map(|i| i.path.clone())
     }
     pub fn current_index(&self) -> Option<usize> {
         self.st.borrow().current
@@ -262,7 +275,9 @@ impl Player {
     /// Loads the current item into mpv, replacing whatever played.
     fn load_current(&self, start: f64, play: bool) {
         let Some(mpv) = self.mpv.clone() else { return };
-        let Some(path) = self.current_path() else { return };
+        let Some(path) = self.current_path() else {
+            return;
+        };
         self.apply_loop();
         mpv.set_flag("pause", !play);
         let start_opt = format!("start={start:.3}");
@@ -282,7 +297,12 @@ impl Player {
         self.st.borrow_mut().current_entry = id;
         self.append_next();
         self.update_tick();
-        self.emit(&[Change::Track, Change::Playing, Change::Position, Change::Queue]);
+        self.emit(&[
+            Change::Track,
+            Change::Playing,
+            Change::Position,
+            Change::Queue,
+        ]);
     }
 
     /// Appends the next item to mpv's playlist (which holds only the current
@@ -294,7 +314,10 @@ impl Player {
             st.next_index().map(|i| (i, st.items[i].path.clone()))
         };
         let Some((index, path)) = want else { return };
-        if mpv.command(&["loadfile", &self.abs(&path), "append"]).is_err() {
+        if mpv
+            .command(&["loadfile", &self.abs(&path), "append"])
+            .is_err()
+        {
             return;
         }
         let count = mpv.get_i64("playlist-count").unwrap_or(0);
@@ -337,16 +360,19 @@ impl Player {
         let next_id = self.st.borrow().next_entry.as_ref().map(|n| n.0);
         let Some(next_id) = next_id else { return };
         if let Some(pos) = mpv.get_i64("playlist-pos").filter(|p| *p >= 0)
-            && self.entry_id_at(pos) == Some(next_id) {
-                self.advanced();
-            }
+            && self.entry_id_at(pos) == Some(next_id)
+        {
+            self.advanced();
+        }
     }
 
     /// The preloaded next track became the current one.
     fn advanced(&self) {
         {
             let mut st = self.st.borrow_mut();
-            let Some((id, index, _)) = st.next_entry.take() else { return };
+            let Some((id, index, _)) = st.next_entry.take() else {
+                return;
+            };
             st.current = Some(index);
             st.current_entry = Some(id);
             st.position = 0.0;
@@ -362,7 +388,12 @@ impl Player {
     fn handle_event(&self, ev: Event) {
         match ev {
             Event::StartFile { entry_id } => {
-                let is_next = self.st.borrow().next_entry.as_ref().is_some_and(|n| n.0 == entry_id);
+                let is_next = self
+                    .st
+                    .borrow()
+                    .next_entry
+                    .as_ref()
+                    .is_some_and(|n| n.0 == entry_id);
                 if is_next {
                     self.advanced();
                 }
@@ -428,15 +459,19 @@ impl Player {
         let mut tick = self.tick.borrow_mut();
         if playing && tick.is_none() {
             let weak: Weak<Self> = self.weak_self();
-            *tick = Some(glib::timeout_add_local(Duration::from_millis(500), move || {
-                let Some(p) = weak.upgrade() else { return glib::ControlFlow::Break };
-                p.on_tick();
-                glib::ControlFlow::Continue
-            }));
-        } else if !playing
-            && let Some(id) = tick.take() {
-                id.remove();
-            }
+            *tick = Some(glib::timeout_add_local(
+                Duration::from_millis(500),
+                move || {
+                    let Some(p) = weak.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    p.on_tick();
+                    glib::ControlFlow::Continue
+                },
+            ));
+        } else if !playing && let Some(id) = tick.take() {
+            id.remove();
+        }
     }
 
     fn on_tick(&self) {
@@ -462,7 +497,13 @@ impl Player {
 
     /// Plays `tracks` as a context starting at `start`. User-queued tracks
     /// stay queued right after the started track.
-    pub fn play_tracks(&self, name: &str, tracks: Vec<String>, start: usize, shuffle: Option<bool>) {
+    pub fn play_tracks(
+        &self,
+        name: &str,
+        tracks: Vec<String>,
+        start: usize,
+        shuffle: Option<bool>,
+    ) {
         if tracks.is_empty() {
             return;
         }
@@ -475,15 +516,27 @@ impl Player {
             let user = st.upcoming_user();
             st.context = tracks.clone();
             st.context_name = name.to_owned();
-            let ctx = |p: &String| QueueItem { path: p.clone(), user: false };
+            let ctx = |p: &String| QueueItem {
+                path: p.clone(),
+                user: false,
+            };
             if st.shuffle {
-                let mut rest: Vec<QueueItem> =
-                    tracks.iter().enumerate().filter(|(i, _)| *i != start).map(|(_, p)| ctx(p)).collect();
+                let mut rest: Vec<QueueItem> = tracks
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| *i != start)
+                    .map(|(_, p)| ctx(p))
+                    .collect();
                 fastrand::shuffle(&mut rest);
                 let first = if shuffle == Some(true) && start == 0 {
                     // "Shuffle play" starts on a random track.
                     let i = fastrand::usize(..tracks.len());
-                    rest = tracks.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, p)| ctx(p)).collect();
+                    rest = tracks
+                        .iter()
+                        .enumerate()
+                        .filter(|(j, _)| *j != i)
+                        .map(|(_, p)| ctx(p))
+                        .collect();
                     fastrand::shuffle(&mut rest);
                     ctx(&tracks[i])
                 } else {
@@ -504,7 +557,11 @@ impl Player {
     }
 
     pub fn toggle(&self) {
-        if self.is_playing() { self.pause() } else { self.play() }
+        if self.is_playing() {
+            self.pause()
+        } else {
+            self.play()
+        }
     }
 
     pub fn play(&self) {
@@ -525,9 +582,10 @@ impl Player {
 
     pub fn pause(&self) {
         if let Some(mpv) = &self.mpv
-            && self.st.borrow().loaded {
-                mpv.set_flag("pause", true);
-            }
+            && self.st.borrow().loaded
+        {
+            mpv.set_flag("pause", true);
+        }
     }
 
     pub fn next(&self) {
@@ -568,10 +626,9 @@ impl Player {
     pub fn seek(&self, secs: f64) {
         let secs = secs.max(0.0);
         let loaded = self.st.borrow().loaded;
-        if loaded
-            && let Some(mpv) = &self.mpv {
-                let _ = mpv.command(&["seek", &format!("{secs:.3}"), "absolute"]);
-            }
+        if loaded && let Some(mpv) = &self.mpv {
+            let _ = mpv.command(&["seek", &format!("{secs:.3}"), "absolute"]);
+        }
         self.st.borrow_mut().position = secs;
         self.emit(&[Change::Position, Change::Seeked]);
     }
@@ -602,7 +659,14 @@ impl Player {
             };
             let current = st.items[cur].clone();
             let user = st.upcoming_user();
-            let ctx: Vec<QueueItem> = st.context.iter().map(|p| QueueItem { path: p.clone(), user: false }).collect();
+            let ctx: Vec<QueueItem> = st
+                .context
+                .iter()
+                .map(|p| QueueItem {
+                    path: p.clone(),
+                    user: false,
+                })
+                .collect();
             if on {
                 let mut rest = ctx;
                 if let Some(i) = rest.iter().position(|i| i.path == current.path) {
@@ -612,7 +676,10 @@ impl Player {
                 st.items = std::iter::once(current).chain(user).chain(rest).collect();
                 st.current = Some(0);
             } else {
-                match (!current.user).then(|| ctx.iter().position(|i| i.path == current.path)).flatten() {
+                match (!current.user)
+                    .then(|| ctx.iter().position(|i| i.path == current.path))
+                    .flatten()
+                {
                     Some(p) => {
                         let mut items: Vec<QueueItem> = ctx[..=p].to_vec();
                         items.extend(user);
@@ -662,7 +729,13 @@ impl Player {
         }
         let start_now = {
             let mut st = self.st.borrow_mut();
-            let new: Vec<QueueItem> = paths.iter().map(|p| QueueItem { path: p.clone(), user: true }).collect();
+            let new: Vec<QueueItem> = paths
+                .iter()
+                .map(|p| QueueItem {
+                    path: p.clone(),
+                    user: true,
+                })
+                .collect();
             match st.current {
                 None => {
                     st.items = new;
@@ -764,8 +837,12 @@ impl Player {
     // ---- persistence -------------------------------------------------
 
     fn restore(&self) {
-        let Ok(bytes) = std::fs::read(state_file()) else { return };
-        let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else { return };
+        let Ok(bytes) = std::fs::read(state_file()) else {
+            return;
+        };
+        let Ok(saved) = serde_json::from_slice::<Saved>(&bytes) else {
+            return;
+        };
         let mut st = self.st.borrow_mut();
         st.current = saved.current.filter(|c| *c < saved.items.len());
         st.items = saved.items;
@@ -817,9 +894,10 @@ impl Player {
     /// Saves state and stops mpv.
     pub fn shutdown(&self) {
         if let Some(mpv) = &self.mpv
-            && let Some(pos) = mpv.get_f64("time-pos") {
-                self.st.borrow_mut().position = pos;
-            }
+            && let Some(pos) = mpv.get_f64("time-pos")
+        {
+            self.st.borrow_mut().position = pos;
+        }
         self.save();
         if let Some(mpv) = &self.mpv {
             mpv.quit();
@@ -833,7 +911,13 @@ mod tests {
 
     fn state(paths: &[&str], current: usize, repeat: Repeat) -> State {
         State {
-            items: paths.iter().map(|p| QueueItem { path: (*p).to_owned(), user: false }).collect(),
+            items: paths
+                .iter()
+                .map(|p| QueueItem {
+                    path: (*p).to_owned(),
+                    user: false,
+                })
+                .collect(),
             current: Some(current),
             context: paths.iter().map(|p| (*p).to_owned()).collect(),
             repeat,

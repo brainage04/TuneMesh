@@ -54,7 +54,11 @@ fn base64(input: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::new();
     for chunk in input.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         for i in 0..4 {
             if i <= chunk.len() {
@@ -85,31 +89,44 @@ impl Proxy {
             active: AtomicUsize::new(0),
             refusals: refusals.clone(),
         });
-        thread::Builder::new().name("egress-proxy".into()).spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                if shared.active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    shared.active.fetch_sub(1, Ordering::SeqCst);
-                    let _ = respond(&stream, 503, "Too many connections");
-                    continue;
+        thread::Builder::new()
+            .name("egress-proxy".into())
+            .spawn(move || {
+                for stream in listener.incoming() {
+                    let Ok(stream) = stream else { continue };
+                    if shared.active.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                        shared.active.fetch_sub(1, Ordering::SeqCst);
+                        let _ = respond(&stream, 503, "Too many connections");
+                        continue;
+                    }
+                    let shared = shared.clone();
+                    let spawned =
+                        thread::Builder::new()
+                            .name("egress-conn".into())
+                            .spawn(move || {
+                                let _ = handle(stream, &shared);
+                                shared.active.fetch_sub(1, Ordering::SeqCst);
+                            });
+                    if spawned.is_err() {
+                        log!("proxy: could not start a connection thread");
+                    }
                 }
-                let shared = shared.clone();
-                let spawned = thread::Builder::new().name("egress-conn".into()).spawn(move || {
-                    let _ = handle(stream, &shared);
-                    shared.active.fetch_sub(1, Ordering::SeqCst);
-                });
-                if spawned.is_err() {
-                    log!("proxy: could not start a connection thread");
-                }
-            }
-        })?;
-        Ok(Self { port, user, password, refusals })
+            })?;
+        Ok(Self {
+            port,
+            user,
+            password,
+            refusals,
+        })
     }
 
     /// `http://user:password@127.0.0.1:port`, for `--proxy` and the
     /// `http_proxy`/`https_proxy` variables.
     pub fn url(&self) -> String {
-        format!("http://{}:{}@127.0.0.1:{}", self.user, self.password, self.port)
+        format!(
+            "http://{}:{}@127.0.0.1:{}",
+            self.user, self.password, self.port
+        )
     }
 
     /// Refusals since the last call, oldest first.
@@ -127,7 +144,11 @@ fn respond(mut stream: &TcpStream, code: u16, reason: &str) -> io::Result<()> {
         _ => "Bad Request",
     };
     let body = format!("{reason}\n");
-    let auth = if code == 407 { "Proxy-Authenticate: Basic realm=\"tunemesh\"\r\n" } else { "" };
+    let auth = if code == 407 {
+        "Proxy-Authenticate: Basic realm=\"tunemesh\"\r\n"
+    } else {
+        ""
+    };
     write!(
         stream,
         "HTTP/1.1 {code} {text}\r\n{auth}Content-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -167,13 +188,19 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Head>> {
     let mut total = 0;
     loop {
         let mut line = String::new();
-        let n = reader.by_ref().take((MAX_HEAD_BYTES - total + 1) as u64).read_line(&mut line)?;
+        let n = reader
+            .by_ref()
+            .take((MAX_HEAD_BYTES - total + 1) as u64)
+            .read_line(&mut line)?;
         if n == 0 {
             return Ok(None);
         }
         total += n;
         if total > MAX_HEAD_BYTES {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "request head too large"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "request head too large",
+            ));
         }
         let line = line.trim_end_matches(['\r', '\n']).to_owned();
         if line.is_empty() {
@@ -181,16 +208,30 @@ fn read_head(reader: &mut BufReader<TcpStream>) -> io::Result<Option<Head>> {
         }
         lines.push(line);
     }
-    let Some(first) = lines.first() else { return Ok(None) };
+    let Some(first) = lines.first() else {
+        return Ok(None);
+    };
     let mut parts = first.split(' ');
-    let (Some(method), Some(target), Some(version)) = (parts.next(), parts.next(), parts.next()) else {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad request line"));
+    let (Some(method), Some(target), Some(version)) = (parts.next(), parts.next(), parts.next())
+    else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "bad request line",
+        ));
     };
     let headers = lines[1..]
         .iter()
-        .filter_map(|l| l.split_once(':').map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned())))
+        .filter_map(|l| {
+            l.split_once(':')
+                .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        })
         .collect();
-    Ok(Some(Head { method: method.to_owned(), target: target.to_owned(), version: version.to_owned(), headers }))
+    Ok(Some(Head {
+        method: method.to_owned(),
+        target: target.to_owned(),
+        version: version.to_owned(),
+        headers,
+    }))
 }
 
 fn connect(addrs: &[SocketAddr]) -> io::Result<TcpStream> {
@@ -209,10 +250,12 @@ fn splice(client: TcpStream, upstream: TcpStream) -> io::Result<()> {
     client.set_read_timeout(Some(IDLE_TIMEOUT))?;
     upstream.set_read_timeout(Some(IDLE_TIMEOUT))?;
     let (mut c_read, mut u_write) = (client.try_clone()?, upstream.try_clone()?);
-    let up = thread::Builder::new().name("egress-up".into()).spawn(move || {
-        let _ = io::copy(&mut c_read, &mut u_write);
-        let _ = u_write.shutdown(Shutdown::Write);
-    })?;
+    let up = thread::Builder::new()
+        .name("egress-up".into())
+        .spawn(move || {
+            let _ = io::copy(&mut c_read, &mut u_write);
+            let _ = u_write.shutdown(Shutdown::Write);
+        })?;
     let (mut u_read, mut c_write) = (upstream, client);
     let _ = io::copy(&mut u_read, &mut c_write);
     let _ = c_write.shutdown(Shutdown::Both);
@@ -224,7 +267,9 @@ fn splice(client: TcpStream, upstream: TcpStream) -> io::Result<()> {
 fn handle(stream: TcpStream, shared: &Shared) -> io::Result<()> {
     stream.set_read_timeout(Some(Duration::from_secs(30)))?;
     let mut reader = BufReader::new(stream.try_clone()?);
-    let Some(head) = read_head(&mut reader)? else { return Ok(()) };
+    let Some(head) = read_head(&mut reader)? else {
+        return Ok(());
+    };
     let authorized = head
         .headers
         .iter()
@@ -241,13 +286,21 @@ fn handle(stream: TcpStream, shared: &Shared) -> io::Result<()> {
     } else {
         let lower = head.target.to_ascii_lowercase();
         let Some(rest) = lower.strip_prefix("http://").map(|_| &head.target[7..]) else {
-            return respond(&stream, 400, "Only http:// targets or CONNECT are supported");
+            return respond(
+                &stream,
+                400,
+                "Only http:// targets or CONNECT are supported",
+            );
         };
         let (authority, path) = match rest.find(['/', '?']) {
             Some(i) => (&rest[..i], &rest[i..]),
             None => (rest, "/"),
         };
-        let path = if path.starts_with('?') { format!("/{path}") } else { path.to_owned() };
+        let path = if path.starts_with('?') {
+            format!("/{path}")
+        } else {
+            path.to_owned()
+        };
         match split_host_port(authority, 80) {
             Some((h, p)) => (h, p, Some(path)),
             None => return respond(&stream, 400, "Bad request target"),
@@ -258,13 +311,23 @@ fn handle(stream: TcpStream, shared: &Shared) -> io::Result<()> {
         Ok(a) => a,
         Err(why) => {
             log!("proxy: refused {host}:{port}: {why}");
-            shared.refusals.lock().unwrap_or_else(|e| e.into_inner()).push(why.clone());
+            shared
+                .refusals
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(why.clone());
             return respond(&stream, 403, &why);
         }
     };
     let mut upstream = match connect(&addrs) {
         Ok(u) => u,
-        Err(e) => return respond(&stream, 502, &format!("Could not connect to {host}:{port}: {e}")),
+        Err(e) => {
+            return respond(
+                &stream,
+                502,
+                &format!("Could not connect to {host}:{port}: {e}"),
+            );
+        }
     };
     stream.set_read_timeout(None)?;
 
@@ -300,7 +363,10 @@ mod tests {
     fn raw(proxy: &Proxy, auth: bool, request: &str) -> String {
         let mut s = TcpStream::connect(("127.0.0.1", proxy.port)).unwrap();
         let header = if auth {
-            format!("Proxy-Authorization: Basic {}\r\n", base64(format!("{}:{}", proxy.user, proxy.password).as_bytes()))
+            format!(
+                "Proxy-Authorization: Basic {}\r\n",
+                base64(format!("{}:{}", proxy.user, proxy.password).as_bytes())
+            )
         } else {
             String::new()
         };
@@ -335,11 +401,20 @@ mod tests {
             netguard::resolve_checked_with(host, port, &own, |h, _| match h {
                 // A public-looking name for the loopback test server.
                 "public.test" => Ok(vec!["93.184.216.34".parse().unwrap()]),
-                "rebind.test" => Ok(vec!["93.184.216.34".parse().unwrap(), "127.0.0.1".parse().unwrap()]),
+                "rebind.test" => Ok(vec![
+                    "93.184.216.34".parse().unwrap(),
+                    "127.0.0.1".parse().unwrap(),
+                ]),
                 "lan.test" => Ok(vec!["192.168.1.50".parse().unwrap()]),
                 _ => Err(io::Error::new(io::ErrorKind::NotFound, "no such host")),
             })
-            .map(|addrs| if addrs[0].ip().to_string() == "93.184.216.34" { vec![public] } else { addrs })
+            .map(|addrs| {
+                if addrs[0].ip().to_string() == "93.184.216.34" {
+                    vec![public]
+                } else {
+                    addrs
+                }
+            })
         }))
         .unwrap()
     }
@@ -356,7 +431,11 @@ mod tests {
     #[test]
     fn requires_the_credential() {
         let p = proxy_with_fake_public(upstream("HTTP/1.1 200 OK\r\n\r\n"), vec![]);
-        let out = raw(&p, false, "GET http://public.test/ HTTP/1.1\r\nHost: public.test\r\n\r\n");
+        let out = raw(
+            &p,
+            false,
+            "GET http://public.test/ HTTP/1.1\r\nHost: public.test\r\n\r\n",
+        );
         assert!(out.starts_with("HTTP/1.1 407"), "{out}");
     }
 
@@ -365,8 +444,15 @@ mod tests {
         let up = upstream("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
         // 11.22.33.44 stands in for a public address of this host.
         let p = proxy_with_fake_public(up, vec!["11.22.33.44".parse().unwrap()]);
-        let out = raw(&p, true, "GET http://public.test/x HTTP/1.1\r\nHost: public.test\r\n\r\n");
-        assert!(out.starts_with("HTTP/1.1 200 OK") && out.ends_with("ok"), "{out}");
+        let out = raw(
+            &p,
+            true,
+            "GET http://public.test/x HTTP/1.1\r\nHost: public.test\r\n\r\n",
+        );
+        assert!(
+            out.starts_with("HTTP/1.1 200 OK") && out.ends_with("ok"),
+            "{out}"
+        );
 
         for target in [
             "GET http://127.0.0.1:8384/rest HTTP/1.1",
@@ -394,12 +480,25 @@ mod tests {
     /// redirect through the proxy, which refuses the second hop.
     #[test]
     fn refuses_redirect_targets() {
-        let up = upstream("HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8384/rest/system/config\r\nContent-Length: 0\r\n\r\n");
+        let up = upstream(
+            "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:8384/rest/system/config\r\nContent-Length: 0\r\n\r\n",
+        );
         let p = proxy_with_fake_public(up, vec![]);
-        let first = raw(&p, true, "GET http://public.test/r HTTP/1.1\r\nHost: public.test\r\n\r\n");
+        let first = raw(
+            &p,
+            true,
+            "GET http://public.test/r HTTP/1.1\r\nHost: public.test\r\n\r\n",
+        );
         assert!(first.starts_with("HTTP/1.1 302"), "{first}");
-        let location = first.lines().find_map(|l| l.strip_prefix("Location: ")).unwrap();
-        let second = raw(&p, true, &format!("GET {location} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+        let location = first
+            .lines()
+            .find_map(|l| l.strip_prefix("Location: "))
+            .unwrap();
+        let second = raw(
+            &p,
+            true,
+            &format!("GET {location} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"),
+        );
         assert!(second.starts_with("HTTP/1.1 403"), "{second}");
     }
 
@@ -407,14 +506,27 @@ mod tests {
     fn tunnels_connect() {
         let up = upstream("HTTP/1.1 204 No Content\r\n\r\n");
         let p = proxy_with_fake_public(up, vec![]);
-        let out = raw(&p, true, "CONNECT public.test:443 HTTP/1.1\r\nHost: public.test:443\r\n\r\nGET / HTTP/1.1\r\n\r\n");
-        assert!(out.starts_with("HTTP/1.1 200 Connection established\r\n\r\nHTTP/1.1 204"), "{out}");
+        let out = raw(
+            &p,
+            true,
+            "CONNECT public.test:443 HTTP/1.1\r\nHost: public.test:443\r\n\r\nGET / HTTP/1.1\r\n\r\n",
+        );
+        assert!(
+            out.starts_with("HTTP/1.1 200 Connection established\r\n\r\nHTTP/1.1 204"),
+            "{out}"
+        );
     }
 
     #[test]
     fn splits_authorities() {
-        assert_eq!(split_host_port("example.com:8443", 443), Some(("example.com".into(), 8443)));
-        assert_eq!(split_host_port("example.com", 80), Some(("example.com".into(), 80)));
+        assert_eq!(
+            split_host_port("example.com:8443", 443),
+            Some(("example.com".into(), 8443))
+        );
+        assert_eq!(
+            split_host_port("example.com", 80),
+            Some(("example.com".into(), 80))
+        );
         assert_eq!(split_host_port("[::1]:443", 80), Some(("::1".into(), 443)));
         assert_eq!(split_host_port("u:p@h:1", 80), Some(("h".into(), 1)));
         assert_eq!(split_host_port(":1", 80), None);

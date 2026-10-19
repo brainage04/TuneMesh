@@ -65,7 +65,11 @@ impl Outcome {
     }
 }
 
-fn pump(stream: impl Read + Send + 'static, kind: fn(String) -> (Stream, String), tx: mpsc::Sender<(Stream, String)>) {
+fn pump(
+    stream: impl Read + Send + 'static,
+    kind: fn(String) -> (Stream, String),
+    tx: mpsc::Sender<(Stream, String)>,
+) {
     thread::spawn(move || {
         // Lines are capped so a child cannot make the worker buffer without bound.
         let mut reader = BufReader::new(stream);
@@ -75,7 +79,9 @@ fn pump(stream: impl Read + Send + 'static, kind: fn(String) -> (Stream, String)
                 Ok(0) | Err(_) => break,
                 Ok(_) => {}
             }
-            let line = String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_owned();
+            let line = String::from_utf8_lossy(&line)
+                .trim_end_matches(['\r', '\n'])
+                .to_owned();
             if tx.send(kind(line)).is_err() {
                 break;
             }
@@ -99,13 +105,24 @@ pub fn run(
     mut on_line: impl FnMut(Stream, &str),
     mut check: impl FnMut() -> Option<Stop>,
 ) -> io::Result<Outcome> {
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
     let started = Instant::now();
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
-    pump(child.stdout.take().expect("piped stdout"), |l| (Stream::Out, l), tx.clone());
-    pump(child.stderr.take().expect("piped stderr"), |l| (Stream::Err, l), tx);
+    pump(
+        child.stdout.take().expect("piped stdout"),
+        |l| (Stream::Out, l),
+        tx.clone(),
+    );
+    pump(
+        child.stderr.take().expect("piped stderr"),
+        |l| (Stream::Err, l),
+        tx,
+    );
 
     let mut tail: Vec<String> = Vec::new();
     let mut last_check = Instant::now();
@@ -128,8 +145,12 @@ pub fn run(
         if stopped.is_none() && last_check.elapsed() >= Duration::from_millis(500) {
             last_check = Instant::now();
             let reason = check().or_else(|| {
-                (started.elapsed() >= timeout)
-                    .then(|| Stop::Limit(format!("Took longer than {}", humantime::format_duration(timeout))))
+                (started.elapsed() >= timeout).then(|| {
+                    Stop::Limit(format!(
+                        "Took longer than {}",
+                        humantime::format_duration(timeout)
+                    ))
+                })
             });
             if let Some(reason) = reason {
                 stopped = Some(reason);
@@ -181,7 +202,13 @@ mod tests {
         cmd.args(["-c", "sleep 30 & sleep 30; echo never"]);
         let start = Instant::now();
         let mut lines = Vec::new();
-        let out = run(&mut cmd, Duration::from_secs(1), |_, l| lines.push(l.to_owned()), || None).unwrap();
+        let out = run(
+            &mut cmd,
+            Duration::from_secs(1),
+            |_, l| lines.push(l.to_owned()),
+            || None,
+        )
+        .unwrap();
         assert!(start.elapsed() < Duration::from_secs(10));
         assert!(matches!(out.end, End::Stopped(Stop::Limit(_))));
         assert!(out.error_message().starts_with("Took longer than"));
@@ -193,10 +220,15 @@ mod tests {
         let mut cmd = Command::new("sh");
         cmd.args(["-c", "echo hi; exec sleep 30"]);
         let mut n = 0;
-        let out = run(&mut cmd, Duration::from_secs(60), |_, _| {}, || {
-            n += 1;
-            (n > 1).then_some(Stop::Cancelled)
-        })
+        let out = run(
+            &mut cmd,
+            Duration::from_secs(60),
+            |_, _| {},
+            || {
+                n += 1;
+                (n > 1).then_some(Stop::Cancelled)
+            },
+        )
         .unwrap();
         assert!(matches!(out.end, End::Stopped(Stop::Cancelled)));
     }
@@ -204,7 +236,10 @@ mod tests {
     #[test]
     fn reports_exit_and_error_lines() {
         let mut cmd = Command::new("sh");
-        cmd.args(["-c", "echo 'ERROR: [youtube] x: Video unavailable (caused by Foo)' >&2; exit 1"]);
+        cmd.args([
+            "-c",
+            "echo 'ERROR: [youtube] x: Video unavailable (caused by Foo)' >&2; exit 1",
+        ]);
         let out = run(&mut cmd, Duration::from_secs(60), |_, _| {}, || None).unwrap();
         assert!(matches!(out.end, End::Exited(s) if !s.success()));
         assert_eq!(out.error_message(), "[youtube] x: Video unavailable");

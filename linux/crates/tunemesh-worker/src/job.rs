@@ -62,11 +62,17 @@ pub struct SourceResult {
 
 impl SourceResult {
     pub fn fatal(e: String) -> Self {
-        Self { fatal: Some(e), ..Self::default() }
+        Self {
+            fatal: Some(e),
+            ..Self::default()
+        }
     }
 
     pub fn stopped(s: Stop) -> Self {
-        Self { stopped: Some(s), ..Self::default() }
+        Self {
+            stopped: Some(s),
+            ..Self::default()
+        }
     }
 }
 
@@ -75,7 +81,9 @@ fn dir_size(dir: &Path) -> u64 {
     let mut total = 0;
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&d) else { continue };
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
         for e in entries.flatten() {
             match e.file_type() {
                 Ok(t) if t.is_dir() => stack.push(e.path()),
@@ -95,7 +103,11 @@ fn human_bytes(n: u64) -> String {
         v /= 1024.0;
         i += 1;
     }
-    if i == 0 { format!("{n} B") } else { format!("{v:.1} {}", UNITS[i]) }
+    if i == 0 {
+        format!("{n} B")
+    } else {
+        format!("{v:.1} {}", UNITS[i])
+    }
 }
 
 impl Job<'_> {
@@ -115,9 +127,17 @@ impl Job<'_> {
     /// is not announced in advance).
     pub fn child_check(&self) -> Option<Stop> {
         self.stop_reason().or_else(|| {
-            let limit = self.ctx.limits.max_file_size.saturating_mul(3).saturating_add(64 << 20);
+            let limit = self
+                .ctx
+                .limits
+                .max_file_size
+                .saturating_mul(3)
+                .saturating_add(64 << 20);
             (dir_size(&self.dir) > limit).then(|| {
-                Stop::Limit(format!("The download is larger than the {} limit", human_bytes(self.ctx.limits.max_file_size)))
+                Stop::Limit(format!(
+                    "The download is larger than the {} limit",
+                    human_bytes(self.ctx.limits.max_file_size)
+                ))
             })
         })
     }
@@ -185,8 +205,13 @@ impl Job<'_> {
     /// Free space check before a download starts.
     pub fn check_space(&self) -> Result<(), String> {
         let min = self.ctx.limits.min_free_space;
-        for (what, dir) in [("library", self.root), ("work directory", self.ctx.work_dir.as_path())] {
-            let free = Dir::open(dir).and_then(|d| d.free_space()).map_err(|e| format!("{what}: {e}"))?;
+        for (what, dir) in [
+            ("library", self.root),
+            ("work directory", self.ctx.work_dir.as_path()),
+        ] {
+            let free = Dir::open(dir)
+                .and_then(|d| d.free_space())
+                .map_err(|e| format!("{what}: {e}"))?;
             if free < min {
                 return Err(format!(
                     "Not enough free space in the {what}: {} left, {} must stay free",
@@ -213,18 +238,29 @@ impl Job<'_> {
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::PermissionDenied,
-                    format!("refusing {}: not inside the job directory", produced.display()),
+                    format!(
+                        "refusing {}: not inside the job directory",
+                        produced.display()
+                    ),
                 ));
             }
         };
         let meta = fs::symlink_metadata(&canonical)?;
         if !meta.is_file() {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{} is not a regular file", produced.display())));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{} is not a regular file", produced.display()),
+            ));
         }
         let parts: Vec<&str> = rel.iter().filter_map(|c| c.to_str()).collect();
-        let name = *parts.last().ok_or_else(|| io::Error::other("empty file name"))?;
+        let name = *parts
+            .last()
+            .ok_or_else(|| io::Error::other("empty file name"))?;
         let album = parts.len().checked_sub(2).map_or("Singles", |i| parts[i]);
-        let artist = parts.len().checked_sub(3).map_or(library::UNKNOWN_ARTIST, |i| parts[i]);
+        let artist = parts
+            .len()
+            .checked_sub(3)
+            .map_or(library::UNKNOWN_ARTIST, |i| parts[i]);
         let (stem, ext) = name.rsplit_once('.').unwrap_or((name, ""));
         let id = source_id_from_file_name(name).map(str::to_owned);
         let (title, suffix) = match &id {
@@ -251,14 +287,21 @@ impl Job<'_> {
         if free < meta.len().saturating_add(min) {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
-                format!("not enough free space in the library ({} left, {} must stay free)", human_bytes(free), human_bytes(min)),
+                format!(
+                    "not enough free space in the library ({} left, {} must stay free)",
+                    human_bytes(free),
+                    human_bytes(min)
+                ),
             ));
         }
         match album_dir.move_in(&canonical, &file_name) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 if album_dir.kind(&file_name)? != Kind::File {
-                    return Err(io::Error::new(io::ErrorKind::InvalidData, format!("refusing {target_rel}: not a regular file")));
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("refusing {target_rel}: not a regular file"),
+                    ));
                 }
                 fs::remove_file(&canonical)?;
             }
@@ -307,7 +350,10 @@ pub fn classify(input: &str) -> Input {
         Some(input.to_owned())
     } else if !input.contains(char::is_whitespace)
         && input.split('/').next().is_some_and(|h| {
-            h.contains('.') && h.rsplit('.').next().is_some_and(|tld| tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic()))
+            h.contains('.')
+                && h.rsplit('.').next().is_some_and(|tld| {
+                    tld.len() >= 2 && tld.chars().all(|c| c.is_ascii_alphabetic())
+                })
         })
         && input.contains('/')
     {
@@ -330,7 +376,10 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
     let name = playlist::existing_name(root, &name).unwrap_or(name);
     let mut p = match Playlist::read(root, &name) {
         Ok(p) => p,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist { name: name.clone(), entries: Vec::new() },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist {
+            name: name.clone(),
+            entries: Vec::new(),
+        },
         Err(e) => return Err(e),
     };
     if name == LIKED_SONGS {
@@ -344,12 +393,23 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
     let infos: HashMap<&str, (Option<u64>, String)> = tracks
         .iter()
         .map(|rel| {
-            let tags = dir.open_file(rel).map(|mut f| library::read_tags_from(&mut f)).unwrap_or_default();
+            let tags = dir
+                .open_file(rel)
+                .map(|mut f| library::read_tags_from(&mut f))
+                .unwrap_or_default();
             let t = library::make_track(rel, tags, None, 0, 0);
-            (rel.as_str(), (t.duration_secs(), format!("{} - {}", t.artist, t.title)))
+            (
+                rel.as_str(),
+                (t.duration_secs(), format!("{} - {}", t.artist, t.title)),
+            )
         })
         .collect();
-    p.write(root, &|path| infos.get(path).map(|(d, l)| TrackInfo { duration_secs: *d, label: l.clone() }))?;
+    p.write(root, &|path| {
+        infos.get(path).map(|(d, l)| TrackInfo {
+            duration_secs: *d,
+            label: l.clone(),
+        })
+    })?;
     Ok(name)
 }
 
@@ -370,7 +430,11 @@ pub fn process(ctx: &mut Ctx, req: Request) {
     let mut job = Job {
         root: &ctx.root,
         ctx,
-        tools: Resolved { yt_dlp: PathBuf::new(), deno: None, ffmpeg_dir: None },
+        tools: Resolved {
+            yt_dlp: PathBuf::new(),
+            deno: None,
+            ffmpeg_dir: None,
+        },
         dir: dir.clone(),
         req,
         status,
@@ -437,22 +501,43 @@ fn finish(job: &mut Job, r: SourceResult) {
             notes.push(format!("{failed} of {} tracks unavailable", r.total));
         }
         notes.extend(s.warnings.iter().cloned());
-        let target = job.req.playlist.clone().filter(|p| !p.trim().is_empty()).or_else(|| {
-            if job.req.playlist_from_source { r.source_playlist.clone() } else { None }
-        });
+        let target = job
+            .req
+            .playlist
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .or_else(|| {
+                if job.req.playlist_from_source {
+                    r.source_playlist.clone()
+                } else {
+                    None
+                }
+            });
         if let Some(name) = target {
             match add_to_playlist(job.root, &name, &s.tracks) {
-                Ok(name) => log!("[{id}] added {} track(s) to playlist {name:?}", s.tracks.len()),
+                Ok(name) => log!(
+                    "[{id}] added {} track(s) to playlist {name:?}",
+                    s.tracks.len()
+                ),
                 Err(e) => notes.push(format!("Could not update playlist “{name}”: {e}")),
             }
         } else if job.req.playlist_from_source && job.req.playlist.is_none() {
-            notes.push("The source is not a playlist or album, so no playlist was created".to_owned());
+            notes.push(
+                "The source is not a playlist or album, so no playlist was created".to_owned(),
+            );
         }
         if !notes.is_empty() {
             s.message = Some(notes.join(". "));
         }
     }
-    log!("[{id}] {:?}{}", s.state, s.message.as_deref().map(|m| format!(": {m}")).unwrap_or_default());
+    log!(
+        "[{id}] {:?}{}",
+        s.state,
+        s.message
+            .as_deref()
+            .map(|m| format!(": {m}"))
+            .unwrap_or_default()
+    );
     job.flush(true);
     if let Err(e) = request::cancel(job.root, &id) {
         log!("[{id}] removing request file: {e}");
@@ -470,7 +555,10 @@ pub mod tests {
         Ctx {
             root: root.to_path_buf(),
             work_dir: work.to_path_buf(),
-            limits: Limits { min_free_space: 0, ..Limits::default() },
+            limits: Limits {
+                min_free_space: 0,
+                ..Limits::default()
+            },
             proxy,
             http,
             tools: Tools::new(None),
@@ -483,7 +571,11 @@ pub mod tests {
         Job {
             root: &ctx.root,
             ctx,
-            tools: Resolved { yt_dlp: PathBuf::new(), deno: None, ffmpeg_dir: None },
+            tools: Resolved {
+                yt_dlp: PathBuf::new(),
+                deno: None,
+                ffmpeg_dir: None,
+            },
             dir: dir.to_path_buf(),
             req,
             status,
@@ -502,11 +594,25 @@ pub mod tests {
 
     #[test]
     fn classifies_inputs() {
-        assert!(matches!(classify("https://open.spotify.com/track/abc"), Input::Spotify(_)));
-        assert!(matches!(classify("HTTPS://www.youtube.com/watch?v=x"), Input::Url(_)));
-        assert!(matches!(classify("youtu.be/jNQXAC9IVRw"), Input::Url(u) if u == "https://youtu.be/jNQXAC9IVRw"));
-        assert!(matches!(classify("open.spotify.com/album/x"), Input::Spotify(_)));
-        assert!(matches!(classify("never gonna give you up"), Input::Search(_)));
+        assert!(matches!(
+            classify("https://open.spotify.com/track/abc"),
+            Input::Spotify(_)
+        ));
+        assert!(matches!(
+            classify("HTTPS://www.youtube.com/watch?v=x"),
+            Input::Url(_)
+        ));
+        assert!(
+            matches!(classify("youtu.be/jNQXAC9IVRw"), Input::Url(u) if u == "https://youtu.be/jNQXAC9IVRw")
+        );
+        assert!(matches!(
+            classify("open.spotify.com/album/x"),
+            Input::Spotify(_)
+        ));
+        assert!(matches!(
+            classify("never gonna give you up"),
+            Input::Search(_)
+        ));
         assert!(matches!(classify("AC/DC"), Input::Search(_)));
         assert!(matches!(classify("v1.2/remix"), Input::Search(_)));
     }
@@ -518,10 +624,16 @@ pub mod tests {
         let ctx = test_ctx(lib.path(), work.path());
         let mut job = test_job(&ctx, work.path());
         let produced = produce(work.path(), "A：B/Singles/What？ [id1].opus");
-        assert_eq!(job.place(&produced).unwrap(), "A：B/Singles/What？ [id1].opus");
+        assert_eq!(
+            job.place(&produced).unwrap(),
+            "A：B/Singles/What？ [id1].opus"
+        );
 
         let produced = produce(work.path(), "Other/Album./T: x [id1].opus");
-        assert_eq!(job.place(&produced).unwrap(), "A：B/Singles/What？ [id1].opus");
+        assert_eq!(
+            job.place(&produced).unwrap(),
+            "A：B/Singles/What？ [id1].opus"
+        );
         assert!(!produced.exists());
 
         let produced = produce(work.path(), "Other/Album./T: x [id2].m4a");
@@ -536,10 +648,19 @@ pub mod tests {
         let ctx = test_ctx(lib.path(), work.path());
         let mut job = test_job(&ctx, work.path());
         let produced = produce(work.path(), "xi/parousia/Other [id3].opus");
-        assert_eq!(job.place(&produced).unwrap(), "XI/Parousia/Other [id3].opus");
+        assert_eq!(
+            job.place(&produced).unwrap(),
+            "XI/Parousia/Other [id3].opus"
+        );
         let produced = produce(work.path(), "xi/New Album/Song [id4].opus");
-        assert_eq!(job.place(&produced).unwrap(), "XI/New Album/Song [id4].opus");
-        let dirs: Vec<_> = fs::read_dir(lib.path()).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(
+            job.place(&produced).unwrap(),
+            "XI/New Album/Song [id4].opus"
+        );
+        let dirs: Vec<_> = fs::read_dir(lib.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(dirs, vec!["XI"]);
     }
 
@@ -577,7 +698,9 @@ pub mod tests {
         let err = job.place(&secret).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
         // Also through `..` and through a symlink inside the job directory.
-        let sneaky = job_dir.join("../../").join(secret.strip_prefix("/").unwrap());
+        let sneaky = job_dir
+            .join("../../")
+            .join(secret.strip_prefix("/").unwrap());
         assert!(job.place(&sneaky).is_err());
         symlink(&secret, job_dir.join("link [id8].opus")).unwrap();
         assert!(job.place(&job_dir.join("link [id8].opus")).is_err());
@@ -593,7 +716,10 @@ pub mod tests {
         ctx.limits.min_free_space = u64::MAX / 2;
         let mut job = test_job(&ctx, work.path());
         let produced = produce(work.path(), "A/B/c [id9].opus");
-        assert_eq!(job.place(&produced).unwrap_err().kind(), io::ErrorKind::StorageFull);
+        assert_eq!(
+            job.place(&produced).unwrap_err().kind(),
+            io::ErrorKind::StorageFull
+        );
         assert!(job.check_space().is_err());
     }
 
@@ -608,11 +734,22 @@ pub mod tests {
         assert_eq!(p.entries.len(), 3);
 
         fs::create_dir_all(root.join("Playlists")).unwrap();
-        fs::write(playlist::playlist_path(root, LIKED_SONGS), "#EXTM3U\n../old.mp3\n").unwrap();
+        fs::write(
+            playlist::playlist_path(root, LIKED_SONGS),
+            "#EXTM3U\n../old.mp3\n",
+        )
+        .unwrap();
         add_to_playlist(root, LIKED_SONGS, &tracks).unwrap();
         let liked = Playlist::read(root, LIKED_SONGS).unwrap();
-        let order: Vec<_> = liked.entries.iter().map(|e| e.track.clone().unwrap()).collect();
-        assert_eq!(order, vec!["A/B/one [1].opus", "A/B/two [2].opus", "old.mp3"]);
+        let order: Vec<_> = liked
+            .entries
+            .iter()
+            .map(|e| e.track.clone().unwrap())
+            .collect();
+        assert_eq!(
+            order,
+            vec!["A/B/one [1].opus", "A/B/two [2].opus", "old.mp3"]
+        );
     }
 
     #[test]
@@ -621,13 +758,26 @@ pub mod tests {
         let root = lib.path();
         let tracks = vec!["A/B/one [1].opus".to_owned()];
         Playlist::create(root, "Road Trip").unwrap();
-        assert_eq!(add_to_playlist(root, "road trip", &tracks).unwrap(), "Road Trip");
+        assert_eq!(
+            add_to_playlist(root, "road trip", &tracks).unwrap(),
+            "Road Trip"
+        );
         // "liked songs" typed into a request is Liked Songs, with its insert-at-top rule.
-        assert_eq!(add_to_playlist(root, "liked songs", &tracks).unwrap(), LIKED_SONGS);
+        assert_eq!(
+            add_to_playlist(root, "liked songs", &tracks).unwrap(),
+            LIKED_SONGS
+        );
         assert_eq!(playlist::list_names(root), vec!["Road Trip"]);
         assert_eq!(Playlist::read(root, "Road Trip").unwrap().entries.len(), 1);
-        assert!(Playlist::read(root, LIKED_SONGS).unwrap().contains("A/B/one [1].opus"));
-        let files: Vec<_> = fs::read_dir(playlist::playlists_dir(root)).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert!(
+            Playlist::read(root, LIKED_SONGS)
+                .unwrap()
+                .contains("A/B/one [1].opus")
+        );
+        let files: Vec<_> = fs::read_dir(playlist::playlists_dir(root))
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(files.len(), 2);
     }
 
@@ -645,6 +795,11 @@ pub mod tests {
         let tracks = vec!["A/B/one [1].opus".to_owned()];
         assert!(add_to_playlist(root, "x", &tracks).is_err());
         assert_eq!(fs::read_to_string(&secret).unwrap(), "ssh-ed25519 AAAA\n");
-        assert!(fs::symlink_metadata(playlist::playlist_path(root, "x")).unwrap().file_type().is_symlink());
+        assert!(
+            fs::symlink_metadata(playlist::playlist_path(root, "x"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
     }
 }

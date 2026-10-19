@@ -89,7 +89,10 @@ pub fn parse_size(s: &str) -> Result<u64> {
         }
         _ => (s, 1),
     };
-    let n: f64 = num.trim().parse().with_context(|| format!("bad size {s:?}"))?;
+    let n: f64 = num
+        .trim()
+        .parse()
+        .with_context(|| format!("bad size {s:?}"))?;
     if !n.is_finite() || n < 0.0 {
         bail!("bad size {s:?}");
     }
@@ -112,10 +115,14 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed> {
             _ => (arg.clone(), None),
         };
         let mut value = || -> Result<String> {
-            inline.clone().or_else(|| args.next()).with_context(|| format!("{flag} needs a value"))
+            inline
+                .clone()
+                .or_else(|| args.next())
+                .with_context(|| format!("{flag} needs a value"))
         };
         let duration = |v: String| -> Result<Duration> {
-            humantime::parse_duration(&v).with_context(|| format!("{flag}: bad duration {v:?} (e.g. 30m, 4h)"))
+            humantime::parse_duration(&v)
+                .with_context(|| format!("{flag}: bad duration {v:?} (e.g. 30m, 4h)"))
         };
         match flag.as_str() {
             "--library" => a.library = Some(PathBuf::from(value()?)),
@@ -153,7 +160,10 @@ pub fn home() -> PathBuf {
 }
 
 fn xdg(var: &str, fallback: &str) -> PathBuf {
-    env::var_os(var).map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| home().join(fallback))
+    env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| home().join(fallback))
 }
 
 pub fn config_home() -> PathBuf {
@@ -188,8 +198,10 @@ pub fn default_library() -> Result<PathBuf> {
     let file = config_home().join("tunemesh").join("config.toml");
     match fs::read_to_string(&file) {
         Ok(text) => {
-            let c: AppConfig = toml::from_str(&text).with_context(|| format!("reading {}", file.display()))?;
-            Ok(c.library_path.map_or_else(|| home().join("Music/TuneMesh"), |p| expand_home(&p)))
+            let c: AppConfig =
+                toml::from_str(&text).with_context(|| format!("reading {}", file.display()))?;
+            Ok(c.library_path
+                .map_or_else(|| home().join("Music/TuneMesh"), |p| expand_home(&p)))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(home().join("Music/TuneMesh")),
         Err(e) => Err(e).with_context(|| format!("reading {}", file.display())),
@@ -217,10 +229,17 @@ pub fn private_dir(dir: &Path) -> Result<PathBuf> {
     // SAFETY: geteuid has no preconditions.
     let uid = unsafe { libc::geteuid() };
     if !meta.is_dir() {
-        bail!("{} is not a directory (or is a symbolic link)", dir.display());
+        bail!(
+            "{} is not a directory (or is a symbolic link)",
+            dir.display()
+        );
     }
     if meta.uid() != uid {
-        bail!("refusing {}: it is owned by uid {}, not by this user ({uid})", dir.display(), meta.uid());
+        bail!(
+            "refusing {}: it is owned by uid {}, not by this user ({uid})",
+            dir.display(),
+            meta.uid()
+        );
     }
     if meta.mode() & 0o077 != 0 {
         bail!(
@@ -240,7 +259,11 @@ pub fn host_name() -> String {
     let ok = unsafe { libc::gethostname(buf.as_mut_ptr().cast(), buf.len()) } == 0;
     let end = buf.iter().position(|b| *b == 0).unwrap_or(buf.len());
     let name = String::from_utf8_lossy(&buf[..end]).trim().to_owned();
-    if ok && !name.is_empty() { name } else { "unknown device".to_owned() }
+    if ok && !name.is_empty() {
+        name
+    } else {
+        "unknown device".to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -254,7 +277,10 @@ mod tests {
 
     #[test]
     fn parses_flags_and_defaults() {
-        let Parsed::Run(a) = args("--library /l --work-dir=/w --max-items 2 --max-file-size 1.5G --max-duration 90m").unwrap() else {
+        let Parsed::Run(a) = args(
+            "--library /l --work-dir=/w --max-items 2 --max-file-size 1.5G --max-duration 90m",
+        )
+        .unwrap() else {
             panic!()
         };
         assert_eq!(a.library.as_deref(), Some(Path::new("/l")));
@@ -277,7 +303,10 @@ mod tests {
         let base = tempfile::tempdir().unwrap();
         let fresh = base.path().join("a/work");
         private_dir(&fresh).unwrap();
-        assert_eq!(fs::metadata(&fresh).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            fs::metadata(&fresh).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
 
         let open = base.path().join("open");
         fs::create_dir(&open).unwrap();

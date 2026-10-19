@@ -48,13 +48,17 @@ pub struct Tools {
 }
 
 fn env_path(var: &str) -> Option<PathBuf> {
-    std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from)
+    std::env::var_os(var)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 /// The first `name` on `PATH` that is an executable file.
 pub fn which(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).map(|d| d.join(name)).find(|p| is_executable(p))
+    std::env::split_paths(&path)
+        .map(|d| d.join(name))
+        .find(|p| is_executable(p))
 }
 
 fn is_executable(p: &Path) -> bool {
@@ -62,7 +66,9 @@ fn is_executable(p: &Path) -> bool {
 }
 
 fn is_musl() -> bool {
-    ["/lib/ld-musl-x86_64.so.1", "/lib/ld-musl-aarch64.so.1"].iter().any(|p| Path::new(p).exists())
+    ["/lib/ld-musl-x86_64.so.1", "/lib/ld-musl-aarch64.so.1"]
+        .iter()
+        .any(|p| Path::new(p).exists())
 }
 
 /// The yt-dlp release asset for this machine.
@@ -87,9 +93,18 @@ fn deno_asset() -> Option<&'static str> {
 /// The tag a GitHub `releases/latest` URL redirects to.
 fn latest_tag(http: &Http, repo: &str) -> Result<String, String> {
     let location = http.redirect_location(&format!("https://github.com/{repo}/releases/latest"))?;
-    let tag = location.rsplit_once("/tag/").map(|(_, t)| t.trim_end_matches('/')).unwrap_or("");
-    if tag.is_empty() || !tag.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c)) {
-        return Err(format!("unexpected release redirect for {repo}: {location}"));
+    let tag = location
+        .rsplit_once("/tag/")
+        .map(|(_, t)| t.trim_end_matches('/'))
+        .unwrap_or("");
+    if tag.is_empty()
+        || !tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
+    {
+        return Err(format!(
+            "unexpected release redirect for {repo}: {location}"
+        ));
     }
     Ok(tag.to_owned())
 }
@@ -99,8 +114,10 @@ fn checksum_for(listing: &str, asset: &str) -> Option<String> {
     listing.lines().find_map(|l| {
         let mut parts = l.split_whitespace();
         let (sum, name) = (parts.next()?, parts.next()?);
-        (name.trim_start_matches('*') == asset && sum.len() == 64 && sum.chars().all(|c| c.is_ascii_hexdigit()))
-            .then(|| sum.to_ascii_lowercase())
+        (name.trim_start_matches('*') == asset
+            && sum.len() == 64
+            && sum.chars().all(|c| c.is_ascii_hexdigit()))
+        .then(|| sum.to_ascii_lowercase())
     })
 }
 
@@ -150,11 +167,16 @@ impl Drop for Temp {
 /// Downloads `url` into a temporary file in `dir`, checking its SHA-256.
 fn fetch_verified(http: &Http, url: &str, sha256: &str, dir: &Path) -> Result<Temp, String> {
     let (temp, file) = Temp::new(dir).map_err(|e| e.to_string())?;
-    let mut w = Hashing { inner: file, hash: Sha256::new() };
+    let mut w = Hashing {
+        inner: file,
+        hash: Sha256::new(),
+    };
     http.download(url, &mut w, MAX_BINARY_BYTES)?;
     let got = hex(&w.hash.finalize());
     if got != sha256 {
-        return Err(format!("{url}: checksum mismatch (expected {sha256}, got {got})"));
+        return Err(format!(
+            "{url}: checksum mismatch (expected {sha256}, got {got})"
+        ));
     }
     w.inner.sync_all().map_err(|e| e.to_string())?;
     Ok(temp)
@@ -162,11 +184,13 @@ fn fetch_verified(http: &Http, url: &str, sha256: &str, dir: &Path) -> Result<Te
 
 /// Makes `temp` executable and renames it to `dir/name`, recording `version`.
 fn install(temp: &mut Temp, dir: &Path, name: &str, version: &str) -> Result<PathBuf, String> {
-    fs::set_permissions(&temp.path, fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    fs::set_permissions(&temp.path, fs::Permissions::from_mode(0o755))
+        .map_err(|e| e.to_string())?;
     let target = dir.join(name);
     fs::rename(&temp.path, &target).map_err(|e| e.to_string())?;
     temp.keep = true;
-    tunemesh_core::atomic::write(&dir.join("version"), version.as_bytes()).map_err(|e| e.to_string())?;
+    tunemesh_core::atomic::write(&dir.join("version"), version.as_bytes())
+        .map_err(|e| e.to_string())?;
     touch(dir);
     Ok(target)
 }
@@ -178,13 +202,23 @@ fn touch(dir: &Path) {
 fn checked_recently(dir: &Path, every: Duration) -> bool {
     fs::metadata(dir.join("checked"))
         .and_then(|m| m.modified())
-        .is_ok_and(|t| SystemTime::now().duration_since(t).is_ok_and(|age| age < every))
+        .is_ok_and(|t| {
+            SystemTime::now()
+                .duration_since(t)
+                .is_ok_and(|age| age < every)
+        })
 }
 
 /// Reads the one file called `name` out of a zip archive (stored or deflated).
 fn unzip_entry(zip: &[u8], name: &str, out: &mut impl Write, limit: u64) -> Result<(), String> {
-    let u16_at = |o: usize| zip.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]) as usize);
-    let u32_at = |o: usize| zip.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    let u16_at = |o: usize| {
+        zip.get(o..o + 2)
+            .map(|b| u16::from_le_bytes([b[0], b[1]]) as usize)
+    };
+    let u32_at = |o: usize| {
+        zip.get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+    };
     let bad = || "not a usable zip archive".to_owned();
     let search_from = zip.len().saturating_sub(22 + 65535);
     let eocd = (search_from..zip.len().saturating_sub(21))
@@ -208,7 +242,10 @@ fn unzip_entry(zip: &[u8], name: &str, out: &mut impl Write, limit: u64) -> Resu
             if u32_at(local) != Some(0x0403_4b50) {
                 return Err(bad());
             }
-            let start = local + 30 + u16_at(local + 26).ok_or_else(bad)? + u16_at(local + 28).ok_or_else(bad)?;
+            let start = local
+                + 30
+                + u16_at(local + 26).ok_or_else(bad)?
+                + u16_at(local + 28).ok_or_else(bad)?;
             let data = zip.get(start..start + csize).ok_or_else(bad)?;
             let mut reader: Box<dyn Read> = match method {
                 0 => Box::new(data),
@@ -248,7 +285,10 @@ impl Tools {
         let ffmpeg_dir = match &self.ffmpeg_dir {
             Some(dir) => {
                 if !is_executable(&dir.join("ffmpeg")) || !is_executable(&dir.join("ffprobe")) {
-                    return Err(format!("TUNEMESH_FFMPEG_DIR ({}) has no ffmpeg and ffprobe", dir.display()));
+                    return Err(format!(
+                        "TUNEMESH_FFMPEG_DIR ({}) has no ffmpeg and ffprobe",
+                        dir.display()
+                    ));
                 }
                 Some(dir.clone())
             }
@@ -279,14 +319,20 @@ impl Tools {
                 },
             },
         };
-        Ok(Resolved { yt_dlp, deno, ffmpeg_dir })
+        Ok(Resolved {
+            yt_dlp,
+            deno,
+            ffmpeg_dir,
+        })
     }
 
     fn managed_ytdlp(&mut self, http: &Http) -> Result<PathBuf, String> {
         let dir = self.data_dir.join("yt-dlp");
         let binary = dir.join("yt-dlp");
         let have = is_executable(&binary);
-        if have && (checked_recently(&dir, YTDLP_REFRESH) || self.skip_check("yt-dlp", YTDLP_REFRESH)) {
+        if have
+            && (checked_recently(&dir, YTDLP_REFRESH) || self.skip_check("yt-dlp", YTDLP_REFRESH))
+        {
             return Ok(binary);
         }
         if !have && self.skip_check("yt-dlp", RETRY_AFTER_FAILURE) {
@@ -295,7 +341,10 @@ impl Tools {
         self.checked.insert("yt-dlp", Instant::now());
         let result = (|| {
             let asset = ytdlp_asset().ok_or_else(|| {
-                format!("no standalone yt-dlp release for {} Linux", std::env::consts::ARCH)
+                format!(
+                    "no standalone yt-dlp release for {} Linux",
+                    std::env::consts::ARCH
+                )
             })?;
             let dir = private_dir(&dir).map_err(|e| e.to_string())?;
             let tag = latest_tag(http, "yt-dlp/yt-dlp")?;
@@ -306,7 +355,8 @@ impl Tools {
             }
             let base = format!("https://github.com/yt-dlp/yt-dlp/releases/download/{tag}");
             let sums = http.text(&format!("{base}/SHA2-256SUMS"), &[], 64 * 1024)?;
-            let sum = checksum_for(&sums, asset).ok_or_else(|| format!("{asset} is not listed in SHA2-256SUMS"))?;
+            let sum = checksum_for(&sums, asset)
+                .ok_or_else(|| format!("{asset} is not listed in SHA2-256SUMS"))?;
             let mut temp = fetch_verified(http, &format!("{base}/{asset}"), &sum, &dir)?;
             let path = install(&mut temp, &dir, "yt-dlp", &tag)?;
             log!("installed yt-dlp {tag} at {}", path.display());
@@ -334,8 +384,12 @@ impl Tools {
         }
         self.checked.insert("deno", Instant::now());
         let result = (|| {
-            let asset = deno_asset()
-                .ok_or_else(|| format!("no deno release for {} Linux with this C library", std::env::consts::ARCH))?;
+            let asset = deno_asset().ok_or_else(|| {
+                format!(
+                    "no deno release for {} Linux with this C library",
+                    std::env::consts::ARCH
+                )
+            })?;
             let dir = private_dir(&dir).map_err(|e| e.to_string())?;
             let tag = latest_tag(http, "denoland/deno")?;
             let current = fs::read_to_string(dir.join("version")).unwrap_or_default();
@@ -345,7 +399,8 @@ impl Tools {
             }
             let base = format!("https://github.com/denoland/deno/releases/download/{tag}");
             let listing = http.text(&format!("{base}/{asset}.sha256sum"), &[], 4096)?;
-            let sum = checksum_for(&listing, asset).ok_or_else(|| format!("no checksum for {asset}"))?;
+            let sum =
+                checksum_for(&listing, asset).ok_or_else(|| format!("no checksum for {asset}"))?;
             let zip_temp = fetch_verified(http, &format!("{base}/{asset}"), &sum, &dir)?;
             let zip = fs::read(&zip_temp.path).map_err(|e| e.to_string())?;
             let (mut temp, mut file) = Temp::new(&dir).map_err(|e| e.to_string())?;
@@ -401,7 +456,8 @@ mod tests {
     fn make_zip(method: u16) -> Vec<u8> {
         let content = b"hello deno";
         let data = if method == 8 {
-            let mut e = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
+            let mut e =
+                flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::default());
             e.write_all(content).unwrap();
             e.finish().unwrap()
         } else {

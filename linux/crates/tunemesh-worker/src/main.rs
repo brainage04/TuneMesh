@@ -81,7 +81,12 @@ fn setup(args: &Args) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
         bail!("library {} is not a directory", library.display());
     }
     let library = library.canonicalize()?;
-    let work_dir = config::private_dir(&args.work_dir.clone().unwrap_or_else(config::default_work_dir))?;
+    let work_dir = config::private_dir(
+        &args
+            .work_dir
+            .clone()
+            .unwrap_or_else(config::default_work_dir),
+    )?;
     if work_dir.starts_with(&library) || library.starts_with(&work_dir) {
         bail!("the work directory and the library must not contain each other");
     }
@@ -94,7 +99,9 @@ fn run(args: Args) -> Result<(), Fatal> {
     // Leftovers of a previous run.
     let _ = fs::remove_dir_all(work_dir.join("jobs"));
     let _ = fs::remove_dir_all(work_dir.join("tmp"));
-    let proxy = proxy::Proxy::start().context("starting the egress proxy").map_err(Fatal::Other)?;
+    let proxy = proxy::Proxy::start()
+        .context("starting the egress proxy")
+        .map_err(Fatal::Other)?;
     let http = http::Http::new(&proxy.url()).map_err(|e| Fatal::Other(anyhow::anyhow!(e)))?;
     let device = args.device.clone().unwrap_or_else(config::host_name);
     log!(
@@ -123,7 +130,10 @@ fn run(args: Args) -> Result<(), Fatal> {
         let root = ctx.root.clone();
         let (requests, bad, pending) = request::list_oldest_requests(&root, ctx.limits.max_pending);
         if pending > ctx.limits.max_pending && pending != reported_pending {
-            log!("{pending} requests waiting; looking at the oldest {} only", ctx.limits.max_pending);
+            log!(
+                "{pending} requests waiting; looking at the oldest {} only",
+                ctx.limits.max_pending
+            );
         }
         reported_pending = pending;
 

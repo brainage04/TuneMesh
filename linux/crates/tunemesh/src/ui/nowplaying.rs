@@ -36,19 +36,38 @@ pub struct NowPlaying {
 
 impl NowPlaying {
     pub fn new(app: &Rc<App>) -> Rc<Self> {
-        let widget = gtk::Box::builder().spacing(16).css_classes(["tm-nowplaying"]).build();
+        let widget = gtk::Box::builder()
+            .spacing(16)
+            .css_classes(["tm-nowplaying"])
+            .build();
 
         // Left: track info.
-        let left = gtk::Box::builder().spacing(12).width_request(300).valign(gtk::Align::Center).build();
+        let left = gtk::Box::builder()
+            .spacing(12)
+            .width_request(300)
+            .valign(gtk::Align::Center)
+            .build();
         let cover = crate::ui::widgets::cover_image(56);
         left.append(&cover);
-        let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).valign(gtk::Align::Center).spacing(2).build();
+        let text = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .valign(gtk::Align::Center)
+            .spacing(2)
+            .build();
         let title = label("", &["title"]);
         title.set_max_width_chars(28);
-        let title_btn = gtk::Button::builder().child(&title).css_classes(["tm-link", "flat"]).halign(gtk::Align::Start).build();
+        let title_btn = gtk::Button::builder()
+            .child(&title)
+            .css_classes(["tm-link", "flat"])
+            .halign(gtk::Align::Start)
+            .build();
         let artist = label("", &["artist"]);
         artist.set_max_width_chars(32);
-        let artist_btn = gtk::Button::builder().child(&artist).css_classes(["tm-link", "flat"]).halign(gtk::Align::Start).build();
+        let artist_btn = gtk::Button::builder()
+            .child(&artist)
+            .css_classes(["tm-link", "flat"])
+            .halign(gtk::Align::Start)
+            .build();
         text.append(&title_btn);
         text.append(&artist_btn);
         left.append(&text);
@@ -66,7 +85,10 @@ impl NowPlaying {
             .valign(gtk::Align::Center)
             .spacing(4)
             .build();
-        let controls = gtk::Box::builder().spacing(16).halign(gtk::Align::Center).build();
+        let controls = gtk::Box::builder()
+            .spacing(16)
+            .halign(gtk::Align::Center)
+            .build();
         let shuffle = icon_button("media-playlist-shuffle-symbolic", "Enable shuffle");
         let prev = icon_button("media-skip-backward-symbolic", "Previous");
         let play = gtk::Button::builder()
@@ -82,7 +104,12 @@ impl NowPlaying {
         }
         center.append(&controls);
         let seek_row = gtk::Box::builder().spacing(8).build();
-        let pos_label = gtk::Label::builder().label("0:00").width_chars(5).xalign(1.0).css_classes(["time"]).build();
+        let pos_label = gtk::Label::builder()
+            .label("0:00")
+            .width_chars(5)
+            .xalign(1.0)
+            .css_classes(["time"])
+            .build();
         let seek = gtk::Scale::builder()
             .orientation(gtk::Orientation::Horizontal)
             .adjustment(&gtk::Adjustment::new(0.0, 0.0, 1.0, 1.0, 10.0, 0.0))
@@ -90,7 +117,12 @@ impl NowPlaying {
             .width_request(520)
             .css_classes(["tm-seek"])
             .build();
-        let dur_label = gtk::Label::builder().label("0:00").width_chars(5).xalign(0.0).css_classes(["time"]).build();
+        let dur_label = gtk::Label::builder()
+            .label("0:00")
+            .width_chars(5)
+            .xalign(0.0)
+            .css_classes(["time"])
+            .build();
         seek_row.append(&pos_label);
         seek_row.append(&seek);
         seek_row.append(&dur_label);
@@ -98,12 +130,24 @@ impl NowPlaying {
         widget.append(&center);
 
         // Right: queue and volume.
-        let right = gtk::Box::builder().spacing(8).width_request(300).halign(gtk::Align::End).valign(gtk::Align::Center).build();
+        let right = gtk::Box::builder()
+            .spacing(8)
+            .width_request(300)
+            .halign(gtk::Align::End)
+            .valign(gtk::Align::Center)
+            .build();
         let queue_btn = icon_button("view-list-ordered-symbolic", "Queue");
         let volume_btn = icon_button("audio-volume-high-symbolic", "Mute");
         let volume = gtk::Scale::builder()
             .orientation(gtk::Orientation::Horizontal)
-            .adjustment(&gtk::Adjustment::new(app.player.volume(), 0.0, 100.0, 1.0, 10.0, 0.0))
+            .adjustment(&gtk::Adjustment::new(
+                app.player.volume(),
+                0.0,
+                100.0,
+                1.0,
+                10.0,
+                0.0,
+            ))
             .draw_value(false)
             .width_request(110)
             .css_classes(["tm-volume"])
@@ -153,9 +197,11 @@ impl NowPlaying {
         let a = app.clone();
         self.next.connect_clicked(move |_| a.player.next());
         let a = app.clone();
-        self.shuffle.connect_clicked(move |_| a.player.set_shuffle(!a.player.shuffle()));
+        self.shuffle
+            .connect_clicked(move |_| a.player.set_shuffle(!a.player.shuffle()));
         let a = app.clone();
-        self.repeat.connect_clicked(move |_| a.player.cycle_repeat());
+        self.repeat
+            .connect_clicked(move |_| a.player.cycle_repeat());
         let a = app.clone();
         self.queue_btn.connect_clicked(move |_| a.toggle_queue());
         let me = Rc::downgrade(self);
@@ -170,7 +216,8 @@ impl NowPlaying {
             gtk::glib::Propagation::Proceed
         });
         let a = app.clone();
-        self.volume.connect_value_changed(move |s| a.player.set_volume(s.value()));
+        self.volume
+            .connect_value_changed(move |s| a.player.set_volume(s.value()));
         let (a, me) = (app.clone(), Rc::downgrade(self));
         self.volume_btn.connect_clicked(move |_| {
             let Some(me) = me.upgrade() else { return };
@@ -185,17 +232,19 @@ impl NowPlaying {
         let a = app.clone();
         self.heart.connect_clicked(move |_| {
             if let Some(p) = a.player.current_path()
-                && let Err(e) = a.store.toggle_like(&p) {
-                    a.error("Could not update Liked Songs", e);
-                }
+                && let Err(e) = a.store.toggle_like(&p)
+            {
+                a.error("Could not update Liked Songs", e);
+            }
         });
         let a = app.clone();
         self.title_btn.connect_clicked(move |_| {
             let lib = a.store.library();
             if let Some(t) = a.player.current_path().and_then(|p| lib.track(&p).cloned())
-                && let Some(i) = lib.album_of(&t) {
-                    a.navigate(Route::Album(lib.albums[i].key()));
-                }
+                && let Some(i) = lib.album_of(&t)
+            {
+                a.navigate(Route::Album(lib.albums[i].key()));
+            }
         });
         let a = app.clone();
         self.artist_btn.connect_clicked(move |_| {
@@ -218,14 +267,17 @@ impl NowPlaying {
         let me = Rc::downgrade(self);
         app.store.connect(move |c| {
             if let Some(me) = me.upgrade()
-                && matches!(c, StoreChange::Liked | StoreChange::Library) {
-                    me.update_track();
-                }
+                && matches!(c, StoreChange::Liked | StoreChange::Library)
+            {
+                me.update_track();
+            }
         });
     }
 
     fn update_track(&self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let lib = app.store.library();
         let path = app.player.current_path();
         let track = path.as_deref().and_then(|p| lib.track(p));
@@ -238,13 +290,30 @@ impl NowPlaying {
                 self.artist.set_label(&t.artist);
                 app.covers.apply(&self.cover, Source::for_track(t), 56);
                 let liked = app.store.is_liked(&t.path);
-                self.heart.set_icon_name(if liked { "tm-heart-filled-symbolic" } else { "tm-heart-outline-symbolic" });
-                self.heart.set_tooltip_text(Some(if liked { "Remove from Liked Songs" } else { "Save to Liked Songs" }));
-                if liked { self.heart.add_css_class("liked") } else { self.heart.remove_css_class("liked") }
-                app.window.set_title(Some(&format!("{} • {}", t.title, t.artist)));
+                self.heart.set_icon_name(if liked {
+                    "tm-heart-filled-symbolic"
+                } else {
+                    "tm-heart-outline-symbolic"
+                });
+                self.heart.set_tooltip_text(Some(if liked {
+                    "Remove from Liked Songs"
+                } else {
+                    "Save to Liked Songs"
+                }));
+                if liked {
+                    self.heart.add_css_class("liked")
+                } else {
+                    self.heart.remove_css_class("liked")
+                }
+                app.window
+                    .set_title(Some(&format!("{} • {}", t.title, t.artist)));
             }
             None => {
-                self.title.set_label(path.as_deref().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or(""));
+                self.title.set_label(
+                    path.as_deref()
+                        .map(|p| p.rsplit('/').next().unwrap_or(p))
+                        .unwrap_or(""),
+                );
                 self.artist.set_label(if has { "Unavailable" } else { "" });
                 app.window.set_title(Some("TuneMesh"));
             }
@@ -257,18 +326,31 @@ impl NowPlaying {
     }
 
     fn update_playing(&self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let playing = app.player.is_playing();
-        self.play.set_icon_name(if playing { "media-playback-pause-symbolic" } else { "media-playback-start-symbolic" });
-        self.play.set_tooltip_text(Some(if playing { "Pause" } else { "Play" }));
+        self.play.set_icon_name(if playing {
+            "media-playback-pause-symbolic"
+        } else {
+            "media-playback-start-symbolic"
+        });
+        self.play
+            .set_tooltip_text(Some(if playing { "Pause" } else { "Play" }));
     }
 
     fn update_position(&self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let mut dur = app.player.duration();
         if dur <= 0.0 {
             let lib = app.store.library();
-            dur = app.player.current_path().and_then(|p| lib.track(&p).map(|t| t.duration_ms as f64 / 1000.0)).unwrap_or(0.0);
+            dur = app
+                .player
+                .current_path()
+                .and_then(|p| lib.track(&p).map(|t| t.duration_ms as f64 / 1000.0))
+                .unwrap_or(0.0);
         }
         let pos = app.player.position().min(dur.max(0.0));
         let adj = self.seek.adjustment();
@@ -279,7 +361,9 @@ impl NowPlaying {
     }
 
     fn update_options(&self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         let p = &app.player;
         if p.shuffle() {
             self.shuffle.add_css_class("on");
@@ -301,7 +385,8 @@ impl NowPlaying {
             }
             Repeat::One => {
                 self.repeat.add_css_class("on");
-                self.repeat.set_icon_name("media-playlist-repeat-song-symbolic");
+                self.repeat
+                    .set_icon_name("media-playlist-repeat-song-symbolic");
                 self.repeat.set_tooltip_text(Some("Disable repeat"));
             }
         }
@@ -316,6 +401,10 @@ impl NowPlaying {
             _ => "audio-volume-high-symbolic",
         });
         let revealed = app.queue_revealer.reveals_child();
-        if revealed { self.queue_btn.add_css_class("on") } else { self.queue_btn.remove_css_class("on") }
+        if revealed {
+            self.queue_btn.add_css_class("on")
+        } else {
+            self.queue_btn.remove_css_class("on")
+        }
     }
 }

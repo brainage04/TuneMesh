@@ -1,7 +1,7 @@
 # TuneMesh Android
 
-Project-specific notes for agents working on the Android app. A workspace-level `AGENTS.md` above this
-repository, when there is one, applies as well.
+Project-specific notes for agents working on the Android app. The root `AGENTS.md`, and `AGENTS.local.md` when
+it exists, apply as well.
 
 - Module `app`, variant `debug`, application ID `io.github.brainage04.tunemesh`, launcher activity
   `.MainActivity`. A second exported activity, `.ShareActivity`, is the `ACTION_SEND text/plain` share target.

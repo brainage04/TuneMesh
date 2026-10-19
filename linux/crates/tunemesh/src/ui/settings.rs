@@ -3,8 +3,8 @@
 
 use std::rc::Rc;
 
-use gtk::prelude::*;
 use gtk::gio;
+use gtk::prelude::*;
 
 use crate::app::{App, Page};
 use crate::config::{self, expand_home};
@@ -12,13 +12,22 @@ use crate::ui::downloads;
 use crate::ui::widgets::{label, plural};
 
 fn card(title: &str) -> gtk::Box {
-    let c = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(10).css_classes(["tm-card"]).build();
+    let c = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(10)
+        .css_classes(["tm-card"])
+        .build();
     c.append(&label(title, &["heading"]));
     c
 }
 
 fn dim(text: &str) -> gtk::Label {
-    gtk::Label::builder().label(text).xalign(0.0).wrap(true).css_classes(["dim"]).build()
+    gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["dim"])
+        .build()
 }
 
 pub fn page(app: &Rc<App>) -> Page {
@@ -37,23 +46,36 @@ pub fn page(app: &Rc<App>) -> Page {
         "The Syncthing folder that holds your music, playlists and download requests. Every device that shares it sees the same library.",
     ));
     let row = gtk::Box::builder().spacing(12).build();
-    let entry = gtk::Entry::builder().text(app.store.root().to_string_lossy()).hexpand(true).build();
-    let choose = gtk::Button::builder().label("Choose…").css_classes(["tm-pill-outline"]).build();
-    let apply = gtk::Button::builder().label("Apply").css_classes(["tm-green"]).build();
+    let entry = gtk::Entry::builder()
+        .text(app.store.root().to_string_lossy())
+        .hexpand(true)
+        .build();
+    let choose = gtk::Button::builder()
+        .label("Choose…")
+        .css_classes(["tm-pill-outline"])
+        .build();
+    let apply = gtk::Button::builder()
+        .label("Apply")
+        .css_classes(["tm-green"])
+        .build();
     row.append(&entry);
     row.append(&choose);
     row.append(&apply);
     lib_card.append(&row);
     let (a, e) = (app.clone(), entry.clone());
     choose.connect_clicked(move |_| {
-        let dialog = gtk::FileDialog::builder().title("Choose the library folder").modal(true).build();
+        let dialog = gtk::FileDialog::builder()
+            .title("Choose the library folder")
+            .modal(true)
+            .build();
         dialog.set_initial_folder(Some(&gio::File::for_path(a.store.root())));
         let e = e.clone();
         dialog.select_folder(Some(&a.window), None::<&gio::Cancellable>, move |res| {
             if let Ok(folder) = res
-                && let Some(path) = folder.path() {
-                    e.set_text(&path.to_string_lossy());
-                }
+                && let Some(path) = folder.path()
+            {
+                e.set_text(&path.to_string_lossy());
+            }
         });
     });
     let apply_path = {
@@ -82,20 +104,31 @@ pub fn page(app: &Rc<App>) -> Page {
     sync.append(&dim(
         "Syncthing keeps the library folder the same on all your devices. The setup assistant shares the folder from the Syncthing on this computer and adds your other devices.",
     ));
-    let setup = gtk::Button::builder().label("Open setup assistant").css_classes(["tm-pill-outline"]).halign(gtk::Align::Start).build();
+    let setup = gtk::Button::builder()
+        .label("Open setup assistant")
+        .css_classes(["tm-pill-outline"])
+        .halign(gtk::Align::Start)
+        .build();
     setup.set_action_name(Some("app.setup"));
     sync.append(&setup);
     b.append(&sync);
 
     let dl = card("Downloads");
     let row = gtk::Box::builder().spacing(12).build();
-    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(4)
+        .hexpand(true)
+        .build();
     text.append(&label("This device downloads songs", &[]));
     text.append(&dim(
         "Runs the downloader while TuneMesh is open: it fetches what any device asks for. One device per library downloads. Needs ffmpeg; yt-dlp is fetched automatically.",
     ));
     row.append(&text);
-    let switch = gtk::Switch::builder().active(app.config.borrow().downloader).valign(gtk::Align::Center).build();
+    let switch = gtk::Switch::builder()
+        .active(app.config.borrow().downloader)
+        .valign(gtk::Align::Center)
+        .build();
     let a = app.clone();
     switch.connect_active_notify(move |s| a.set_downloader(s.is_active()));
     row.append(&switch);
@@ -116,7 +149,11 @@ pub fn page(app: &Rc<App>) -> Page {
         text.push_str(" • scanning…");
     }
     status.append(&dim(&text));
-    let rescan = gtk::Button::builder().label("Rescan now").css_classes(["tm-pill-outline"]).halign(gtk::Align::Start).build();
+    let rescan = gtk::Button::builder()
+        .label("Rescan now")
+        .css_classes(["tm-pill-outline"])
+        .halign(gtk::Align::Start)
+        .build();
     let a = app.clone();
     rescan.connect_clicked(move |_| a.store.rescan());
     status.append(&rescan);
@@ -137,7 +174,10 @@ pub fn page(app: &Rc<App>) -> Page {
     b.append(&device);
 
     let keys = card("Keyboard shortcuts");
-    let grid = gtk::Grid::builder().column_spacing(24).row_spacing(6).build();
+    let grid = gtk::Grid::builder()
+        .column_spacing(24)
+        .row_spacing(6)
+        .build();
     for (i, (k, what)) in [
         ("Space", "Play / pause"),
         ("Ctrl+F", "Search"),
@@ -161,6 +201,13 @@ pub fn page(app: &Rc<App>) -> Page {
     about.append(&dim(&format!("TuneMesh {}", env!("CARGO_PKG_VERSION"))));
     b.append(&about);
 
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&b).build();
-    Page { widget: scroller.clone().upcast(), scroller: Some(scroller) }
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&b)
+        .build();
+    Page {
+        widget: scroller.clone().upcast(),
+        scroller: Some(scroller),
+    }
 }

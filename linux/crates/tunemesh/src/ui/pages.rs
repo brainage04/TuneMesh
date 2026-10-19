@@ -38,7 +38,14 @@ pub fn route_tracks(app: &App, route: &Route) -> (String, Vec<String>) {
             None => (String::new(), Vec::new()),
         },
         Route::Artist(name) => match lib.artist_index(name) {
-            Some(i) => (name.clone(), lib.artists[i].tracks.iter().map(|&t| lib.tracks[t].path.clone()).collect()),
+            Some(i) => (
+                name.clone(),
+                lib.artists[i]
+                    .tracks
+                    .iter()
+                    .map(|&t| lib.tracks[t].path.clone())
+                    .collect(),
+            ),
             None => (String::new(), Vec::new()),
         },
         Route::Playlist(name) => match app.store.playlist(name) {
@@ -47,22 +54,43 @@ pub fn route_tracks(app: &App, route: &Route) -> (String, Vec<String>) {
         },
         Route::Search(q) => {
             let r = lib.search(&Query::new(q));
-            (format!("Search “{q}”"), r.tracks.iter().map(|&t| lib.tracks[t].path.clone()).collect())
+            (
+                format!("Search “{q}”"),
+                r.tracks
+                    .iter()
+                    .map(|&t| lib.tracks[t].path.clone())
+                    .collect(),
+            )
         }
-        _ => ("Library".into(), lib.tracks.iter().map(|t| t.path.clone()).collect()),
+        _ => (
+            "Library".into(),
+            lib.tracks.iter().map(|t| t.path.clone()).collect(),
+        ),
     }
 }
 
 fn album_paths(lib: &Library, album: usize) -> Vec<String> {
-    lib.albums[album].tracks.iter().map(|&t| lib.tracks[t].path.clone()).collect()
+    lib.albums[album]
+        .tracks
+        .iter()
+        .map(|&t| lib.tracks[t].path.clone())
+        .collect()
 }
 
 fn available_paths(lib: &Library, p: &Playlist) -> Vec<String> {
-    p.entries.iter().filter_map(|e| e.track.clone()).filter(|t| lib.track_index(t).is_some()).collect()
+    p.entries
+        .iter()
+        .filter_map(|e| e.track.clone())
+        .filter(|t| lib.track_index(t).is_some())
+        .collect()
 }
 
 fn scrolled(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
-    gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(child).build()
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(child)
+        .build()
 }
 
 fn page_box() -> gtk::Box {
@@ -78,7 +106,10 @@ fn page_box() -> gtk::Box {
 
 fn simple(child: &impl IsA<gtk::Widget>) -> Page {
     let s = scrolled(child);
-    Page { widget: s.clone().upcast(), scroller: Some(s) }
+    Page {
+        widget: s.clone().upcast(),
+        scroller: Some(s),
+    }
 }
 
 fn not_found() -> Page {
@@ -94,32 +125,52 @@ fn album_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile, subtitle_
     let subtitle = if subtitle_artist {
         a.artist.clone()
     } else {
-        a.year.map_or("Album".to_owned(), |y| format!("{y} • Album"))
+        a.year
+            .map_or("Album".to_owned(), |y| format!("{y} • Album"))
     };
     let key = a.key();
-    let (app1, app2, name, paths) = (app.clone(), app.clone(), a.name.clone(), album_paths(lib, i));
+    let (app1, app2, name, paths) = (
+        app.clone(),
+        app.clone(),
+        a.name.clone(),
+        album_paths(lib, i),
+    );
     tile.set(
         app,
         TileArt::Cover(Source::for_album(lib, i)),
         &a.name,
         &subtitle,
         move || app1.navigate(Route::Album(key.clone())),
-        move || app2.player.play_tracks(&name, paths.clone(), 0, Some(false)),
+        move || {
+            app2.player
+                .play_tracks(&name, paths.clone(), 0, Some(false))
+        },
     );
 }
 
 fn artist_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile) {
     let ar = &lib.artists[i];
-    let source = ar.albums.first().map(|&a| Source::for_album(lib, a)).unwrap_or(Source::Placeholder(ar.name.clone()));
+    let source = ar
+        .albums
+        .first()
+        .map(|&a| Source::for_album(lib, a))
+        .unwrap_or(Source::Placeholder(ar.name.clone()));
     let (app1, app2, name, name2) = (app.clone(), app.clone(), ar.name.clone(), ar.name.clone());
-    let paths: Vec<String> = ar.tracks.iter().map(|&t| lib.tracks[t].path.clone()).collect();
+    let paths: Vec<String> = ar
+        .tracks
+        .iter()
+        .map(|&t| lib.tracks[t].path.clone())
+        .collect();
     tile.set(
         app,
         TileArt::Cover(source),
         &ar.name,
         "Artist",
         move || app1.navigate(Route::Artist(name.clone())),
-        move || app2.player.play_tracks(&name2, paths.clone(), 0, Some(false)),
+        move || {
+            app2.player
+                .play_tracks(&name2, paths.clone(), 0, Some(false))
+        },
     );
 }
 
@@ -129,22 +180,38 @@ fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Playlist) -> gtk::Widget 
     let art = if liked {
         TileArt::Liked
     } else {
-        TileArt::Cover(Source::for_paths(lib, p.entries.iter().filter_map(|e| e.track.as_deref()), &p.name))
+        TileArt::Cover(Source::for_paths(
+            lib,
+            p.entries.iter().filter_map(|e| e.track.as_deref()),
+            &p.name,
+        ))
     };
-    let (app1, app2, name, name2, paths) =
-        (app.clone(), app.clone(), p.name.clone(), p.name.clone(), available_paths(lib, p));
+    let (app1, app2, name, name2, paths) = (
+        app.clone(),
+        app.clone(),
+        p.name.clone(),
+        p.name.clone(),
+        available_paths(lib, p),
+    );
     tile.set(
         app,
         art,
         &p.name,
         &format!("Playlist • {}", plural(p.entries.len(), "song", "songs")),
         move || app1.navigate(Route::Playlist(name.clone())),
-        move || app2.player.play_tracks(&name2, paths.clone(), 0, Some(false)),
+        move || {
+            app2.player
+                .play_tracks(&name2, paths.clone(), 0, Some(false))
+        },
     );
     tile.widget.upcast()
 }
 
-fn flow_section(title: &str, tiles: Vec<gtk::Widget>, see_all: Option<(Rc<App>, Route)>) -> Option<gtk::Box> {
+fn flow_section(
+    title: &str,
+    tiles: Vec<gtk::Widget>,
+    see_all: Option<(Rc<App>, Route)>,
+) -> Option<gtk::Box> {
     if tiles.is_empty() {
         return None;
     }
@@ -154,7 +221,11 @@ fn flow_section(title: &str, tiles: Vec<gtk::Widget>, see_all: Option<(Rc<App>, 
     t.set_hexpand(true);
     head.append(&t);
     if let Some((app, route)) = see_all {
-        let btn = gtk::Button::builder().label("Show all").css_classes(["flat", "tm-link"]).valign(gtk::Align::Center).build();
+        let btn = gtk::Button::builder()
+            .label("Show all")
+            .css_classes(["flat", "tm-link"])
+            .valign(gtk::Align::Center)
+            .build();
         btn.add_css_class("dim");
         btn.connect_clicked(move |_| app.navigate(route.clone()));
         head.append(&btn);
@@ -187,7 +258,10 @@ fn home(app: &Rc<App>) -> Page {
         let msg = if app.store.is_scanning() {
             "Scanning your library…".to_owned()
         } else if !root.is_dir() {
-            format!("The library folder {} does not exist yet. Choose another one in Settings.", root.display())
+            format!(
+                "The library folder {} does not exist yet. Choose another one in Settings.",
+                root.display()
+            )
         } else {
             format!(
                 "Your library is empty. Download songs from the Downloads page, or add audio files to {}.",
@@ -213,8 +287,18 @@ fn home(app: &Rc<App>) -> Page {
     }
 
     let mut lists = vec![playlist_tile(app, &lib, &app.store.liked())];
-    lists.extend(app.store.playlists().iter().take(11).map(|p| playlist_tile(app, &lib, p)));
-    if let Some(s) = flow_section("Your playlists", lists, Some((app.clone(), Route::Playlists))) {
+    lists.extend(
+        app.store
+            .playlists()
+            .iter()
+            .take(11)
+            .map(|p| playlist_tile(app, &lib, p)),
+    );
+    if let Some(s) = flow_section(
+        "Your playlists",
+        lists,
+        Some((app.clone(), Route::Playlists)),
+    ) {
         b.append(&s);
     }
 
@@ -222,9 +306,10 @@ fn home(app: &Rc<App>) -> Page {
     for ai in lib.recently_added_albums() {
         for &ti in &lib.albums[ai].tracks {
             if let Some(i) = lib.artist_index(lib.tracks[ti].listed_artist())
-                && !seen.contains(&i) {
-                    seen.push(i);
-                }
+                && !seen.contains(&i)
+            {
+                seen.push(i);
+            }
         }
         if seen.len() >= 12 {
             break;
@@ -253,7 +338,9 @@ fn search(app: &Rc<App>, text: &str) -> Page {
     let q = Query::new(text);
     if q.is_empty() {
         b.append(&label("Search", &["tm-page-title"]));
-        b.append(&widgets::empty("Find songs, artists, albums and playlists in your library."));
+        b.append(&widgets::empty(
+            "Find songs, artists, albums and playlists in your library.",
+        ));
         return simple(&b);
     }
     let r = lib.search(&q);
@@ -267,8 +354,15 @@ fn search(app: &Rc<App>, text: &str) -> Page {
     }
     if !r.tracks.is_empty() {
         b.append(&section_title("Songs"));
-        let entries =
-            r.tracks.iter().take(50).map(|&i| Entry { path: Some(lib.tracks[i].path.clone()), label: String::new() }).collect();
+        let entries = r
+            .tracks
+            .iter()
+            .take(50)
+            .map(|&i| Entry {
+                path: Some(lib.tracks[i].path.clone()),
+                label: String::new(),
+            })
+            .collect();
         let list = tracklist::build(
             app,
             Spec {
@@ -318,15 +412,30 @@ fn search(app: &Rc<App>, text: &str) -> Page {
 
 // ---- library grids --------------------------------------------------------
 
-fn grid_page(app: &Rc<App>, title: &str, count: usize, round: bool, bind: impl Fn(&Rc<App>, &Rc<Library>, usize, &Tile) + 'static) -> Page {
+fn grid_page(
+    app: &Rc<App>,
+    title: &str,
+    count: usize,
+    round: bool,
+    bind: impl Fn(&Rc<App>, &Rc<Library>, usize, &Tile) + 'static,
+) -> Page {
     let lib = app.store.library();
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    let head = gtk::Box::builder().spacing(12).margin_start(24).margin_end(24).margin_top(20).margin_bottom(8).build();
+    let head = gtk::Box::builder()
+        .spacing(12)
+        .margin_start(24)
+        .margin_end(24)
+        .margin_top(20)
+        .margin_bottom(8)
+        .build();
     head.append(&label(title, &["tm-page-title"]));
     if count == 0 {
         outer.append(&head);
         outer.append(&widgets::empty("Nothing here yet."));
-        return Page { widget: outer.upcast(), scroller: None };
+        return Page {
+            widget: outer.upcast(),
+            scroller: None,
+        };
     }
     outer.append(&head);
     let store = gio::ListStore::new::<glib::BoxedAnyObject>();
@@ -345,8 +454,18 @@ fn grid_page(app: &Rc<App>, title: &str, count: usize, round: bool, bind: impl F
         let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
         let widget = li.child().expect("tile");
         // SAFETY: set in setup with this type.
-        let tile = unsafe { widget.data::<Tile>("tm-tile").expect("tile").as_ref().clone() };
-        let i = *li.item().and_downcast::<glib::BoxedAnyObject>().expect("item").borrow::<usize>();
+        let tile = unsafe {
+            widget
+                .data::<Tile>("tm-tile")
+                .expect("tile")
+                .as_ref()
+                .clone()
+        };
+        let i = *li
+            .item()
+            .and_downcast::<glib::BoxedAnyObject>()
+            .expect("item")
+            .borrow::<usize>();
         bind(&app2, &lib, i, &tile);
     });
     let grid = gtk::GridView::builder()
@@ -360,14 +479,19 @@ fn grid_page(app: &Rc<App>, title: &str, count: usize, round: bool, bind: impl F
         .build();
     let s = scrolled(&grid);
     outer.append(&s);
-    Page { widget: outer.upcast(), scroller: Some(s) }
+    Page {
+        widget: outer.upcast(),
+        scroller: Some(s),
+    }
 }
 
 fn albums(app: &Rc<App>) -> Page {
     let lib = app.store.library();
     let order = Rc::new(lib.albums_by_name());
     let n = order.len();
-    grid_page(app, "Albums", n, false, move |app, lib, i, tile| album_tile(app, lib, order[i], tile, true))
+    grid_page(app, "Albums", n, false, move |app, lib, i, tile| {
+        album_tile(app, lib, order[i], tile, true)
+    })
 }
 
 fn artists(app: &Rc<App>) -> Page {
@@ -382,7 +506,11 @@ fn playlists(app: &Rc<App>) -> Page {
     let title = label("Playlists", &["tm-page-title"]);
     title.set_hexpand(true);
     head.append(&title);
-    let create = gtk::Button::builder().label("Create playlist").css_classes(["tm-pill-outline"]).valign(gtk::Align::Center).build();
+    let create = gtk::Button::builder()
+        .label("Create playlist")
+        .css_classes(["tm-pill-outline"])
+        .valign(gtk::Align::Center)
+        .build();
     let a = app.clone();
     create.connect_clicked(move |_| create_playlist_dialog(&a));
     head.append(&create);
@@ -398,9 +526,11 @@ fn playlists(app: &Rc<App>) -> Page {
 
 pub fn create_playlist_dialog(app: &Rc<App>) {
     let a = app.clone();
-    menu::ask_text(app, "New playlist", "", "Create", move |name| match a.store.create_playlist(&name) {
-        Ok(name) => a.navigate(Route::Playlist(name)),
-        Err(e) => a.error("Could not create playlist", e),
+    menu::ask_text(app, "New playlist", "", "Create", move |name| {
+        match a.store.create_playlist(&name) {
+            Ok(name) => a.navigate(Route::Playlist(name)),
+            Err(e) => a.error("Could not create playlist", e),
+        }
     });
 }
 
@@ -416,7 +546,10 @@ enum HeroArt {
 }
 
 fn hero(app: &App, art: HeroArt, kind: &str, title: &str, meta: &gtk::Widget) -> gtk::Box {
-    let b = gtk::Box::builder().spacing(24).css_classes(["tm-hero"]).build();
+    let b = gtk::Box::builder()
+        .spacing(24)
+        .css_classes(["tm-hero"])
+        .build();
     let art_widget: gtk::Widget = match art {
         HeroArt::Cover(s) => widgets::cover(app, s, 232, false).upcast(),
         HeroArt::Round(s) => widgets::cover(app, s, 232, true).upcast(),
@@ -427,7 +560,12 @@ fn hero(app: &App, art: HeroArt, kind: &str, title: &str, meta: &gtk::Widget) ->
     };
     art_widget.add_css_class("tm-cover-shadow");
     b.append(&art_widget);
-    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).valign(gtk::Align::End).hexpand(true).build();
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .valign(gtk::Align::End)
+        .hexpand(true)
+        .build();
     text.append(&label(kind, &["tm-hero-kind"]));
     let t = gtk::Label::builder()
         .label(title)
@@ -447,7 +585,10 @@ fn hero(app: &App, art: HeroArt, kind: &str, title: &str, meta: &gtk::Widget) ->
 }
 
 fn meta_line(parts: Vec<gtk::Widget>) -> gtk::Widget {
-    let b = gtk::Box::builder().spacing(6).css_classes(["tm-hero-meta"]).build();
+    let b = gtk::Box::builder()
+        .spacing(6)
+        .css_classes(["tm-hero-meta"])
+        .build();
     for (i, p) in parts.into_iter().enumerate() {
         if i > 0 {
             b.append(&gtk::Label::new(Some("•")));
@@ -458,7 +599,9 @@ fn meta_line(parts: Vec<gtk::Widget>) -> gtk::Widget {
 }
 
 fn artist_link(app: &Rc<App>, name: &str) -> gtk::Widget {
-    let btn = gtk::Button::builder().css_classes(["tm-link", "flat"]).build();
+    let btn = gtk::Button::builder()
+        .css_classes(["tm-link", "flat"])
+        .build();
     btn.set_child(Some(&label(name, &["strong"])));
     let (a, n) = (app.clone(), name.to_owned());
     btn.connect_clicked(move |_| a.navigate(Route::Artist(n.clone())));
@@ -466,7 +609,10 @@ fn artist_link(app: &Rc<App>, name: &str) -> gtk::Widget {
 }
 
 fn actions(app: &Rc<App>, name: &str, paths: Vec<String>, more: Option<MoreMenu>) -> gtk::Box {
-    let b = gtk::Box::builder().spacing(20).css_classes(["tm-actions"]).build();
+    let b = gtk::Box::builder()
+        .spacing(20)
+        .css_classes(["tm-actions"])
+        .build();
     let play = widgets::play_button(true);
     let shuffle = widgets::icon_button("media-playlist-shuffle-symbolic", "Shuffle play");
     shuffle.add_css_class("big");
@@ -489,8 +635,18 @@ fn actions(app: &Rc<App>, name: &str, paths: Vec<String>, more: Option<MoreMenu>
         None => {
             let (a, p) = (app.clone(), paths.clone());
             more_btn.connect_clicked(move |btn| {
-                let ctx = MenuCtx { paths: (*p).clone(), playlist: None, queue_index: None };
-                menu::popup(&a, btn.upcast_ref(), btn.width() as f64 / 2.0, btn.height() as f64, ctx);
+                let ctx = MenuCtx {
+                    paths: (*p).clone(),
+                    playlist: None,
+                    queue_index: None,
+                };
+                menu::popup(
+                    &a,
+                    btn.upcast_ref(),
+                    btn.width() as f64 / 2.0,
+                    btn.height() as f64,
+                    ctx,
+                );
             });
             more_btn.set_sensitive(!empty);
         }
@@ -499,48 +655,103 @@ fn actions(app: &Rc<App>, name: &str, paths: Vec<String>, more: Option<MoreMenu>
     b
 }
 
-fn detail_page(app: &Rc<App>, header: gtk::Box, spec_entries: Vec<Entry>, context: &str, show_album: bool, show_cover: bool, playlist: Option<String>) -> Page {
+fn detail_page(
+    app: &Rc<App>,
+    header: gtk::Box,
+    spec_entries: Vec<Entry>,
+    context: &str,
+    show_album: bool,
+    show_cover: bool,
+    playlist: Option<String>,
+) -> Page {
     if !spec_entries.is_empty() {
         header.append(&tracklist::columns_header(show_album, show_cover));
     }
     let list = tracklist::build(
         app,
-        Spec { context: context.to_owned(), entries: spec_entries, show_album, show_cover, playlist, header: Some(header.upcast()) },
+        Spec {
+            context: context.to_owned(),
+            entries: spec_entries,
+            show_album,
+            show_cover,
+            playlist,
+            header: Some(header.upcast()),
+        },
     );
     list.set_margin_bottom(24);
     let s = scrolled(&list);
-    Page { widget: s.clone().upcast(), scroller: Some(s) }
+    Page {
+        widget: s.clone().upcast(),
+        scroller: Some(s),
+    }
 }
 
 fn album(app: &Rc<App>, key: &str) -> Page {
     let lib = app.store.library();
-    let Some(ai) = lib.album_index(key) else { return not_found() };
+    let Some(ai) = lib.album_index(key) else {
+        return not_found();
+    };
     let a = &lib.albums[ai];
     let paths = album_paths(&lib, ai);
     let mut parts = vec![artist_link(app, &a.artist)];
     if let Some(y) = a.year {
         parts.push(gtk::Label::new(Some(&y.to_string())).upcast());
     }
-    parts.push(gtk::Label::new(Some(&format!("{}, {}", plural(a.tracks.len(), "song", "songs"), fmt_total(a.duration_ms)))).upcast());
+    parts.push(
+        gtk::Label::new(Some(&format!(
+            "{}, {}",
+            plural(a.tracks.len(), "song", "songs"),
+            fmt_total(a.duration_ms)
+        )))
+        .upcast(),
+    );
     let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    header.append(&hero(app, HeroArt::Cover(Source::for_album(&lib, ai)), "Album", &a.name, &meta_line(parts)));
+    header.append(&hero(
+        app,
+        HeroArt::Cover(Source::for_album(&lib, ai)),
+        "Album",
+        &a.name,
+        &meta_line(parts),
+    ));
     header.append(&actions(app, &a.name, paths.clone(), None));
-    let entries = paths.into_iter().map(|p| Entry { path: Some(p), label: String::new() }).collect();
+    let entries = paths
+        .into_iter()
+        .map(|p| Entry {
+            path: Some(p),
+            label: String::new(),
+        })
+        .collect();
     detail_page(app, header, entries, &a.name, false, false, None)
 }
 
 fn artist(app: &Rc<App>, name: &str) -> Page {
     let lib = app.store.library();
-    let Some(ari) = lib.artist_index(name) else { return not_found() };
+    let Some(ari) = lib.artist_index(name) else {
+        return not_found();
+    };
     let ar = &lib.artists[ari];
-    let paths: Vec<String> = ar.tracks.iter().map(|&t| lib.tracks[t].path.clone()).collect();
-    let source = ar.albums.first().map(|&a| Source::for_album(&lib, a)).unwrap_or(Source::Placeholder(ar.name.clone()));
+    let paths: Vec<String> = ar
+        .tracks
+        .iter()
+        .map(|&t| lib.tracks[t].path.clone())
+        .collect();
+    let source = ar
+        .albums
+        .first()
+        .map(|&a| Source::for_album(&lib, a))
+        .unwrap_or(Source::Placeholder(ar.name.clone()));
     let meta = meta_line(vec![
         gtk::Label::new(Some(&plural(ar.tracks.len(), "song", "songs"))).upcast(),
         gtk::Label::new(Some(&plural(ar.albums.len(), "album", "albums"))).upcast(),
     ]);
     let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    header.append(&hero(app, HeroArt::Round(source), "Artist", &ar.name, &meta));
+    header.append(&hero(
+        app,
+        HeroArt::Round(source),
+        "Artist",
+        &ar.name,
+        &meta,
+    ));
     header.append(&actions(app, &ar.name, paths.clone(), None));
     let tiles: Vec<gtk::Widget> = ar
         .albums
@@ -561,24 +772,41 @@ fn artist(app: &Rc<App>, name: &str) -> Page {
     songs.set_margin_top(12);
     songs.set_margin_bottom(8);
     header.append(&songs);
-    let entries = paths.into_iter().map(|p| Entry { path: Some(p), label: String::new() }).collect();
+    let entries = paths
+        .into_iter()
+        .map(|p| Entry {
+            path: Some(p),
+            label: String::new(),
+        })
+        .collect();
     detail_page(app, header, entries, &ar.name, true, true, None)
 }
 
 fn playlist(app: &Rc<App>, name: &str) -> Page {
     let lib = app.store.library();
-    let Some(p) = app.store.playlist(name) else { return not_found() };
+    let Some(p) = app.store.playlist(name) else {
+        return not_found();
+    };
     let liked = name == LIKED_SONGS;
     let paths = available_paths(&lib, &p);
-    let total: u64 = paths.iter().filter_map(|t| lib.track(t)).map(|t| t.duration_ms).sum();
-    let mut parts: Vec<gtk::Widget> = vec![gtk::Label::new(Some(&plural(p.entries.len(), "song", "songs"))).upcast()];
+    let total: u64 = paths
+        .iter()
+        .filter_map(|t| lib.track(t))
+        .map(|t| t.duration_ms)
+        .sum();
+    let mut parts: Vec<gtk::Widget> =
+        vec![gtk::Label::new(Some(&plural(p.entries.len(), "song", "songs"))).upcast()];
     if total > 0 {
         parts.push(gtk::Label::new(Some(&fmt_total(total))).upcast());
     }
     let art = if liked {
         HeroArt::Liked
     } else {
-        HeroArt::Cover(Source::for_paths(&lib, p.entries.iter().filter_map(|e| e.track.as_deref()), name))
+        HeroArt::Cover(Source::for_paths(
+            &lib,
+            p.entries.iter().filter_map(|e| e.track.as_deref()),
+            name,
+        ))
     };
     let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
     header.append(&hero(app, art, "Playlist", name, &meta_line(parts)));
@@ -606,7 +834,15 @@ fn playlist(app: &Rc<App>, name: &str) -> Page {
             }),
         })
         .collect();
-    detail_page(app, header, entries, name, true, true, Some(name.to_owned()))
+    detail_page(
+        app,
+        header,
+        entries,
+        name,
+        true,
+        true,
+        Some(name.to_owned()),
+    )
 }
 
 fn playlist_menu(app: &Rc<App>, btn: &gtk::Button, name: &str, paths: Vec<String>) {
@@ -619,40 +855,54 @@ fn playlist_menu(app: &Rc<App>, btn: &gtk::Button, name: &str, paths: Vec<String
     };
     menu.append(Some("Add to queue"), Some("pl.queue"));
     let (a, p) = (app.clone(), paths.clone());
-    add("queue", Box::new(move || {
-        a.player.add_to_queue(&p);
-        a.toast(&format!("Added {} to queue", plural(p.len(), "song", "songs")));
-    }));
+    add(
+        "queue",
+        Box::new(move || {
+            a.player.add_to_queue(&p);
+            a.toast(&format!(
+                "Added {} to queue",
+                plural(p.len(), "song", "songs")
+            ));
+        }),
+    );
     if name != LIKED_SONGS {
         let section = gio::Menu::new();
         section.append(Some("Rename…"), Some("pl.rename"));
         section.append(Some("Delete…"), Some("pl.delete"));
         menu.append_section(None, &section);
         let (a, n) = (app.clone(), name.to_owned());
-        add("rename", Box::new(move || {
-            let (a2, old) = (a.clone(), n.clone());
-            menu::ask_text(&a, "Rename playlist", &n, "Rename", move |new| match a2.store.rename_playlist(&old, &new) {
-                Ok(new) => a2.playlist_renamed(&old, &new),
-                Err(e) => a2.error("Could not rename playlist", e),
-            });
-        }));
-        let (a, n) = (app.clone(), name.to_owned());
-        add("delete", Box::new(move || {
-            let (a2, n2) = (a.clone(), n.clone());
-            menu::confirm(
-                &a,
-                &format!("Delete “{n}”?"),
-                "The playlist is removed from every device. The songs stay in your library.",
-                "Delete",
-                move || match a2.store.delete_playlist(&n2) {
-                    Ok(()) => {
-                        a2.toast(&format!("Deleted {n2}"));
-                        a2.navigate(Route::Playlists);
+        add(
+            "rename",
+            Box::new(move || {
+                let (a2, old) = (a.clone(), n.clone());
+                menu::ask_text(&a, "Rename playlist", &n, "Rename", move |new| {
+                    match a2.store.rename_playlist(&old, &new) {
+                        Ok(new) => a2.playlist_renamed(&old, &new),
+                        Err(e) => a2.error("Could not rename playlist", e),
                     }
-                    Err(e) => a2.error("Could not delete playlist", e),
-                },
-            );
-        }));
+                });
+            }),
+        );
+        let (a, n) = (app.clone(), name.to_owned());
+        add(
+            "delete",
+            Box::new(move || {
+                let (a2, n2) = (a.clone(), n.clone());
+                menu::confirm(
+                    &a,
+                    &format!("Delete “{n}”?"),
+                    "The playlist is removed from every device. The songs stay in your library.",
+                    "Delete",
+                    move || match a2.store.delete_playlist(&n2) {
+                        Ok(()) => {
+                            a2.toast(&format!("Deleted {n2}"));
+                            a2.navigate(Route::Playlists);
+                        }
+                        Err(e) => a2.error("Could not delete playlist", e),
+                    },
+                );
+            }),
+        );
     }
     let popover = gtk::PopoverMenu::from_model(Some(&menu));
     popover.insert_action_group("pl", Some(&group));

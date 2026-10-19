@@ -48,7 +48,12 @@ impl Route {
             "liked" => Route::Playlist(LIKED_SONGS.to_owned()),
             "downloads" => Route::Downloads,
             "settings" => Route::Settings,
-            "album" => Route::Album(lib.albums.iter().find(|a| a.name == arg || a.key() == arg)?.key()),
+            "album" => Route::Album(
+                lib.albums
+                    .iter()
+                    .find(|a| a.name == arg || a.key() == arg)?
+                    .key(),
+            ),
             "artist" => Route::Artist(arg.to_owned()),
             "playlist" => Route::Playlist(arg.to_owned()),
             _ => return None,
@@ -205,7 +210,11 @@ impl App {
         });
         *self.queue_panel.borrow_mut() = Some(queue);
 
-        let body = gtk::Box::builder().spacing(8).css_classes(["tm-body"]).vexpand(true).build();
+        let body = gtk::Box::builder()
+            .spacing(8)
+            .css_classes(["tm-body"])
+            .vexpand(true)
+            .build();
         body.append(&sidebar.widget);
         body.append(&self.toasts);
         body.append(&self.queue_revealer);
@@ -270,7 +279,9 @@ impl App {
         keys.connect_key_pressed(move |_, key, _, mods| {
             if key == gdk::Key::space && mods.is_empty() {
                 let focus = gtk::prelude::GtkWindowExt::focus(&app.window);
-                let typing = focus.is_some_and(|w| w.is::<gtk::Text>() || w.ancestor(gtk::Text::static_type()).is_some());
+                let typing = focus.is_some_and(|w| {
+                    w.is::<gtk::Text>() || w.ancestor(gtk::Text::static_type()).is_some()
+                });
                 if !typing {
                     app.player.toggle();
                     return glib::Propagation::Stop;
@@ -319,39 +330,59 @@ impl App {
         add("previous", None, Box::new(|app, _| app.player.previous()));
         add("back", None, Box::new(|app, _| app.back()));
         add("toggle-queue", None, Box::new(|app, _| app.toggle_queue()));
-        add("focus-search", None, Box::new(|app, _| {
-            app.navigate(Route::Search(app.search_entry.text().to_string()));
-            app.search_entry.grab_focus();
-        }));
+        add(
+            "focus-search",
+            None,
+            Box::new(|app, _| {
+                app.navigate(Route::Search(app.search_entry.text().to_string()));
+                app.search_entry.grab_focus();
+            }),
+        );
         add("quit", None, Box::new(|app, _| app.quit()));
-        add("setup", None, Box::new(|app, _| {
-            app.present();
-            ui::setup::open(&app.rc());
-        }));
-        add("navigate", Some(glib::VariantTy::STRING), Box::new(|app, v| {
-            let s: String = v.and_then(|v| v.get()).unwrap_or_default();
-            match Route::parse(app, &s) {
-                Some(r) => {
-                    if let Route::Search(q) = &r {
-                        app.search_entry.set_text(q);
+        add(
+            "setup",
+            None,
+            Box::new(|app, _| {
+                app.present();
+                ui::setup::open(&app.rc());
+            }),
+        );
+        add(
+            "navigate",
+            Some(glib::VariantTy::STRING),
+            Box::new(|app, v| {
+                let s: String = v.and_then(|v| v.get()).unwrap_or_default();
+                match Route::parse(app, &s) {
+                    Some(r) => {
+                        if let Route::Search(q) = &r {
+                            app.search_entry.set_text(q);
+                        }
+                        app.navigate(r)
                     }
-                    app.navigate(r)
+                    None => eprintln!("tunemesh: unknown route {s:?}"),
                 }
-                None => eprintln!("tunemesh: unknown route {s:?}"),
-            }
-        }));
-        add("play-route", Some(glib::VariantTy::STRING), Box::new(|app, v| {
-            let s: String = v.and_then(|v| v.get()).unwrap_or_default();
-            if let Some(r) = Route::parse(app, &s) {
-                let (name, tracks) = ui::pages::route_tracks(app, &r);
-                app.player.play_tracks(&name, tracks, 0, Some(false));
-            }
-        }));
-        add("seek", Some(glib::VariantTy::DOUBLE), Box::new(|app, v| {
-            if let Some(secs) = v.and_then(|v| v.get::<f64>()) {
-                app.player.seek(secs);
-            }
-        }));
+            }),
+        );
+        add(
+            "play-route",
+            Some(glib::VariantTy::STRING),
+            Box::new(|app, v| {
+                let s: String = v.and_then(|v| v.get()).unwrap_or_default();
+                if let Some(r) = Route::parse(app, &s) {
+                    let (name, tracks) = ui::pages::route_tracks(app, &r);
+                    app.player.play_tracks(&name, tracks, 0, Some(false));
+                }
+            }),
+        );
+        add(
+            "seek",
+            Some(glib::VariantTy::DOUBLE),
+            Box::new(|app, v| {
+                if let Some(secs) = v.and_then(|v| v.get::<f64>()) {
+                    app.player.seek(secs);
+                }
+            }),
+        );
         a.set_accels_for_action("app.focus-search", &["<Control>f", "<Control>k"]);
         a.set_accels_for_action("app.next", &["<Control>Right"]);
         a.set_accels_for_action("app.previous", &["<Control>Left"]);
@@ -424,14 +455,17 @@ impl App {
     fn show_current(&self) {
         let route = self.route();
         match &route {
-            Route::Search(q) if self.search_entry.text() != q.as_str() => self.search_entry.set_text(q),
+            Route::Search(q) if self.search_entry.text() != q.as_str() => {
+                self.search_entry.set_text(q)
+            }
             Route::Search(_) => {}
             _ if !self.search_entry.text().is_empty() => self.search_entry.set_text(""),
             _ => {}
         }
         self.set_page(ui::pages::build(&self.rc(), &route));
         self.back_btn.set_sensitive(self.hist_pos.get() > 0);
-        self.forward_btn.set_sensitive(self.hist_pos.get() + 1 < self.history.borrow().len());
+        self.forward_btn
+            .set_sensitive(self.hist_pos.get() + 1 < self.history.borrow().len());
         if let Some(s) = self.sidebar.borrow().as_ref() {
             s.set_active(&route);
         }
@@ -448,7 +482,11 @@ impl App {
 
     /// Rebuilds the current page, keeping its scroll position.
     pub fn refresh(&self) {
-        let value = self.scroller.borrow().as_ref().map(|s| s.vadjustment().value());
+        let value = self
+            .scroller
+            .borrow()
+            .as_ref()
+            .map(|s| s.vadjustment().value());
         self.set_page(ui::pages::build(&self.rc(), &self.route()));
         if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone()) {
             // The new page has no size yet; restore once laid out.
@@ -485,7 +523,9 @@ impl App {
                 }
             }
             StoreChange::Liked => {
-                if matches!(&route, Route::Playlist(n) if n == LIKED_SONGS) || matches!(route, Route::Home | Route::Playlists) {
+                if matches!(&route, Route::Playlist(n) if n == LIKED_SONGS)
+                    || matches!(route, Route::Home | Route::Playlists)
+                {
                     self.refresh();
                 }
                 self.refresh_track_rows();
@@ -511,7 +551,12 @@ impl App {
     }
 
     pub fn refresh_track_rows(&self) {
-        let lists: Vec<_> = self.track_lists.borrow().iter().filter_map(Weak::upgrade).collect();
+        let lists: Vec<_> = self
+            .track_lists
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
         for l in lists {
             l.refresh_rows(self);
         }
@@ -523,10 +568,9 @@ impl App {
             self.queue_revealer.set_visible(true);
         }
         self.queue_revealer.set_reveal_child(reveal);
-        if reveal
-            && let Some(q) = self.queue_panel.borrow().as_ref() {
-                q.rebuild();
-            }
+        if reveal && let Some(q) = self.queue_panel.borrow().as_ref() {
+            q.rebuild();
+        }
     }
 
     pub fn toast(&self, text: &str) {
@@ -607,7 +651,10 @@ impl App {
                 ui::widgets::plural(n, "download is", "downloads are")
             )),
         );
-        dialog.add_responses(&[("quit", "Stop and Quit"), ("background", "Keep Downloading")]);
+        dialog.add_responses(&[
+            ("quit", "Stop and Quit"),
+            ("background", "Keep Downloading"),
+        ]);
         dialog.set_response_appearance("background", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("background"));
         dialog.set_close_response("cancel");
@@ -641,7 +688,9 @@ impl App {
         self.gtk_app.send_notification(Some("background"), &note);
         let weak = self.me.clone();
         let id = glib::timeout_add_seconds_local(3, move || {
-            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let Some(app) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
             if app.downloader.has_pending_work() {
                 return glib::ControlFlow::Continue;
             }

@@ -58,18 +58,39 @@ unsafe extern "C" {
     fn mpv_create() -> *mut MpvHandle;
     fn mpv_initialize(ctx: *mut MpvHandle) -> c_int;
     fn mpv_terminate_destroy(ctx: *mut MpvHandle);
-    fn mpv_set_option_string(ctx: *mut MpvHandle, name: *const c_char, data: *const c_char) -> c_int;
+    fn mpv_set_option_string(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        data: *const c_char,
+    ) -> c_int;
     fn mpv_command(ctx: *mut MpvHandle, args: *mut *const c_char) -> c_int;
-    fn mpv_set_property(ctx: *mut MpvHandle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
-    fn mpv_get_property(ctx: *mut MpvHandle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
-    fn mpv_observe_property(ctx: *mut MpvHandle, userdata: u64, name: *const c_char, format: c_int) -> c_int;
+    fn mpv_set_property(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        format: c_int,
+        data: *mut c_void,
+    ) -> c_int;
+    fn mpv_get_property(
+        ctx: *mut MpvHandle,
+        name: *const c_char,
+        format: c_int,
+        data: *mut c_void,
+    ) -> c_int;
+    fn mpv_observe_property(
+        ctx: *mut MpvHandle,
+        userdata: u64,
+        name: *const c_char,
+        format: c_int,
+    ) -> c_int;
     fn mpv_wait_event(ctx: *mut MpvHandle, timeout: c_double) -> *mut RawEvent;
     fn mpv_error_string(error: c_int) -> *const c_char;
 }
 
 fn error_string(code: c_int) -> String {
     // SAFETY: mpv_error_string returns a static string for any code.
-    unsafe { CStr::from_ptr(mpv_error_string(code)) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(mpv_error_string(code)) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn cstr(s: &str) -> CString {
@@ -173,7 +194,10 @@ impl Mpv {
         if handle.is_null() {
             return Err("mpv_create failed".into());
         }
-        let options = base.iter().map(|o| (o, false)).chain(required.iter().map(|o| (o, true)));
+        let options = base
+            .iter()
+            .map(|o| (o, false))
+            .chain(required.iter().map(|o| (o, true)));
         for (&(k, v), must) in options {
             let (ck, cv) = (cstr(k), cstr(v));
             // SAFETY: valid handle and NUL-terminated strings.
@@ -217,35 +241,67 @@ impl Mpv {
         ptrs.push(ptr::null());
         // SAFETY: NULL-terminated array of valid strings that outlive the call.
         let rc = unsafe { mpv_command(self.handle, ptrs.as_mut_ptr()) };
-        if rc < 0 { Err(format!("{}: {}", args.join(" "), error_string(rc))) } else { Ok(()) }
+        if rc < 0 {
+            Err(format!("{}: {}", args.join(" "), error_string(rc)))
+        } else {
+            Ok(())
+        }
     }
 
     pub fn set_flag(&self, name: &str, value: bool) {
         let name = cstr(name);
         let mut v: c_int = value.into();
         // SAFETY: FLAG takes a pointer to int.
-        unsafe { mpv_set_property(self.handle, name.as_ptr(), FORMAT_FLAG, (&mut v as *mut c_int).cast()) };
+        unsafe {
+            mpv_set_property(
+                self.handle,
+                name.as_ptr(),
+                FORMAT_FLAG,
+                (&mut v as *mut c_int).cast(),
+            )
+        };
     }
 
     pub fn set_f64(&self, name: &str, value: f64) {
         let name = cstr(name);
         let mut v: c_double = value;
         // SAFETY: DOUBLE takes a pointer to double.
-        unsafe { mpv_set_property(self.handle, name.as_ptr(), FORMAT_DOUBLE, (&mut v as *mut c_double).cast()) };
+        unsafe {
+            mpv_set_property(
+                self.handle,
+                name.as_ptr(),
+                FORMAT_DOUBLE,
+                (&mut v as *mut c_double).cast(),
+            )
+        };
     }
 
     pub fn set_str(&self, name: &str, value: &str) {
         let (name, value) = (cstr(name), cstr(value));
         let mut p = value.as_ptr();
         // SAFETY: STRING takes a pointer to char*.
-        unsafe { mpv_set_property(self.handle, name.as_ptr(), FORMAT_STRING, (&mut p as *mut *const c_char).cast()) };
+        unsafe {
+            mpv_set_property(
+                self.handle,
+                name.as_ptr(),
+                FORMAT_STRING,
+                (&mut p as *mut *const c_char).cast(),
+            )
+        };
     }
 
     pub fn get_f64(&self, name: &str) -> Option<f64> {
         let name = cstr(name);
         let mut v: c_double = 0.0;
         // SAFETY: DOUBLE writes one double.
-        let rc = unsafe { mpv_get_property(self.handle, name.as_ptr(), FORMAT_DOUBLE, (&mut v as *mut c_double).cast()) };
+        let rc = unsafe {
+            mpv_get_property(
+                self.handle,
+                name.as_ptr(),
+                FORMAT_DOUBLE,
+                (&mut v as *mut c_double).cast(),
+            )
+        };
         (rc >= 0).then_some(v)
     }
 
@@ -253,7 +309,14 @@ impl Mpv {
         let name = cstr(name);
         let mut v: i64 = 0;
         // SAFETY: INT64 writes one int64.
-        let rc = unsafe { mpv_get_property(self.handle, name.as_ptr(), FORMAT_INT64, (&mut v as *mut i64).cast()) };
+        let rc = unsafe {
+            mpv_get_property(
+                self.handle,
+                name.as_ptr(),
+                FORMAT_INT64,
+                (&mut v as *mut i64).cast(),
+            )
+        };
         (rc >= 0).then_some(v)
     }
 
@@ -267,7 +330,9 @@ impl Mpv {
                 EVENT_SHUTDOWN => Some(Event::Shutdown),
                 EVENT_START_FILE => {
                     let d = &*(ev.data as *const RawEventStartFile);
-                    Some(Event::StartFile { entry_id: d.playlist_entry_id })
+                    Some(Event::StartFile {
+                        entry_id: d.playlist_entry_id,
+                    })
                 }
                 EVENT_FILE_LOADED => Some(Event::FileLoaded),
                 EVENT_END_FILE => {
@@ -278,7 +343,10 @@ impl Mpv {
                         4 => EndReason::Error(error_string(d.error)),
                         _ => EndReason::Other,
                     };
-                    Some(Event::EndFile { reason, entry_id: d.playlist_entry_id })
+                    Some(Event::EndFile {
+                        reason,
+                        entry_id: d.playlist_entry_id,
+                    })
                 }
                 EVENT_PROPERTY_CHANGE => {
                     let p = &*(ev.data as *const RawEventProperty);
@@ -286,8 +354,12 @@ impl Mpv {
                         return None;
                     }
                     match (ev.reply_userdata, p.format) {
-                        (PROP_PAUSE, FORMAT_FLAG) => Some(Event::Pause(*(p.data as *const c_int) != 0)),
-                        (PROP_DURATION, FORMAT_DOUBLE) => Some(Event::Duration(*(p.data as *const c_double))),
+                        (PROP_PAUSE, FORMAT_FLAG) => {
+                            Some(Event::Pause(*(p.data as *const c_int) != 0))
+                        }
+                        (PROP_DURATION, FORMAT_DOUBLE) => {
+                            Some(Event::Duration(*(p.data as *const c_double)))
+                        }
                         _ => None,
                     }
                 }
@@ -321,12 +393,20 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let url = format!("http://{}/song.mp3", listener.local_addr().unwrap());
-        let dir = std::env::temp_dir().join(format!("tunemesh-mpv-test-{}-{}", std::process::id(), fastrand::u64(..)));
+        let dir = std::env::temp_dir().join(format!(
+            "tunemesh-mpv-test-{}-{}",
+            std::process::id(),
+            fastrand::u64(..)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("Song [abc].mp3");
         std::fs::write(&file, body.replace("{URL}", &url)).unwrap();
 
-        let base: Vec<_> = BASE_OPTIONS.iter().copied().chain([("ao", "null"), ("audio-fallback-to-null", "yes")]).collect();
+        let base: Vec<_> = BASE_OPTIONS
+            .iter()
+            .copied()
+            .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
+            .collect();
         let mpv = Mpv::create(&base, required).unwrap();
         mpv.command(&["loadfile", file.to_str().unwrap()]).unwrap();
         let start = Instant::now();
@@ -349,7 +429,10 @@ mod tests {
     #[test]
     fn a_playlist_disguised_as_a_song_fetches_nothing() {
         // Control: stock mpv does follow the URL, so the probe works.
-        assert!(fetches(&[], M3U), "the unhardened control did not fetch; the test proves nothing");
+        assert!(
+            fetches(&[], M3U),
+            "the unhardened control did not fetch; the test proves nothing"
+        );
         assert!(!fetches(LOCAL_ONLY, M3U));
         assert!(!fetches(LOCAL_ONLY, HLS));
     }

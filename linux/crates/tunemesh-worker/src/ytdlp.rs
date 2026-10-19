@@ -22,21 +22,21 @@ use crate::{log, netguard};
 /// full-width ones a name stays below 255 bytes and the `[<id>]` suffix
 /// survives whole; the worker shortens names to the contract's 120 bytes
 /// (keeping the suffix) when it moves the file into the library.
-const OUTPUT_TEMPLATE: &str =
-    "%(artists.0,artist,creator,uploader,channel).80B/%(album|Singles).80B/%(track,title).70B [%(id)s].%(ext)s";
+const OUTPUT_TEMPLATE: &str = "%(artists.0,artist,creator,uploader,channel).80B/%(album|Singles).80B/%(track,title).70B [%(id)s].%(ext)s";
 
 /// Crops the thumbnail to a centred square while converting it to JPEG.
-const SQUARE_THUMBNAIL: &str =
-    "ThumbnailsConvertor+ffmpeg_o:-c:v mjpeg -qmin 1 -q:v 2 -vf crop=\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\"";
+const SQUARE_THUMBNAIL: &str = "ThumbnailsConvertor+ffmpeg_o:-c:v mjpeg -qmin 1 -q:v 2 -vf crop=\"'if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'\"";
 
 /// Same fallbacks as the `<Artist>` directory in `OUTPUT_TEMPLATE`.
-const PRIMARY_ARTIST_AS_ALBUM_ARTIST: &str = "%(artists.0,artist,creator,uploader,channel)s:%(meta_album_artist)s";
+const PRIMARY_ARTIST_AS_ALBUM_ARTIST: &str =
+    "%(artists.0,artist,creator,uploader,channel)s:%(meta_album_artist)s";
 
 const PROGRESS_TEMPLATE: &str = "download:TMPROG %(progress.downloaded_bytes)s %(progress.total_bytes)s %(progress.total_bytes_estimate)s";
 
 /// Audio first; only protocols yt-dlp downloads itself (no ffmpeg, RTMP or
 /// other network input that could bypass the proxy).
-const FORMAT: &str = "ba[protocol^=http]/ba[protocol=m3u8_native]/b[protocol^=http]/b[protocol=m3u8_native]";
+const FORMAT: &str =
+    "ba[protocol^=http]/ba[protocol=m3u8_native]/b[protocol^=http]/b[protocol=m3u8_native]";
 
 /// The base yt-dlp command for a job.
 pub fn command(job: &Job) -> Command {
@@ -44,20 +44,37 @@ pub fn command(job: &Job) -> Command {
     let proxy = job.ctx.proxy.url();
     let work = &job.ctx.work_dir;
     let mut c = Command::new(&t.yt_dlp);
-    c.args(["--ignore-config", "--no-playlist", "--no-colors", "--proxy", &proxy, "--cache-dir"])
-        .arg(work.join("cache/yt-dlp"));
+    c.args([
+        "--ignore-config",
+        "--no-playlist",
+        "--no-colors",
+        "--proxy",
+        &proxy,
+        "--cache-dir",
+    ])
+    .arg(work.join("cache/yt-dlp"));
     if let Some(deno) = &t.deno {
-        c.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
+        c.arg("--js-runtimes")
+            .arg(format!("deno:{}", deno.display()));
     }
     if let Some(dir) = &t.ffmpeg_dir {
         c.arg("--ffmpeg-location").arg(dir);
     }
-    for var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"] {
+    for var in [
+        "http_proxy",
+        "https_proxy",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "all_proxy",
+        "ALL_PROXY",
+    ] {
         c.env(var, &proxy);
     }
     let tmp = work.join("tmp");
     let _ = std::fs::create_dir_all(&tmp);
-    c.env_remove("no_proxy").env_remove("NO_PROXY").env("TMPDIR", tmp);
+    c.env_remove("no_proxy")
+        .env_remove("NO_PROXY")
+        .env("TMPDIR", tmp);
     c
 }
 
@@ -82,7 +99,10 @@ pub enum Fail {
 }
 
 fn str_field(v: &Value, key: &str) -> Option<String> {
-    v.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_owned)
+    v.get(key)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 fn parse_listing(v: &Value, input: &str) -> Listing {
@@ -94,21 +114,50 @@ fn parse_listing(v: &Value, input: &str) -> Listing {
                 .filter(|e| !e.is_null())
                 .filter_map(|e| {
                     let id = str_field(e, "id");
-                    let url = str_field(e, "url").or_else(|| str_field(e, "webpage_url")).or_else(|| {
-                        let ie = str_field(e, "ie_key").unwrap_or_default();
-                        id.as_ref().filter(|_| ie.starts_with("Youtube")).map(|id| format!("https://www.youtube.com/watch?v={id}"))
-                    })?;
-                    Some(Item { id, url, title: str_field(e, "title"), duration: e.get("duration").and_then(Value::as_f64) })
+                    let url = str_field(e, "url")
+                        .or_else(|| str_field(e, "webpage_url"))
+                        .or_else(|| {
+                            let ie = str_field(e, "ie_key").unwrap_or_default();
+                            id.as_ref()
+                                .filter(|_| ie.starts_with("Youtube"))
+                                .map(|id| format!("https://www.youtube.com/watch?v={id}"))
+                        })?;
+                    Some(Item {
+                        id,
+                        url,
+                        title: str_field(e, "title"),
+                        duration: e.get("duration").and_then(Value::as_f64),
+                    })
                 })
                 .collect();
-            let count = v.get("playlist_count").and_then(Value::as_u64).map(|n| n as usize);
-            Listing { title: str_field(v, "title"), is_playlist: true, items, count }
+            let count = v
+                .get("playlist_count")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize);
+            Listing {
+                title: str_field(v, "title"),
+                is_playlist: true,
+                items,
+                count,
+            }
         }
         None => {
-            let url = str_field(v, "webpage_url").or_else(|| str_field(v, "original_url")).unwrap_or_else(|| input.to_owned());
+            let url = str_field(v, "webpage_url")
+                .or_else(|| str_field(v, "original_url"))
+                .unwrap_or_else(|| input.to_owned());
             let title = str_field(v, "track").or_else(|| str_field(v, "title"));
-            let item = Item { id: str_field(v, "id"), url, title: title.clone(), duration: v.get("duration").and_then(Value::as_f64) };
-            Listing { title, is_playlist: false, items: vec![item], count: Some(1) }
+            let item = Item {
+                id: str_field(v, "id"),
+                url,
+                title: title.clone(),
+                duration: v.get("duration").and_then(Value::as_f64),
+            };
+            Listing {
+                title,
+                is_playlist: false,
+                items: vec![item],
+                count: Some(1),
+            }
         }
     }
 }
@@ -123,7 +172,12 @@ fn failure_text(job: &Job, outcome: &child::Outcome) -> String {
 
 /// Lists what `target` refers to without downloading: at most `end` entries
 /// (`--playlist-end`), or the entries in `items` (`--playlist-items`).
-pub fn list(job: &Job, target: &str, items: Option<&str>, end: Option<usize>) -> Result<Listing, Fail> {
+pub fn list(
+    job: &Job,
+    target: &str,
+    items: Option<&str>,
+    end: Option<usize>,
+) -> Result<Listing, Fail> {
     let mut cmd = command(job);
     cmd.args(["--flat-playlist", "--dump-single-json", "--no-warnings"]);
     if let Some(items) = items {
@@ -150,7 +204,8 @@ pub fn list(job: &Job, target: &str, items: Option<&str>, end: Option<usize>) ->
         End::Stopped(Stop::Limit(why)) => Err(Fail::Error(why)),
         End::Stopped(s) => Err(Fail::Stopped(s)),
         End::Exited(s) if s.success() => {
-            let v: Value = serde_json::from_str(&json).map_err(|e| Fail::Error(format!("Unexpected yt-dlp output: {e}")))?;
+            let v: Value = serde_json::from_str(&json)
+                .map_err(|e| Fail::Error(format!("Unexpected yt-dlp output: {e}")))?;
             Ok(parse_listing(&v, target))
         }
         End::Exited(_) => Err(Fail::Error(failure_text(job, &outcome))),
@@ -261,7 +316,8 @@ pub fn fetch(job: &mut Job, target: &Target, index: usize, total: usize) -> Fetc
             || {
                 if let Some(frac) = progress_cell.borrow_mut().take() {
                     // Leave headroom for post-processing.
-                    job_ref.status.progress = Some(((index as f64 + frac * 0.9) / total.max(1) as f64).clamp(0.0, 1.0));
+                    job_ref.status.progress =
+                        Some(((index as f64 + frac * 0.9) / total.max(1) as f64).clamp(0.0, 1.0));
                     job_ref.flush(false);
                 }
                 job_ref.child_check()
@@ -307,11 +363,15 @@ fn download_one(job: &mut Job, item: &Item, index: usize, total: usize) -> Resul
     // enforced by the proxy.
     netguard::check_url(&item.url).map_err(Fail::Error)?;
     job.check_space().map_err(Fail::Error)?;
-    let target = Target { url: &item.url, output: OUTPUT_TEMPLATE, window: None };
+    let target = Target {
+        url: &item.url,
+        output: OUTPUT_TEMPLATE,
+        window: None,
+    };
     match fetch(job, &target, index, total) {
-        Fetch::File(path) => {
-            job.place(&path).map_err(|e| Fail::Error(format!("Could not move the download into the library: {e}")))
-        }
+        Fetch::File(path) => job
+            .place(&path)
+            .map_err(|e| Fail::Error(format!("Could not move the download into the library: {e}"))),
         Fetch::Skipped(why) | Fetch::Failed(why) => Err(Fail::Error(why)),
         Fetch::Stopped(s) => Err(Fail::Stopped(s)),
     }
@@ -368,8 +428,16 @@ pub fn run_url(job: &mut Job, url: &str) -> SourceResult {
         result.source_playlist = listing.title.clone();
         if listing.items.len() > max {
             listing.items.truncate(max);
-            let of = listing.count.filter(|c| *c > max).map(|c| format!(" of {c}")).unwrap_or_default();
-            job.warn(format!("Imported the first {}{of}: {}", plural(max, "item", "items"), limit_note(max)));
+            let of = listing
+                .count
+                .filter(|c| *c > max)
+                .map(|c| format!(" of {c}"))
+                .unwrap_or_default();
+            job.warn(format!(
+                "Imported the first {}{of}: {}",
+                plural(max, "item", "items"),
+                limit_note(max)
+            ));
         }
     }
     download_all(job, &listing.items, &mut result);
@@ -383,14 +451,19 @@ pub fn plural(n: usize, one: &str, many: &str) -> String {
 
 /// Why a source was cut to `max` items.
 pub fn limit_note(max: usize) -> String {
-    format!("a request downloads at most {} (--max-items)", plural(max, "item", "items"))
+    format!(
+        "a request downloads at most {} (--max-items)",
+        plural(max, "item", "items")
+    )
 }
 
 pub fn percent_encode(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
             b' ' => out.push('+'),
             _ => out.push_str(&format!("%{b:02X}")),
         }
@@ -400,7 +473,10 @@ pub fn percent_encode(s: &str) -> String {
 
 /// The YouTube Music "songs" search for `text`.
 pub fn music_search_url(text: &str) -> String {
-    format!("https://music.youtube.com/search?q={}#songs", percent_encode(text))
+    format!(
+        "https://music.youtube.com/search?q={}#songs",
+        percent_encode(text)
+    )
 }
 
 /// Search: the first YouTube Music song result, else the first YouTube result.
@@ -451,7 +527,10 @@ mod tests {
         assert!(l.is_playlist);
         assert_eq!(l.title.as_deref(), Some("P"));
         assert_eq!(l.count, Some(9));
-        assert_eq!(l.items.iter().map(|i| i.url.as_str()).collect::<Vec<_>>(), vec!["https://y/a", "https://www.youtube.com/watch?v=b"]);
+        assert_eq!(
+            l.items.iter().map(|i| i.url.as_str()).collect::<Vec<_>>(),
+            vec!["https://y/a", "https://www.youtube.com/watch?v=b"]
+        );
     }
 
     #[test]

@@ -39,13 +39,21 @@ pub fn refresh_if_shown() {
 fn apply_status(app: &App, l: &gtk::Label) {
     let (text, error) = downloader::summary(&app.store.root(), &app.downloader.state());
     l.set_text(&text);
-    if error { l.add_css_class("tm-error") } else { l.remove_css_class("tm-error") }
+    if error {
+        l.add_css_class("tm-error")
+    } else {
+        l.remove_css_class("tm-error")
+    }
 }
 
 /// A line saying which device downloads and how this device's downloader is
 /// doing; it updates itself while shown.
 pub fn status_label(app: &Rc<App>) -> gtk::Label {
-    let l = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim", "tm-downloader-status"]).build();
+    let l = gtk::Label::builder()
+        .xalign(0.0)
+        .wrap(true)
+        .css_classes(["dim", "tm-downloader-status"])
+        .build();
     apply_status(app, &l);
     STATUS.with(|s| s.borrow_mut().push((Rc::downgrade(app), l.downgrade())));
     // Heartbeats age and restarts count down without any file changing.
@@ -67,7 +75,9 @@ pub fn refresh_status() {
     let live: Vec<(Rc<App>, gtk::Label)> = STATUS.with(|s| {
         let mut v = s.borrow_mut();
         v.retain(|(a, l)| a.strong_count() > 0 && l.upgrade().is_some_and(|l| l.root().is_some()));
-        v.iter().filter_map(|(a, l)| Some((a.upgrade()?, l.upgrade()?))).collect()
+        v.iter()
+            .filter_map(|(a, l)| Some((a.upgrade()?, l.upgrade()?)))
+            .collect()
     });
     for (app, l) in live {
         apply_status(&app, &l);
@@ -88,14 +98,21 @@ pub enum Kind {
 
 fn query_param<'a>(url: &'a str, name: &str) -> Option<&'a str> {
     let query = url.split_once('?')?.1.split('#').next()?;
-    query.split('&').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+    query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
 }
 
 /// What a pasted line is (Spotify and YouTube / YouTube Music URLs; other
 /// input counts as a single item).
 pub fn classify(line: &str) -> Kind {
     let lower = line.trim().to_ascii_lowercase();
-    let Some(rest) = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")) else { return Kind::Single };
+    let Some(rest) = lower
+        .strip_prefix("https://")
+        .or_else(|| lower.strip_prefix("http://"))
+    else {
+        return Kind::Single;
+    };
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.trim_start_matches("www.").trim_start_matches("m.");
     match host {
@@ -103,7 +120,11 @@ pub fn classify(line: &str) -> Kind {
             // `/intl-de/playlist/…` and `/playlist/…`
             let mut parts = path.split(['/', '?']).filter(|p| !p.is_empty());
             let first = parts.next().unwrap_or("");
-            let kind = if first.starts_with("intl-") { parts.next().unwrap_or("") } else { first };
+            let kind = if first.starts_with("intl-") {
+                parts.next().unwrap_or("")
+            } else {
+                first
+            };
             match kind {
                 "playlist" => Kind::Playlist,
                 "album" => Kind::Album,
@@ -155,7 +176,9 @@ struct Row {
 
 impl ListState {
     fn render(&self) {
-        let Some(app) = self.app.upgrade() else { return };
+        let Some(app) = self.app.upgrade() else {
+            return;
+        };
         while let Some(c) = self.container.first_child() {
             self.container.remove(&c);
         }
@@ -164,17 +187,27 @@ impl ListState {
         let statuses = request::list_statuses(&root);
         let mut rows: Vec<Row> = Vec::new();
         for r in requests {
-            rows.push(Row { id: r.id.clone(), request: Some(r), status: None });
+            rows.push(Row {
+                id: r.id.clone(),
+                request: Some(r),
+                status: None,
+            });
         }
         for s in statuses {
             match rows.iter_mut().find(|r| r.id == s.id) {
                 Some(r) => r.status = Some(s),
-                None => rows.push(Row { id: s.id.clone(), request: None, status: Some(s) }),
+                None => rows.push(Row {
+                    id: s.id.clone(),
+                    request: None,
+                    status: Some(s),
+                }),
             }
         }
         rows.sort_by(|a, b| request::order_key(&b.id).cmp(&request::order_key(&a.id)));
         if rows.is_empty() {
-            self.container.append(&widgets::empty("No downloads yet. Paste links or type a song above."));
+            self.container.append(&widgets::empty(
+                "No downloads yet. Paste links or type a song above.",
+            ));
             return;
         }
         for row in rows {
@@ -186,20 +219,27 @@ impl ListState {
 /// "3 of 12 songs" once the worker knows how many items a request has.
 fn count_text(s: &Status) -> Option<String> {
     let total = s.items_total.filter(|t| *t > 1)?;
-    Some(format!("{} of {total} songs", s.items_done.unwrap_or(0).min(total)))
+    Some(format!(
+        "{} of {total} songs",
+        s.items_done.unwrap_or(0).min(total)
+    ))
 }
 
 /// Overall progress: finished items plus the current item's progress.
 fn fraction(s: &Status) -> Option<f64> {
     match (s.items_total.filter(|t| *t > 1), s.progress) {
-        (Some(total), p) => Some(((s.items_done.unwrap_or(0) as f64 + p.unwrap_or(0.0)) / total as f64).clamp(0.0, 1.0)),
+        (Some(total), p) => Some(
+            ((s.items_done.unwrap_or(0) as f64 + p.unwrap_or(0.0)) / total as f64).clamp(0.0, 1.0),
+        ),
         (None, p) => p,
     }
 }
 
 fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
     // The worker gives a request its status when it scans the queue.
-    let Some(s) = &row.status else { return ("Waiting".to_owned(), "waiting") };
+    let Some(s) = &row.status else {
+        return ("Waiting".to_owned(), "waiting");
+    };
     if !s.state.is_final() && !pending {
         return ("Cancelling…".to_owned(), "waiting");
     }
@@ -237,12 +277,24 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         .map(|r| r.input.clone())
         .or_else(|| row.status.as_ref().map(|s| s.input.clone()))
         .unwrap_or_default();
-    let title = row.status.as_ref().and_then(|s| s.title.clone()).unwrap_or_else(|| input.clone());
+    let title = row
+        .status
+        .as_ref()
+        .and_then(|s| s.title.clone())
+        .unwrap_or_else(|| input.clone());
     let (state_text, state_class) = state_text(&row, pending);
 
-    let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).css_classes(["tm-request-row"]).build();
+    let b = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(6)
+        .css_classes(["tm-request-row"])
+        .build();
     let top = gtk::Box::builder().spacing(12).build();
-    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(2).hexpand(true).build();
+    let text = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(2)
+        .hexpand(true)
+        .build();
     let t = label(&title, &["title"]);
     t.add_css_class("heading");
     text.append(&t);
@@ -272,14 +324,25 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     }
     text.append(&label(&sub.join(" • "), &["dim", "tm-small"]));
     top.append(&text);
-    let state = gtk::Label::builder().label(&state_text).valign(gtk::Align::Center).css_classes(["tm-state", state_class]).build();
+    let state = gtk::Label::builder()
+        .label(&state_text)
+        .valign(gtk::Align::Center)
+        .css_classes(["tm-state", state_class])
+        .build();
     top.append(&state);
 
     let final_state = row.status.as_ref().is_some_and(|s| s.state.is_final());
     if final_state {
-        let tracks: Vec<String> = row.status.as_ref().map(|s| s.tracks.clone()).unwrap_or_default();
+        let tracks: Vec<String> = row
+            .status
+            .as_ref()
+            .map(|s| s.tracks.clone())
+            .unwrap_or_default();
         let lib = app.store.library();
-        let available: Vec<String> = tracks.into_iter().filter(|t| lib.track_index(t).is_some()).collect();
+        let available: Vec<String> = tracks
+            .into_iter()
+            .filter(|t| lib.track_index(t).is_some())
+            .collect();
         if !available.is_empty() {
             let play = gtk::Button::builder()
                 .icon_name("media-playback-start-symbolic")
@@ -288,7 +351,10 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 .valign(gtk::Align::Center)
                 .build();
             let (a, name) = (app.clone(), title.clone());
-            play.connect_clicked(move |_| a.player.play_tracks(&name, available.clone(), 0, Some(false)));
+            play.connect_clicked(move |_| {
+                a.player
+                    .play_tracks(&name, available.clone(), 0, Some(false))
+            });
             top.append(&play);
         }
         let remove = widgets::icon_button("window-close-symbolic", "Remove from list");
@@ -303,7 +369,11 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         });
         top.append(&remove);
     } else if pending {
-        let cancel = gtk::Button::builder().label("Cancel").css_classes(["tm-pill-outline"]).valign(gtk::Align::Center).build();
+        let cancel = gtk::Button::builder()
+            .label("Cancel")
+            .css_classes(["tm-pill-outline"])
+            .valign(gtk::Align::Center)
+            .build();
         let (a, id) = (app.clone(), row.id.clone());
         cancel.connect_clicked(move |_| {
             match request::cancel(&a.store.root(), &id) {
@@ -318,7 +388,9 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
 
     if let Some(s) = &row.status {
         if s.state == RequestState::Downloading {
-            let bar = gtk::ProgressBar::builder().css_classes(["tm-progress"]).build();
+            let bar = gtk::ProgressBar::builder()
+                .css_classes(["tm-progress"])
+                .build();
             match fraction(s) {
                 Some(p) => bar.set_fraction(p),
                 None => bar.pulse(),
@@ -327,16 +399,36 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         }
         // The final message repeats the warnings, which are listed below.
         if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
-            let l = gtk::Label::builder().label(m).xalign(0.0).wrap(true).selectable(true).css_classes(["tm-small"]).build();
-            l.add_css_class(if s.state == RequestState::Failed { "tm-error" } else { "dim" });
+            let l = gtk::Label::builder()
+                .label(m)
+                .xalign(0.0)
+                .wrap(true)
+                .selectable(true)
+                .css_classes(["tm-small"])
+                .build();
+            l.add_css_class(if s.state == RequestState::Failed {
+                "tm-error"
+            } else {
+                "dim"
+            });
             b.append(&l);
         }
         for w in &s.warnings {
-            let l = gtk::Label::builder().label(w).xalign(0.0).wrap(true).selectable(true).css_classes(["tm-small", "tm-warning"]).build();
+            let l = gtk::Label::builder()
+                .label(w)
+                .xalign(0.0)
+                .wrap(true)
+                .selectable(true)
+                .css_classes(["tm-small", "tm-warning"])
+                .build();
             b.append(&l);
         }
         if !s.failures.is_empty() {
-            let list = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).margin_start(18).build();
+            let list = gtk::Box::builder()
+                .orientation(gtk::Orientation::Vertical)
+                .spacing(4)
+                .margin_start(18)
+                .build();
             for f in &s.failures {
                 let l = gtk::Label::builder()
                     .label(format!("{}: {}", f.item, f.error))
@@ -348,7 +440,10 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 list.append(&l);
             }
             let exp = gtk::Expander::builder()
-                .label(format!("{} could not be downloaded", plural(s.failures.len(), "song", "songs")))
+                .label(format!(
+                    "{} could not be downloaded",
+                    plural(s.failures.len(), "song", "songs")
+                ))
                 .child(&list)
                 .css_classes(["tm-small"])
                 .build();
@@ -371,7 +466,11 @@ pub fn page(app: &Rc<App>) -> Page {
         .build();
     b.append(&label("Downloads", &["tm-page-title"]));
 
-    let card = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).css_classes(["tm-card"]).build();
+    let card = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(12)
+        .css_classes(["tm-card"])
+        .build();
     card.append(&label("Add music", &["heading"]));
     let hint = gtk::Label::builder()
         .label("Paste YouTube, YouTube Music, SoundCloud, Bandcamp or Spotify links (songs, albums or playlists), one per line, or type what to search for. The downloader fetches them and the songs sync to all your devices.")
@@ -426,10 +525,17 @@ pub fn page(app: &Rc<App>) -> Page {
     options.append(&spacer);
     let switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
     options.append(&switch);
-    options.append(&label("Save playlists and albums as TuneMesh playlists", &[]));
+    options.append(&label(
+        "Save playlists and albums as TuneMesh playlists",
+        &[],
+    ));
     let fill = gtk::Box::builder().hexpand(true).build();
     options.append(&fill);
-    let go = gtk::Button::builder().label("Download").css_classes(["tm-green"]).sensitive(false).build();
+    let go = gtk::Button::builder()
+        .label("Download")
+        .css_classes(["tm-green"])
+        .sensitive(false)
+        .build();
     options.append(&go);
     card.append(&options);
     b.append(&card);
@@ -452,7 +558,12 @@ pub fn page(app: &Rc<App>) -> Page {
             s.set_active(false);
         }
     });
-    let (g, s, ph, dd) = (go.clone(), switch.clone(), placeholder.clone(), dropdown.clone());
+    let (g, s, ph, dd) = (
+        go.clone(),
+        switch.clone(),
+        placeholder.clone(),
+        dropdown.clone(),
+    );
     view.buffer().connect_changed(move |buf| {
         let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
         let lines = input_lines(&text);
@@ -473,7 +584,13 @@ pub fn page(app: &Rc<App>) -> Page {
     });
 
     let submit = {
-        let (a, view, dropdown, switch, choices) = (app.clone(), view.clone(), dropdown.clone(), switch.clone(), choices.clone());
+        let (a, view, dropdown, switch, choices) = (
+            app.clone(),
+            view.clone(),
+            dropdown.clone(),
+            switch.clone(),
+            choices.clone(),
+        );
         move || {
             let buf = view.buffer();
             let lines = input_lines(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
@@ -503,11 +620,17 @@ pub fn page(app: &Rc<App>) -> Page {
             }
             if failed.is_empty() {
                 buf.set_text("");
-                a.toast(&format!("Requested {}", plural(written, "download", "downloads")));
+                a.toast(&format!(
+                    "Requested {}",
+                    plural(written, "download", "downloads")
+                ));
             } else {
                 // Keep what failed in the box so it can be retried.
                 buf.set_text(&failed.join("\n"));
-                a.toast(&format!("Could not write {} (see the log)", plural(failed.len(), "request", "requests")));
+                a.toast(&format!(
+                    "Could not write {} (see the log)",
+                    plural(failed.len(), "request", "requests")
+                ));
             }
             refresh_if_shown();
         }
@@ -517,7 +640,9 @@ pub fn page(app: &Rc<App>) -> Page {
     go.connect_clicked(move |_| s2());
     let keys = gtk::EventControllerKey::new();
     keys.connect_key_pressed(move |_, key, _, mods| {
-        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) && mods.contains(gdk::ModifierType::CONTROL_MASK) {
+        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter)
+            && mods.contains(gdk::ModifierType::CONTROL_MASK)
+        {
             submit();
             return glib::Propagation::Stop;
         }
@@ -529,7 +654,11 @@ pub fn page(app: &Rc<App>) -> Page {
     let title = section_title("Requests");
     title.set_hexpand(true);
     head.append(&title);
-    let clear = gtk::Button::builder().label("Clear finished").css_classes(["tm-pill-outline"]).valign(gtk::Align::Center).build();
+    let clear = gtk::Button::builder()
+        .label("Clear finished")
+        .css_classes(["tm-pill-outline"])
+        .valign(gtk::Align::Center)
+        .build();
     let a = app.clone();
     clear.connect_clicked(move |_| {
         let n = request::clear_finished(&a.store.root());
@@ -539,21 +668,34 @@ pub fn page(app: &Rc<App>) -> Page {
     head.append(&clear);
     b.append(&head);
 
-    let container = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(8).build();
+    let container = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .spacing(8)
+        .build();
     b.append(&container);
-    let state = Rc::new(ListState { app: Rc::downgrade(app), container: container.clone() });
+    let state = Rc::new(ListState {
+        app: Rc::downgrade(app),
+        container: container.clone(),
+    });
     state.render();
     LIST.with(|l| *l.borrow_mut() = Rc::downgrade(&state));
     // The list state lives as long as its container.
     unsafe { container.set_data("tm-list-state", state) };
 
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&b).build();
+    let scroller = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&b)
+        .build();
     if app.route() == Route::Downloads {
         glib::idle_add_local_once(move || {
             view.grab_focus();
         });
     }
-    Page { widget: scroller.clone().upcast(), scroller: Some(scroller) }
+    Page {
+        widget: scroller.clone().upcast(),
+        scroller: Some(scroller),
+    }
 }
 
 #[cfg(test)]
@@ -563,15 +705,39 @@ mod tests {
     #[test]
     fn classifies_links() {
         for (url, kind) in [
-            ("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M", Kind::Playlist),
-            ("https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x", Kind::Playlist),
-            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", Kind::Album),
-            ("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", Kind::Single),
-            ("https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG", Kind::Playlist),
-            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG", Kind::Playlist),
-            ("https://music.youtube.com/playlist?list=OLAK5uy_kXN0a2yT2vbtFF1dLJTn4wzVzNXZdUDXg", Kind::Album),
+            (
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+                Kind::Playlist,
+            ),
+            (
+                "https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x",
+                Kind::Playlist,
+            ),
+            (
+                "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
+                Kind::Album,
+            ),
+            (
+                "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC",
+                Kind::Single,
+            ),
+            (
+                "https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+                Kind::Playlist,
+            ),
+            (
+                "https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG",
+                Kind::Playlist,
+            ),
+            (
+                "https://music.youtube.com/playlist?list=OLAK5uy_kXN0a2yT2vbtFF1dLJTn4wzVzNXZdUDXg",
+                Kind::Album,
+            ),
             ("https://music.youtube.com/browse/MPREb_abc", Kind::Album),
-            ("https://music.youtube.com/watch?v=dQw4w9WgXcQ", Kind::Single),
+            (
+                "https://music.youtube.com/watch?v=dQw4w9WgXcQ",
+                Kind::Single,
+            ),
             ("https://youtu.be/dQw4w9WgXcQ", Kind::Single),
             ("some artist some song", Kind::Single),
         ] {

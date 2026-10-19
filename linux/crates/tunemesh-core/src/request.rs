@@ -144,7 +144,9 @@ fn open_dir(root: &Path, sub: &str, create: bool) -> io::Result<Dir> {
 
 /// A new id: Unix milliseconds, `-`, 8 lowercase hex characters.
 pub fn new_id() -> String {
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis());
     format!("{ms}-{:08x}", fastrand::u32(..))
 }
 
@@ -155,7 +157,12 @@ pub fn order_key(id: &str) -> (u128, &str) {
 }
 
 impl Request {
-    pub fn new(input: &str, playlist: Option<String>, playlist_from_source: bool, device: &str) -> Self {
+    pub fn new(
+        input: &str,
+        playlist: Option<String>,
+        playlist_from_source: bool,
+        device: &str,
+    ) -> Self {
         Self {
             version: 1,
             id: new_id(),
@@ -200,8 +207,14 @@ fn ids_in(dir: &Dir) -> Vec<String> {
         .entries()
         .unwrap_or_default()
         .into_iter()
-        .filter(|(name, kind)| *kind != Kind::Dir && !name.starts_with('.') && !name.contains(".sync-conflict-"))
-        .filter_map(|(name, _)| name.strip_suffix(".json").filter(|id| !id.is_empty()).map(str::to_owned))
+        .filter(|(name, kind)| {
+            *kind != Kind::Dir && !name.starts_with('.') && !name.contains(".sync-conflict-")
+        })
+        .filter_map(|(name, _)| {
+            name.strip_suffix(".json")
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
         .collect();
     ids.sort_by(|a, b| order_key(a).cmp(&order_key(b)));
     ids
@@ -216,8 +229,13 @@ fn read_json<T: for<'de> Deserialize<'de>>(dir: &Dir, id: &str) -> io::Result<T>
 /// unreadable files among them (including symlinks) are returned separately
 /// with their id and error. The third value counts every request file, so
 /// callers can tell how many were left out.
-pub fn list_oldest_requests(root: &Path, max: usize) -> (Vec<Request>, Vec<(String, io::Error)>, usize) {
-    let Ok(dir) = open_dir(root, REQUESTS, false) else { return (Vec::new(), Vec::new(), 0) };
+pub fn list_oldest_requests(
+    root: &Path,
+    max: usize,
+) -> (Vec<Request>, Vec<(String, io::Error)>, usize) {
+    let Ok(dir) = open_dir(root, REQUESTS, false) else {
+        return (Vec::new(), Vec::new(), 0);
+    };
     let ids = ids_in(&dir);
     let total = ids.len();
     let mut ok = Vec::new();
@@ -243,7 +261,9 @@ pub fn list_requests(root: &Path) -> (Vec<Request>, Vec<(String, io::Error)>) {
 
 /// All parseable status files, oldest first.
 pub fn list_statuses(root: &Path) -> Vec<Status> {
-    let Ok(dir) = open_dir(root, STATUS, false) else { return Vec::new() };
+    let Ok(dir) = open_dir(root, STATUS, false) else {
+        return Vec::new();
+    };
     ids_in(&dir)
         .into_iter()
         .filter_map(|id| {
@@ -299,14 +319,22 @@ mod tests {
         let (ms, hex) = id.split_once('-').unwrap();
         assert!(ms.parse::<u64>().unwrap() > 1_700_000_000_000);
         assert_eq!(hex.len(), 8);
-        assert!(hex.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert!(
+            hex.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        );
     }
 
     #[test]
     fn requests_ordered_by_numeric_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
-        for id in ["1791265297123-ffffffff", "999999999999-00000000", "1791265297123-0000000a", "10000000000000-aaaaaaaa"] {
+        for id in [
+            "1791265297123-ffffffff",
+            "999999999999-00000000",
+            "1791265297123-0000000a",
+            "10000000000000-aaaaaaaa",
+        ] {
             let mut r = Request::new("x", None, false, "test");
             r.id = id.into();
             r.write(root).unwrap();
@@ -317,7 +345,12 @@ mod tests {
         // Lexical order would put "10000000000000" before "1791265297123".
         assert_eq!(
             ids,
-            vec!["999999999999-00000000", "1791265297123-0000000a", "1791265297123-ffffffff", "10000000000000-aaaaaaaa"]
+            vec![
+                "999999999999-00000000",
+                "1791265297123-0000000a",
+                "1791265297123-ffffffff",
+                "10000000000000-aaaaaaaa"
+            ]
         );
         assert_eq!(bad.len(), 1);
     }
@@ -374,7 +407,10 @@ mod tests {
         let s = Status::new(&r, RequestState::Failed);
         assert!(s.write(root).is_err());
         assert!(r.write(root).is_err());
-        assert_eq!(fs::read(outside.path().join("settings.json")).unwrap(), b"{}");
+        assert_eq!(
+            fs::read(outside.path().join("settings.json")).unwrap(),
+            b"{}"
+        );
         assert!(list_requests(root).0.is_empty());
         assert!(list_requests(root).1.is_empty());
         assert!(list_statuses(root).is_empty());
@@ -418,7 +454,10 @@ mod tests {
             r.write(root).unwrap();
         }
         let (ok, bad, total) = list_oldest_requests(root, 2);
-        assert_eq!(ok.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["1-00000000", "2-00000000"]);
+        assert_eq!(
+            ok.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["1-00000000", "2-00000000"]
+        );
         assert!(bad.is_empty());
         assert_eq!(total, 3);
     }
@@ -428,7 +467,11 @@ mod tests {
         let r = Request::new("x", None, false, "pc");
         let mut s = Status::new(&r, RequestState::Downloading);
         let v = serde_json::to_value(&s).unwrap();
-        assert!(v.get("itemsDone").is_none() && v.get("failures").is_none() && v.get("warnings").is_none());
+        assert!(
+            v.get("itemsDone").is_none()
+                && v.get("failures").is_none()
+                && v.get("warnings").is_none()
+        );
         s.items_done = Some(1);
         s.items_total = Some(3);
         for i in 0..MAX_FAILURES + 5 {

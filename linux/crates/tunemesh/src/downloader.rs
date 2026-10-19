@@ -35,7 +35,10 @@ pub enum State {
     Missing,
     Running,
     /// It exited unexpectedly; the next start is due at `at`.
-    Restarting { at: Instant, reason: String },
+    Restarting {
+        at: Instant,
+        reason: String,
+    },
     /// It refused to run (bad arguments or configuration); not restarted.
     Failed(String),
 }
@@ -61,7 +64,9 @@ pub struct Downloader {
 
 /// The worker binary: next to this executable, else on `PATH`.
 pub fn find_worker() -> Option<PathBuf> {
-    let beside = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join(WORKER_BIN)));
+    let beside = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join(WORKER_BIN)));
     if let Some(p) = beside.filter(|p| is_executable(p)) {
         return Some(p);
     }
@@ -74,7 +79,10 @@ fn is_executable(p: &Path) -> bool {
 
 /// Creates the work directory with mode 0700 (and tightens an existing one).
 fn prepare_work_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
     std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
@@ -155,7 +163,10 @@ impl Downloader {
         };
         let work_dir = config::worker_dir();
         if let Err(e) = prepare_work_dir(&work_dir) {
-            self.set_state(State::Failed(format!("Could not create {}: {e}", work_dir.display())));
+            self.set_state(State::Failed(format!(
+                "Could not create {}: {e}",
+                work_dir.display()
+            )));
             return;
         }
         let mut cmd = Command::new(&bin);
@@ -179,22 +190,27 @@ impl Downloader {
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
-                self.set_state(State::Failed(format!("Could not start {}: {e}", bin.display())));
+                self.set_state(State::Failed(format!(
+                    "Could not start {}: {e}",
+                    bin.display()
+                )));
                 return;
             }
         };
         let pid = child.id() as i32;
         if let Some(stderr) = child.stderr.take() {
             let last = self.last_line.clone();
-            let _ = std::thread::Builder::new().name("worker-log".into()).spawn(move || {
-                for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    // The worker prefixes its own lines.
-                    eprintln!("{line}");
-                    if !line.trim().is_empty() {
-                        *last.lock().unwrap() = line;
+            let _ = std::thread::Builder::new()
+                .name("worker-log".into())
+                .spawn(move || {
+                    for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                        // The worker prefixes its own lines.
+                        eprintln!("{line}");
+                        if !line.trim().is_empty() {
+                            *last.lock().unwrap() = line;
+                        }
                     }
-                }
-            });
+                });
         }
         // The child watch reaps the process; `child` must not wait for it.
         drop(child);
@@ -232,18 +248,31 @@ impl Downloader {
             Some(c) => format!("stopped unexpectedly (exit status {c})"),
             None => format!("stopped unexpectedly (signal {})", libc::WTERMSIG(status)),
         };
-        let reason = if last.is_empty() { how } else { format!("{how}; its last message was “{last}”") };
+        let reason = if last.is_empty() {
+            how
+        } else {
+            format!("{how}; its last message was “{last}”")
+        };
         eprintln!("tunemesh: {WORKER_BIN} {reason}");
         if code == Some(EXIT_USAGE) {
-            let msg = if last.is_empty() { String::new() } else { format!(": “{last}”") };
-            self.set_state(State::Failed(format!("The downloader refused to start{msg}. Turn it off and on again after fixing this.")));
+            let msg = if last.is_empty() {
+                String::new()
+            } else {
+                format!(": “{last}”")
+            };
+            self.set_state(State::Failed(format!(
+                "The downloader refused to start{msg}. Turn it off and on again after fixing this."
+            )));
             return;
         }
         if !self.enabled.get() {
             self.set_state(State::Off);
             return;
         }
-        let healthy = self.started.get().is_some_and(|t| t.elapsed() >= HEALTHY_RUN);
+        let healthy = self
+            .started
+            .get()
+            .is_some_and(|t| t.elapsed() >= HEALTHY_RUN);
         let failures = if healthy { 1 } else { self.failures.get() + 1 };
         self.failures.set(failures);
         let delay = Duration::from_secs((1u64 << failures.min(6)).min(MAX_DELAY_SECS));
@@ -255,7 +284,10 @@ impl Downloader {
             }
         });
         *self.retry.borrow_mut() = Some(id);
-        self.set_state(State::Restarting { at: Instant::now() + delay, reason });
+        self.set_state(State::Restarting {
+            at: Instant::now() + delay,
+            reason,
+        });
     }
 
     /// Asks the worker to stop (SIGTERM); kills it if it is still there
@@ -305,7 +337,12 @@ impl Downloader {
     /// or about to restart), requests are waiting and no other device is the
     /// active downloader.
     pub fn has_pending_work(&self) -> bool {
-        if !self.enabled.get() || !matches!(*self.state.borrow(), State::Running | State::Restarting { .. }) {
+        if !self.enabled.get()
+            || !matches!(
+                *self.state.borrow(),
+                State::Running | State::Restarting { .. }
+            )
+        {
             return false;
         }
         let root = self.root.borrow().clone();
@@ -314,7 +351,9 @@ impl Downloader {
     }
 
     pub fn pending_count(&self) -> usize {
-        tunemesh_core::request::list_requests(&self.root.borrow()).0.len()
+        tunemesh_core::request::list_requests(&self.root.borrow())
+            .0
+            .len()
     }
 }
 
@@ -323,7 +362,14 @@ fn exited(pid: i32) -> bool {
     // SAFETY: zeroed siginfo_t is a valid out-parameter for waitid.
     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
     // SAFETY: valid pointer; WNOWAIT leaves the child reapable.
-    let rc = unsafe { libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) };
+    let rc = unsafe {
+        libc::waitid(
+            libc::P_PID,
+            pid as libc::id_t,
+            &mut info,
+            libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+        )
+    };
     // SAFETY: si_pid is set by waitid when a child changed state.
     rc != 0 || unsafe { info.si_pid() } == pid
 }
@@ -341,7 +387,9 @@ fn is_this_device(w: &WorkerInfo) -> bool {
 pub fn summary(root: &Path, state: &State) -> (String, bool) {
     let active = active_worker(root);
     let mut text = match &active {
-        Some(w) if is_this_device(w) => format!("Downloads are handled by this device ({}).", w.device),
+        Some(w) if is_this_device(w) => {
+            format!("Downloads are handled by this device ({}).", w.device)
+        }
         Some(w) => format!("Downloads are handled by {}.", w.device),
         None => "No device is downloading right now.".to_owned(),
     };
@@ -379,11 +427,16 @@ mod tests {
 
     #[test]
     fn work_dir_is_private() {
-        let dir = std::env::temp_dir().join(format!("tunemesh-workdir-test-{}", std::process::id())).join("worker");
+        let dir = std::env::temp_dir()
+            .join(format!("tunemesh-workdir-test-{}", std::process::id()))
+            .join("worker");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         prepare_work_dir(&dir).unwrap();
-        assert_eq!(std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(
+            std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
     }
 }

@@ -79,7 +79,11 @@ impl State {
         if let Some(other) = worker::read(&self.root)
             && self.blocks(&other)
         {
-            log!("{} ({}) is now the downloader; stopping downloads here", other.device, other.instance);
+            log!(
+                "{} ({}) is now the downloader; stopping downloads here",
+                other.device,
+                other.instance
+            );
             self.active = false;
             self.waiting_for = Some(other.device);
             LOST.store(true, Ordering::SeqCst);
@@ -113,7 +117,10 @@ impl Leader {
                 while !signals::stop_requested() {
                     signals::sleep(Duration::from_secs(5));
                     let mut s = l.lock();
-                    if s.active && s.last_beat.is_none_or(|t| t.elapsed() >= HEARTBEAT_INTERVAL) {
+                    if s.active
+                        && s.last_beat
+                            .is_none_or(|t| t.elapsed() >= HEARTBEAT_INTERVAL)
+                    {
                         s.beat();
                     }
                 }

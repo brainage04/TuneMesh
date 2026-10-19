@@ -12,7 +12,11 @@ pub const TILE_COVER: i32 = 168;
 
 pub fn fmt_duration(secs: u64) -> String {
     let (h, m, s) = (secs / 3600, (secs / 60) % 60, secs % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 pub fn fmt_total(ms: u64) -> String {
@@ -32,7 +36,11 @@ pub fn plural(n: usize, one: &str, many: &str) -> String {
 }
 
 pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
-    let l = gtk::Label::builder().label(text).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
+    let l = gtk::Label::builder()
+        .label(text)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
     for c in classes {
         l.add_css_class(c);
     }
@@ -46,7 +54,11 @@ pub fn section_title(text: &str) -> gtk::Label {
 }
 
 pub fn icon_button(icon: &str, tooltip: &str) -> gtk::Button {
-    gtk::Button::builder().icon_name(icon).tooltip_text(tooltip).css_classes(["tm-icon-btn"]).build()
+    gtk::Button::builder()
+        .icon_name(icon)
+        .tooltip_text(tooltip)
+        .css_classes(["tm-icon-btn"])
+        .build()
 }
 
 pub fn play_button(big: bool) -> gtk::Button {
@@ -147,7 +159,10 @@ impl Tile {
         let stack = gtk::Box::new(gtk::Orientation::Vertical, 0);
         stack.append(&picture);
         stack.append(&liked);
-        let overlay = gtk::Overlay::builder().child(&stack).halign(gtk::Align::Start).build();
+        let overlay = gtk::Overlay::builder()
+            .child(&stack)
+            .halign(gtk::Align::Start)
+            .build();
         let play_btn = play_button(false);
         play_btn.set_halign(gtk::Align::End);
         play_btn.set_valign(gtk::Align::End);
@@ -193,7 +208,15 @@ impl Tile {
                 cb();
             }
         });
-        Self { widget, picture, liked, title, subtitle, open, play }
+        Self {
+            widget,
+            picture,
+            liked,
+            title,
+            subtitle,
+            open,
+            play,
+        }
     }
 
     pub fn set(

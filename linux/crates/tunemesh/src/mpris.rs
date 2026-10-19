@@ -15,12 +15,18 @@ use crate::player::{Change, Repeat};
 fn track_id(path: &str) -> TrackId {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     path.hash(&mut h);
-    TrackId::try_from(format!("/io/github/brainage04/TuneMesh/Track/T{:016x}", h.finish())).unwrap_or(TrackId::NO_TRACK)
+    TrackId::try_from(format!(
+        "/io/github/brainage04/TuneMesh/Track/T{:016x}",
+        h.finish()
+    ))
+    .unwrap_or(TrackId::NO_TRACK)
 }
 
 fn metadata(app: &App) -> Metadata {
     let lib = app.store.library();
-    let Some(path) = app.player.current_path() else { return Metadata::new() };
+    let Some(path) = app.player.current_path() else {
+        return Metadata::new();
+    };
     let Some(t) = lib.track(&path) else {
         let mut m = Metadata::new();
         m.set_trackid(Some(track_id(&path)));
@@ -34,7 +40,11 @@ fn metadata(app: &App) -> Metadata {
         .artist([t.artist.clone()])
         .album(t.album.clone())
         .length(Time::from_millis(t.duration_ms as i64))
-        .url(glib::filename_to_uri(root.join(&t.path), None).map(|u| u.to_string()).unwrap_or_default());
+        .url(
+            glib::filename_to_uri(root.join(&t.path), None)
+                .map(|u| u.to_string())
+                .unwrap_or_default(),
+        );
     if let Some(aa) = &t.album_artist {
         b = b.album_artist([aa.clone()]);
     }
@@ -42,9 +52,10 @@ fn metadata(app: &App) -> Metadata {
         b = b.track_number(n as i32);
     }
     if let Some(file) = covers::art_file(&root, t)
-        && let Ok(uri) = glib::filename_to_uri(&file, None) {
-            b = b.art_url(uri.to_string());
-        }
+        && let Ok(uri) = glib::filename_to_uri(&file, None)
+    {
+        b = b.art_url(uri.to_string());
+    }
     b.build()
 }
 
@@ -74,7 +85,15 @@ pub fn start(app: &Rc<App>) {
             .identity("TuneMesh")
             .desktop_entry(APP_ID)
             .supported_uri_schemes(["file"])
-            .supported_mime_types(["audio/mpeg", "audio/ogg", "audio/opus", "audio/flac", "audio/mp4", "audio/x-wav", "audio/webm"])
+            .supported_mime_types([
+                "audio/mpeg",
+                "audio/ogg",
+                "audio/opus",
+                "audio/flac",
+                "audio/mp4",
+                "audio/x-wav",
+                "audio/webm",
+            ])
             .can_raise(true)
             .can_quit(true)
             .can_play(true)
@@ -146,7 +165,9 @@ pub fn start(app: &Rc<App>) {
         let weak_app = Rc::downgrade(&app);
         let m = mpris.clone();
         app.player.connect(move |c| {
-            let Some(app) = weak_app.upgrade() else { return };
+            let Some(app) = weak_app.upgrade() else {
+                return;
+            };
             let m = m.clone();
             match c {
                 Change::Position => {
@@ -177,7 +198,11 @@ pub fn start(app: &Rc<App>) {
                     });
                 }
                 Change::Options | Change::Queue => {
-                    let (l, s, v) = (loop_status(app.player.repeat()), app.player.shuffle(), app.player.volume() / 100.0);
+                    let (l, s, v) = (
+                        loop_status(app.player.repeat()),
+                        app.player.shuffle(),
+                        app.player.volume() / 100.0,
+                    );
                     glib::spawn_future_local(async move {
                         if m.loop_status() != l {
                             let _ = m.set_loop_status(l).await;

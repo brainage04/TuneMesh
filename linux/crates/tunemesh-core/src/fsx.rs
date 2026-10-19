@@ -57,32 +57,56 @@ fn component(name: &str) -> io::Result<&str> {
 
 /// Splits a relative `/`-separated path into checked components.
 fn components(rel: &str) -> io::Result<Vec<&str>> {
-    rel.split('/').filter(|c| !c.is_empty()).map(component).collect()
+    rel.split('/')
+        .filter(|c| !c.is_empty())
+        .map(component)
+        .collect()
 }
 
 fn refused(name: &str, what: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("refusing “{name}”: {what}"))
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("refusing “{name}”: {what}"),
+    )
 }
 
 /// Maps the errors `O_NOFOLLOW`/`O_DIRECTORY` give for a symlink or a
 /// non-directory to a clear refusal.
 fn map_open_err(e: rustix::io::Errno, name: &str, dir: bool) -> io::Error {
     if e == rustix::io::Errno::LOOP || (e == rustix::io::Errno::NOTDIR && dir) {
-        refused(name, if dir { "not a directory (or a symbolic link)" } else { "a symbolic link" })
+        refused(
+            name,
+            if dir {
+                "not a directory (or a symbolic link)"
+            } else {
+                "a symbolic link"
+            },
+        )
     } else {
         let e = io::Error::from(e);
         io::Error::new(e.kind(), format!("{name}: {e}"))
     }
 }
 
-const DIR_FLAGS: OFlags =
-    OFlags::RDONLY.union(OFlags::DIRECTORY).union(OFlags::NOFOLLOW).union(OFlags::CLOEXEC);
+const DIR_FLAGS: OFlags = OFlags::RDONLY
+    .union(OFlags::DIRECTORY)
+    .union(OFlags::NOFOLLOW)
+    .union(OFlags::CLOEXEC);
 
 impl Dir {
     /// Opens the directory at `path`, following symlinks in `path` itself.
     pub fn open(path: &Path) -> io::Result<Self> {
-        let fd = rustix::fs::open(path, OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC, Mode::empty())
-            .map_err(|e| io::Error::new(io::Error::from(e).kind(), format!("{}: {}", path.display(), io::Error::from(e))))?;
+        let fd = rustix::fs::open(
+            path,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+        )
+        .map_err(|e| {
+            io::Error::new(
+                io::Error::from(e).kind(),
+                format!("{}: {}", path.display(), io::Error::from(e)),
+            )
+        })?;
         Ok(Self { fd })
     }
 
@@ -114,13 +138,17 @@ impl Dir {
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(Self { fd: self.fd.try_clone()? })
+        Ok(Self {
+            fd: self.fd.try_clone()?,
+        })
     }
 
     /// The directory holding `rel` and the final component's name.
     fn parent_of<'a>(&self, rel: &'a str, create: bool) -> io::Result<(Self, &'a str)> {
         let comps = components(rel)?;
-        let (name, dirs) = comps.split_last().ok_or_else(|| invalid(format!("empty path: {rel:?}")))?;
+        let (name, dirs) = comps
+            .split_last()
+            .ok_or_else(|| invalid(format!("empty path: {rel:?}")))?;
         let mut dir = self.try_clone()?;
         for c in dirs {
             dir = dir.child_dir(c, create)?;
@@ -155,7 +183,10 @@ impl Dir {
         let mut bytes = Vec::new();
         file.take(max + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > max {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{rel}: larger than {max} bytes")));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{rel}: larger than {max} bytes"),
+            ));
         }
         Ok(bytes)
     }
@@ -168,7 +199,9 @@ impl Dir {
 
     /// Whether `rel` exists as a regular file (no symlinks on the way).
     pub fn is_file(&self, rel: &str) -> bool {
-        self.parent_of(rel, false).and_then(|(d, n)| d.kind(n)).is_ok_and(|k| k == Kind::File)
+        self.parent_of(rel, false)
+            .and_then(|(d, n)| d.kind(n))
+            .is_ok_and(|k| k == Kind::File)
     }
 
     /// Size of the regular file `rel`.
@@ -185,7 +218,9 @@ impl Dir {
             if bytes == b"." || bytes == b".." {
                 continue;
             }
-            let Ok(name) = std::str::from_utf8(bytes) else { continue };
+            let Ok(name) = std::str::from_utf8(bytes) else {
+                continue;
+            };
             let kind = match entry.file_type() {
                 FileType::Unknown => match self.kind(name) {
                     Ok(k) => k,
@@ -245,12 +280,14 @@ impl Dir {
 
     /// Removes the empty subdirectory `name` (a symlink is refused).
     pub fn remove_dir(&self, name: &str) -> io::Result<()> {
-        rustix::fs::unlinkat(&self.fd, component(name)?, AtFlags::REMOVEDIR).map_err(io::Error::from)
+        rustix::fs::unlinkat(&self.fd, component(name)?, AtFlags::REMOVEDIR)
+            .map_err(io::Error::from)
     }
 
     /// Renames `from` to `to` inside this directory, replacing `to`.
     pub fn rename(&self, from: &str, to: &str) -> io::Result<()> {
-        rustix::fs::renameat(&self.fd, component(from)?, &self.fd, component(to)?).map_err(io::Error::from)
+        rustix::fs::renameat(&self.fd, component(from)?, &self.fd, component(to)?)
+            .map_err(io::Error::from)
     }
 
     /// Moves the file at `from` (outside the library) to `name` in this
@@ -266,8 +303,12 @@ impl Dir {
             Err(e) => return Err(e),
         }
         let mut source = File::from(
-            rustix::fs::open(from, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty())
-                .map_err(io::Error::from)?,
+            rustix::fs::open(
+                from,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::empty(),
+            )
+            .map_err(io::Error::from)?,
         );
         if !source.metadata()?.is_file() {
             return Err(refused(&from.display().to_string(), "not a regular file"));
@@ -305,7 +346,10 @@ fn rename_noreplace(
         Ok(()) => Ok(()),
         Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS) => {
             match rustix::fs::statat(&to_dir, to, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(_) => Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("{} exists", Path::new(to).display()))),
+                Ok(_) => Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("{} exists", Path::new(to).display()),
+                )),
                 Err(rustix::io::Errno::NOENT) => {
                     rustix::fs::renameat(&from_dir, from, &to_dir, to).map_err(io::Error::from)
                 }
@@ -351,7 +395,11 @@ mod tests {
         // Replacing a symlink replaces the link, not its target.
         root.write_atomic("file", b"new").unwrap();
         assert_eq!(fs::read(outside.path().join("secret")).unwrap(), b"key");
-        assert!(fs::symlink_metadata(lib.path().join("file")).unwrap().is_file());
+        assert!(
+            fs::symlink_metadata(lib.path().join("file"))
+                .unwrap()
+                .is_file()
+        );
     }
 
     #[test]
@@ -362,11 +410,19 @@ mod tests {
         let src = work.path().join("a");
         fs::write(&src, b"1").unwrap();
         fs::write(lib.path().join("b"), b"old").unwrap();
-        assert_eq!(root.move_in(&src, "b").unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            root.move_in(&src, "b").unwrap_err().kind(),
+            io::ErrorKind::AlreadyExists
+        );
         root.move_in(&src, "c").unwrap();
         assert_eq!(fs::read(lib.path().join("c")).unwrap(), b"1");
         assert!(!src.exists());
-        let names: Vec<_> = root.entries().unwrap().into_iter().map(|(n, _)| n).collect();
+        let names: Vec<_> = root
+            .entries()
+            .unwrap()
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
         assert_eq!(names.len(), 2);
         assert!(root.free_space().unwrap() > 0);
     }
