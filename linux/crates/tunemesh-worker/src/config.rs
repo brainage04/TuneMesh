@@ -264,6 +264,14 @@ pub fn private_dir(dir: &Path) -> Result<PathBuf> {
 /// unique, and a sandbox (Flatpak, containers) has its own process ids.
 /// The id is a hash, so the synced file does not reveal `/etc/machine-id`.
 pub fn machine_id() -> String {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(compute_machine_id).clone()
+}
+
+/// Computed once per process: when the random fallback cannot be stored (no
+/// writable data directory, as in a build sandbox), every call would
+/// otherwise give a new id.
+fn compute_machine_id() -> String {
     let base = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
         .iter()
         .find_map(|p| fs::read_to_string(p).ok())
