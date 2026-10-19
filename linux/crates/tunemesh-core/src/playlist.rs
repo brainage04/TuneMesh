@@ -1,11 +1,11 @@
 //! `Playlists/<Name>.m3u8` (contract: "Playlists").
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use crate::fsx::{Dir, Kind};
 use crate::library::{is_conflict_copy, title_from_file_name};
-use crate::{PLAYLISTS_DIR, atomic, sanitize};
+use crate::{PLAYLISTS_DIR, sanitize};
 
 pub const LIKED_SONGS: &str = "Liked Songs";
 const EXT: &str = ".m3u8";
@@ -122,7 +122,19 @@ pub fn playlists_dir(root: &Path) -> PathBuf {
 }
 
 pub fn playlist_path(root: &Path, name: &str) -> PathBuf {
-    playlists_dir(root).join(format!("{name}{EXT}"))
+    playlists_dir(root).join(file_name(name))
+}
+
+fn file_name(name: &str) -> String {
+    format!("{name}{EXT}")
+}
+
+/// Largest playlist file read (a 100,000-entry playlist is about 15 MB).
+const MAX_PLAYLIST_BYTES: u64 = 32 * 1024 * 1024;
+
+/// The `Playlists` directory, refusing a symlink (see `fsx`).
+fn open_dir(root: &Path, create: bool) -> io::Result<Dir> {
+    Dir::open(root)?.sub(PLAYLISTS_DIR, create)
 }
 
 /// The file-system-safe form of a playlist name.
@@ -139,19 +151,19 @@ fn playlist_stem(name: &str) -> Option<&str> {
     name.strip_suffix(EXT).filter(|stem| !stem.is_empty())
 }
 
+/// Stems of the regular playlist files (symlinks and directories skipped).
+fn stems(root: &Path) -> Vec<String> {
+    let Ok(entries) = open_dir(root, false).and_then(|d| d.entries()) else { return Vec::new() };
+    entries
+        .into_iter()
+        .filter(|(_, kind)| *kind == Kind::File)
+        .filter_map(|(name, _)| playlist_stem(&name).map(str::to_owned))
+        .collect()
+}
+
 /// Names of all playlists, sorted case-insensitively, Liked Songs excluded.
 pub fn list_names(root: &Path) -> Vec<String> {
-    let Ok(entries) = fs::read_dir(playlists_dir(root)) else { return Vec::new() };
-    let mut names: Vec<String> = entries
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().into_string().ok()?;
-            if !e.file_type().ok()?.is_file() {
-                return None;
-            }
-            playlist_stem(&name).filter(|stem| *stem != LIKED_SONGS).map(str::to_owned)
-        })
-        .collect();
+    let mut names: Vec<String> = stems(root).into_iter().filter(|stem| stem != LIKED_SONGS).collect();
     names.sort_by_cached_key(|n| crate::search::fold(n));
     names
 }
@@ -164,17 +176,16 @@ pub fn existing_name(root: &Path, name: &str) -> Option<String> {
     if folded == LIKED_SONGS.to_lowercase() {
         return Some(LIKED_SONGS.to_owned());
     }
-    fs::read_dir(playlists_dir(root))
-        .ok()?
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .find_map(|n| playlist_stem(&n).filter(|stem| stem.to_lowercase() == folded).map(str::to_owned))
+    stems(root).into_iter().find(|stem| stem.to_lowercase() == folded)
 }
 
 impl Playlist {
-    /// Reads a playlist; a missing Liked Songs file reads as empty.
+    /// Reads a playlist; a missing Liked Songs file reads as empty. A
+    /// playlist that is a symlink (or below a symlinked `Playlists`) is
+    /// refused, so a synced link cannot leak the file it points to.
     pub fn read(root: &Path, name: &str) -> io::Result<Self> {
-        match fs::read(playlist_path(root, name)) {
+        let bytes = open_dir(root, false).and_then(|d| d.read(&file_name(name), MAX_PLAYLIST_BYTES));
+        match bytes {
             Ok(bytes) => {
                 let text = String::from_utf8_lossy(&bytes);
                 Ok(Self { name: name.to_owned(), entries: parse(&text, root) })
@@ -187,7 +198,7 @@ impl Playlist {
     }
 
     pub fn write(&self, root: &Path, info: &dyn Fn(&str) -> Option<TrackInfo>) -> io::Result<()> {
-        atomic::write(&playlist_path(root, &self.name), serialize(&self.entries, info).as_bytes())
+        open_dir(root, true)?.write_atomic(&file_name(&self.name), serialize(&self.entries, info).as_bytes())
     }
 
     /// Creates an empty playlist with the sanitised `name`; fails if a
@@ -215,7 +226,7 @@ impl Playlist {
         if let Some(existing) = existing_name(root, &new).filter(|e| e != old) {
             return Err(io::Error::new(io::ErrorKind::AlreadyExists, format!("“{existing}” already exists")));
         }
-        fs::rename(playlist_path(root, old), playlist_path(root, &new))?;
+        open_dir(root, false)?.rename(&file_name(old), &file_name(&new))?;
         Ok(new)
     }
 
@@ -223,7 +234,7 @@ impl Playlist {
         if name == LIKED_SONGS {
             return Err(io::Error::new(io::ErrorKind::PermissionDenied, "Liked Songs cannot be deleted"));
         }
-        fs::remove_file(playlist_path(root, name))
+        open_dir(root, false)?.remove_file(&file_name(name))
     }
 
     pub fn contains(&self, track: &str) -> bool {
@@ -268,6 +279,40 @@ impl Playlist {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    /// Audit finding 1: a synced symlink must not turn a secret file into
+    /// playlist entries, and writing must replace the link, not the target.
+    #[test]
+    fn symlinked_playlists_are_refused() {
+        let outside = tempfile::tempdir().unwrap();
+        let secret = outside.path().join("id_ed25519");
+        fs::write(&secret, "-----BEGIN KEY-----\nAAAA\n").unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        fs::create_dir(playlists_dir(root)).unwrap();
+        symlink(&secret, playlist_path(root, LIKED_SONGS)).unwrap();
+        symlink(&secret, playlist_path(root, "x")).unwrap();
+        assert!(Playlist::read(root, LIKED_SONGS).is_err());
+        assert!(Playlist::read(root, "x").is_err());
+        // Symlinks are not playlists, so a request naming "X" gets a new file.
+        assert_eq!(existing_name(root, "X"), None);
+        assert!(list_names(root).is_empty());
+
+        // A symlinked Playlists directory is refused for reads and writes.
+        fs::remove_dir_all(playlists_dir(root)).unwrap();
+        fs::write(outside.path().join("y.m3u8"), "#EXTM3U\n../a.mp3\n").unwrap();
+        symlink(outside.path(), playlists_dir(root)).unwrap();
+        assert!(Playlist::read(root, "y").is_err());
+        assert!(list_names(root).is_empty());
+        let p = Playlist { name: "z".into(), entries: vec![] };
+        assert!(p.write(root, &|_| None).is_err());
+        assert!(!outside.path().join("z.m3u8").exists());
+        assert!(Playlist::delete(root, "y").is_err());
+        assert!(outside.path().join("y.m3u8").exists());
+        assert_eq!(fs::read_to_string(&secret).unwrap(), "-----BEGIN KEY-----\nAAAA\n");
+    }
 
     fn info(path: &str) -> Option<TrackInfo> {
         (path != "Gone/Missing.mp3").then(|| TrackInfo { duration_secs: Some(213), label: format!("A - {path}") })

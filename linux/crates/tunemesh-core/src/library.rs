@@ -184,7 +184,15 @@ fn tag_info(tag: &Tag) -> TagInfo {
 /// Reads tags and duration; unreadable files yield an empty `TagInfo` so the
 /// track still appears with its fallbacks.
 pub fn read_tags(path: &Path) -> TagInfo {
-    let Ok(file) = lofty::read_from_path(path) else { return TagInfo::default() };
+    lofty::read_from_path(path).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+}
+
+/// [`read_tags`] for an already open file (see `fsx::Dir::open_file`).
+pub fn read_tags_from(file: &mut fs::File) -> TagInfo {
+    lofty::read_from(file).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+}
+
+fn tagged_info(file: &lofty::file::TaggedFile) -> TagInfo {
     let mut info = file
         .primary_tag()
         .or_else(|| file.first_tag())
@@ -326,7 +334,7 @@ pub fn source_id_index(root: &Path) -> HashMap<String, String> {
                     && !(rel_dir.is_empty() && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) => {
                         stack.push((entry.path(), rel));
                     }
-                Ok(_) if has_audio_extension(name) => {
+                Ok(t) if t.is_file() && has_audio_extension(name) => {
                     if let Some(id) = source_id_from_file_name(name) {
                         match index.get_mut(id) {
                             Some(existing) if *existing <= rel => {}
