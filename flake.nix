@@ -70,7 +70,7 @@
         '';
 
         meta = {
-          description = "Spotify-like desktop player for a Syncthing music library";
+          description = "Desktop music player for a Syncthing music library";
           mainProgram = "tunemesh";
           platforms = [ system ];
         };

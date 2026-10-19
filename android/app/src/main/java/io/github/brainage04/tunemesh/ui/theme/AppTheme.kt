@@ -38,7 +38,7 @@ private val Colors = darkColorScheme(
     onPrimaryContainer = Color.White,
 )
 
-/** Spotify-like dark theme; TuneMesh has no light mode. */
+/** Dark theme; TuneMesh has no light mode. */
 @Composable
 fun AppTheme(content: @Composable () -> Unit) {
     MaterialTheme(colorScheme = Colors) {

@@ -115,7 +115,7 @@ impl App {
         window.add_css_class("tunemesh");
 
         let search_entry = gtk::SearchEntry::builder()
-            .placeholder_text("What do you want to play?")
+            .placeholder_text("Search your library")
             .css_classes(["tm-search"])
             .build();
         let back_btn = gtk::Button::builder()
