@@ -53,10 +53,12 @@ refresh_caches() {
     # Only when installing into the live system; package managers run these
     # through their own triggers.
     [ -z "$destdir" ] || return 0
-    command -v update-desktop-database >/dev/null 2>&1 &&
+    if command -v update-desktop-database >/dev/null 2>&1; then
         update-desktop-database -q "$datadir/applications" 2>/dev/null || true
-    command -v gtk-update-icon-cache >/dev/null 2>&1 &&
+    fi
+    if command -v gtk-update-icon-cache >/dev/null 2>&1; then
         gtk-update-icon-cache -q -t "$datadir/icons/hicolor" 2>/dev/null || true
+    fi
 }
 
 if $uninstall; then

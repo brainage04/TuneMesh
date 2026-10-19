@@ -80,6 +80,8 @@ parts:
     plugin: rust
     source: .
     rust-channel: stable
+    build-snaps:
+      - rustup
     rust-path:
       - linux/crates/tunemesh
       - linux/crates/tunemesh-worker

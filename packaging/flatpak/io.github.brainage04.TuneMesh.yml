@@ -88,6 +88,8 @@ modules:
       append-path: /usr/lib/sdk/rust-stable/bin
       env:
         CARGO_HOME: /run/build/tunemesh/cargo
+        # libmpv from the mpv module above.
+        RUSTFLAGS: -L native=/app/lib
     build-commands:
       - cargo --offline fetch --manifest-path linux/Cargo.toml --verbose
       - cargo --offline build --release --locked --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker
