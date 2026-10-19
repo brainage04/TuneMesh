@@ -1,0 +1,19 @@
+/* Named colours for libadwaita 1.6 and later (CSS variables). */
+
+:root {
+  --accent-bg-color: #1ed760;
+  --accent-fg-color: #000000;
+  --accent-color: #1ed760;
+  --window-bg-color: #000000;
+  --window-fg-color: #ffffff;
+  --view-bg-color: #121212;
+  --view-fg-color: #ffffff;
+  --headerbar-bg-color: #000000;
+  --headerbar-fg-color: #ffffff;
+  --headerbar-shade-color: transparent;
+  --popover-bg-color: #282828;
+  --popover-fg-color: #ffffff;
+  --dialog-bg-color: #282828;
+  --card-bg-color: #181818;
+  --sidebar-bg-color: #121212;
+}
