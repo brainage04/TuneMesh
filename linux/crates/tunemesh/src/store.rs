@@ -10,14 +10,16 @@ use std::rc::{Rc, Weak};
 use std::time::Duration;
 
 use gtk::glib;
-use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
-use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
+use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tunemesh_core::playlist::{self, LIKED_SONGS, TrackInfo};
 use tunemesh_core::fsx::Dir;
 use tunemesh_core::{Library, PLAYLISTS_DIR, Playlist, TUNEMESH_DIR, Track, library};
 
 use crate::config;
+
+/// How long after the first file change a burst of changes is handled.
+const DEBOUNCE: Duration = Duration::from_millis(700);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreChange {
@@ -51,7 +53,7 @@ pub struct Store {
     liked: RefCell<Playlist>,
     liked_set: RefCell<HashSet<String>>,
     listeners: RefCell<Vec<Listener>>,
-    watcher: RefCell<Option<Debouncer<RecommendedWatcher>>>,
+    watcher: RefCell<Option<RecommendedWatcher>>,
     scanning: Cell<bool>,
     rescan_again: Cell<bool>,
     generation: Cell<u64>,
@@ -177,32 +179,43 @@ impl Store {
             return;
         }
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
-        let debouncer = new_debouncer(Duration::from_millis(700), move |res: DebounceEventResult| {
-            if let Ok(events) = res {
-                let _ = tx.send_blocking(events.into_iter().map(|e| e.path).collect());
+        // Reads (open/close-nowrite) are ignored: the app's own rescans and
+        // playlist reads would otherwise trigger the next rescan, forever.
+        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(ev) = res
+                && !matches!(ev.kind, EventKind::Access(_))
+            {
+                let _ = tx.send_blocking(ev.paths);
             }
         });
-        let mut debouncer = match debouncer {
-            Ok(d) => d,
+        let mut watcher = match watcher {
+            Ok(w) => w,
             Err(e) => {
                 eprintln!("tunemesh: cannot watch the library: {e}");
                 return;
             }
         };
-        if let Err(e) = debouncer.watcher().watch(&root, RecursiveMode::Recursive) {
+        if let Err(e) = watcher.watch(&root, RecursiveMode::Recursive) {
             eprintln!("tunemesh: cannot watch {}: {e}", root.display());
             return;
         }
-        *self.watcher.borrow_mut() = Some(debouncer);
+        *self.watcher.borrow_mut() = Some(watcher);
         let weak = self.me.clone();
         let generation = self.generation.get();
         glib::spawn_future_local(async move {
-            while let Ok(paths) = rx.recv().await {
+            // Changes arrive in bursts (a sync, a download): handle each burst
+            // once, DEBOUNCE after its first event.
+            while let Ok(first) = rx.recv().await {
+                glib::timeout_future(DEBOUNCE).await;
+                let mut paths: HashSet<PathBuf> = first.into_iter().collect();
+                while let Ok(more) = rx.try_recv() {
+                    paths.extend(more);
+                }
                 let Some(store) = weak.upgrade() else { break };
                 if store.generation.get() != generation {
                     break;
                 }
-                store.on_fs_events(&root, &paths);
+                store.on_fs_events(&root, &paths.into_iter().collect::<Vec<_>>());
             }
         });
     }
