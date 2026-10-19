@@ -7,14 +7,12 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import io.github.brainage04.tunemesh.TuneMeshApp
-import io.github.brainage04.tunemesh.library.RawTags
-import io.github.brainage04.tunemesh.library.Track
-import java.io.File
 import java.io.FileNotFoundException
 
 /**
  * Serves cached album art to the media session, notification and lock screen so queue items only carry a URI
- * and covers are extracted lazily. Exported only to holders of MEDIA_CONTENT_CONTROL (System UI), read-only.
+ * and covers are extracted lazily. Exported only to holders of MEDIA_CONTENT_CONTROL (System UI), read-only,
+ * and only for audio files inside the library: `path` cannot reach other files the app can read.
  */
 class CoverProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
@@ -24,11 +22,7 @@ class CoverProvider : ContentProvider() {
         val path = uri.getQueryParameter(PARAM_PATH) ?: throw FileNotFoundException(uri.toString())
         val app = context?.applicationContext as? TuneMeshApp ?: throw FileNotFoundException(uri.toString())
         val root = app.repository.root
-        val track = app.repository.state.value.index.byPath[path] ?: run {
-            val audio = File(root, path)
-            if (!audio.isFile) throw FileNotFoundException(path)
-            Track.fromTags(path, RawTags(), audio.length(), audio.lastModified())
-        }
+        val track = app.repository.track(path) ?: throw FileNotFoundException("Not a library track: $path")
         val cover = app.covers.diskFile(root, track) ?: throw FileNotFoundException("No cover for $path")
         return ParcelFileDescriptor.open(cover, ParcelFileDescriptor.MODE_READ_ONLY)
     }

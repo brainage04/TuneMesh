@@ -76,14 +76,17 @@ object QueueItems {
     }
 
     /**
-     * Fills in the playable URI for items that crossed the session boundary without one, or returns null when the
-     * item does not name an audio file inside [root]: the session is exported, so other apps' controllers must not
-     * make the player open arbitrary files or URLs.
+     * Rebuilds an item that crossed the session boundary from the library [track] it names, or returns null when
+     * it does not name an audio file inside [root]. The session is exported, so other apps' controllers must not
+     * make the player open arbitrary files or URLs, nor make the app load their metadata (artwork URIs in
+     * particular) with its All files access: only the media URI and the queue entry ID are taken from [item].
      */
-    fun resolve(item: MediaItem, root: File): MediaItem? {
+    fun resolve(context: Context, item: MediaItem, root: File, track: (String) -> Track?): MediaItem? {
         val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return null
-        if (!LibraryUris.isLibraryFile(uri.toString(), root)) return null
-        return if (item.localConfiguration != null) item else item.buildUpon().setUri(uri).build()
+        val path = LibraryUris.libraryPath(uri.toString(), root) ?: return null
+        val resolved = track(path) ?: return null
+        val id = item.mediaId.takeIf { '|' in it }?.substringBefore('|')?.takeIf { it.isNotEmpty() } ?: newId()
+        return build(context, root, resolved, id)
     }
 }
 

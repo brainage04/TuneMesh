@@ -6,8 +6,10 @@ import io.github.brainage04.tunemesh.library.DownloadItem
 import io.github.brainage04.tunemesh.library.DownloadStore
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
+import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.library.PlaylistStore
+import io.github.brainage04.tunemesh.library.RawTags
 import io.github.brainage04.tunemesh.library.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -66,6 +68,20 @@ class LibraryRepository(
     private val downloadStore get() = DownloadStore(root)
 
     fun hasAccess(): Boolean = Environment.isExternalStorageManager()
+
+    /**
+     * The track at the library-relative [path], or null when [path] does not name an audio file inside the library
+     * (absolute, `..` or symlinks out of it, not audio, missing). Paths the index does not know yet (before the
+     * first scan) get path-derived metadata.
+     */
+    fun track(path: String): Track? {
+        val root = root
+        val resolved = LibraryUris.resolvePath(path, root) ?: return null
+        _state.value.index.byPath[resolved]?.let { return it }
+        val file = File(root, resolved)
+        if (!file.isFile) return null
+        return Track.fromTags(resolved, RawTags(), file.length(), file.lastModified())
+    }
 
     /** Shows cached tags immediately, then rescans. */
     fun start() {
