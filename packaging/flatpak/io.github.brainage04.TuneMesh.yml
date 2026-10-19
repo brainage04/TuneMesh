@@ -23,9 +23,11 @@ finish-args:
   # Downloads (yt-dlp, the worker's managed yt-dlp copy) and the local
   # Syncthing GUI API.
   - --share=network
-  # The default library folder. Other folders: the folder picker (document
-  # portal) or `flatpak override --user --filesystem=<dir> io.github.brainage04.TuneMesh`.
-  - --filesystem=xdg-music/TuneMesh:create
+  # The app's default library folder, ~/Music/TuneMesh (not the localised XDG
+  # music folder: the app's default does not follow it either). Other folders:
+  # the folder picker (document portal) or
+  # `flatpak override --user --filesystem=<dir> io.github.brainage04.TuneMesh`.
+  - --filesystem=~/Music/TuneMesh:create
   # Syncthing's config.xml, read for the GUI API key.
   - --filesystem=~/.config/syncthing:ro
   - --filesystem=~/.local/state/syncthing:ro
