@@ -43,6 +43,7 @@ class AppModel(val repository: LibraryRepository, val covers: Covers, val player
     val canGoForward get() = forward.isNotEmpty()
 
     fun navigate(target: Route) {
+        if (target != Route.Search) query = ""
         if (target == route) return
         back += route
         forward.clear()

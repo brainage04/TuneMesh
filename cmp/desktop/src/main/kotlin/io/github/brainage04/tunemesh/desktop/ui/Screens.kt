@@ -228,9 +228,14 @@ fun LibraryScreen(tab: LibraryTab) {
         }
         Spacer(Modifier.height(8.dp))
         when (tab) {
-            LibraryTab.Songs -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
-                itemsIndexed(index.tracks, key = { _, track -> track.path }) { position, track ->
-                    TrackRow(track, position + 1, onPlay = { model.play("Library", index.tracks, position) })
+            LibraryTab.Songs -> {
+                val songs = remember(index) {
+                    index.tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
+                }
+                LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+                    itemsIndexed(songs, key = { _, track -> track.path }) { position, track ->
+                        TrackRow(track, position + 1, onPlay = { model.play("Library", songs, position) })
+                    }
                 }
             }
             else -> LazyVerticalGrid(GridCells.Adaptive(TileWidth), Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 14.dp)) {
