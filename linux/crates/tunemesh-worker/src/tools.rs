@@ -35,7 +35,9 @@ pub struct Resolved {
     pub yt_dlp: PathBuf,
     /// `None`: no JavaScript runtime; YouTube may fail or offer fewer formats.
     pub deno: Option<PathBuf>,
-    pub ffmpeg_dir: Option<PathBuf>,
+    /// The real programs; yt-dlp reaches them through `ffshim`.
+    pub ffmpeg: PathBuf,
+    pub ffprobe: PathBuf,
 }
 
 pub struct Tools {
@@ -282,7 +284,7 @@ impl Tools {
 
     /// Finds or downloads everything; the error explains what is missing.
     pub fn resolve(&mut self, http: &Http) -> Result<Resolved, String> {
-        let ffmpeg_dir = match &self.ffmpeg_dir {
+        let (ffmpeg, ffprobe) = match &self.ffmpeg_dir {
             Some(dir) => {
                 if !is_executable(&dir.join("ffmpeg")) || !is_executable(&dir.join("ffprobe")) {
                     return Err(format!(
@@ -290,14 +292,14 @@ impl Tools {
                         dir.display()
                     ));
                 }
-                Some(dir.clone())
+                (dir.join("ffmpeg"), dir.join("ffprobe"))
             }
-            None => {
-                if which("ffmpeg").is_none() || which("ffprobe").is_none() {
+            None => match (which("ffmpeg"), which("ffprobe")) {
+                (Some(a), Some(b)) => (a, b),
+                _ => {
                     return Err("ffmpeg and ffprobe are not installed (install ffmpeg or set TUNEMESH_FFMPEG_DIR)".to_owned());
                 }
-                None
-            }
+            },
         };
         let yt_dlp = match &self.yt_dlp {
             Some(p) if is_executable(p) => p.clone(),
@@ -322,7 +324,8 @@ impl Tools {
         Ok(Resolved {
             yt_dlp,
             deno,
-            ffmpeg_dir,
+            ffmpeg,
+            ffprobe,
         })
     }
 

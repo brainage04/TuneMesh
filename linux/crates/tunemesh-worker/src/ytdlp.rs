@@ -5,7 +5,8 @@
 //! (`--proxy`, plus the proxy variables for the ffmpeg it may start), and
 //! only formats served over plain HTTP(S), HLS or DASH fetched by yt-dlp's
 //! own downloader are accepted, so every request it makes passes the
-//! proxy's address checks.
+//! proxy's address checks. Its ffmpeg and ffprobe runs go through
+//! `ffshim`, which confines them to plain media files in the job directory.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -57,9 +58,18 @@ pub fn command(job: &Job) -> Command {
         c.arg("--js-runtimes")
             .arg(format!("deno:{}", deno.display()));
     }
-    if let Some(dir) = &t.ffmpeg_dir {
-        c.arg("--ffmpeg-location").arg(dir);
+    // ffmpeg and ffprobe only through the confining shim; without it the
+    // postprocessors fail rather than run unconfined.
+    match crate::ffshim::install(work) {
+        Ok(dir) => {
+            c.arg("--ffmpeg-location").arg(dir);
+        }
+        Err(e) => {
+            log!("[{}] could not set up the ffmpeg shim: {e}", job.req.id);
+            c.arg("--ffmpeg-location").arg(work.join("ffmpeg-shim"));
+        }
     }
+    c.envs(crate::ffshim::env(&t.ffmpeg, &t.ffprobe, &job.dir));
     for var in [
         "http_proxy",
         "https_proxy",

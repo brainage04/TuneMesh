@@ -250,6 +250,12 @@ library, as a service or as a child process of the desktop app. It:
    checked. This does not cover the host's public IPv4 address behind NAT
    (reachable through the router's hairpin NAT) or services that other hosts
    on the internet can reach anyway; the NixOS module adds a firewall layer.
+10. Runs ffmpeg and ffprobe (yt-dlp's postprocessing) only on files inside
+    the request's scratch directory and only with demuxers for plain audio,
+    video and image containers (`-format_whitelist`, `-protocol_whitelist
+    file`), so a download that is really a playlist or script referring to
+    other files (HLS, ffconcat, DASH) fails instead of copying local files
+    into the library.
 
 ## Local state
 

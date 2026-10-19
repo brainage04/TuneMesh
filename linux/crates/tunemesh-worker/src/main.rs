@@ -6,6 +6,7 @@
 
 mod child;
 mod config;
+mod ffshim;
 mod http;
 mod job;
 mod leader;
@@ -44,6 +45,9 @@ enum Fatal {
 }
 
 fn main() -> ExitCode {
+    if let Some(program) = ffshim::invoked_as() {
+        return ffshim::main(program);
+    }
     let args = match config::parse_args(std::env::args().skip(1)) {
         Ok(Parsed::Run(a)) => a,
         Ok(Parsed::Help) => {

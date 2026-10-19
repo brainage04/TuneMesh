@@ -433,7 +433,8 @@ pub fn process(ctx: &mut Ctx, req: Request) {
         tools: Resolved {
             yt_dlp: PathBuf::new(),
             deno: None,
-            ffmpeg_dir: None,
+            ffmpeg: PathBuf::new(),
+            ffprobe: PathBuf::new(),
         },
         dir: dir.clone(),
         req,
@@ -574,7 +575,8 @@ pub mod tests {
             tools: Resolved {
                 yt_dlp: PathBuf::new(),
                 deno: None,
-                ffmpeg_dir: None,
+                ffmpeg: PathBuf::new(),
+                ffprobe: PathBuf::new(),
             },
             dir: dir.to_path_buf(),
             req,
