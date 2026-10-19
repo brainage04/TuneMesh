@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - name: Cache Cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('linux/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: rustfmt
+        run: nix develop -c bash -c 'cd linux && cargo fmt --all --check'
+      - name: clippy
+        run: nix develop -c bash -c 'cd linux && cargo clippy --workspace --all-targets --locked -- -D warnings'
+      - name: test
+        run: nix develop -c bash -c 'cd linux && cargo test --workspace --locked'
+
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+      - run: nix flake check -L
+
+  shell:
+    name: Packaging scripts (shellcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          shellcheck -x --shell=sh packaging/linux/*.sh packaging/deb/*.sh packaging/rpm/*.sh \
+            packaging/arch/*.sh packaging/ci/*.sh packaging/flatpak/*.sh packaging/appimage/AppRun
+          shellcheck -x packaging/appimage/build-appimage.sh
+
+  android:
+    name: Android (unit tests, debug build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tunemesh-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
