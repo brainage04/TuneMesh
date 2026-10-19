@@ -4,6 +4,7 @@ import android.os.Environment
 import android.os.FileObserver
 import io.github.brainage04.tunemesh.library.DownloadItem
 import io.github.brainage04.tunemesh.library.DownloadStore
+import io.github.brainage04.tunemesh.library.Downloader
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.LibraryUris
@@ -38,6 +39,8 @@ data class LibraryState(
     val playlists: List<Playlist> = emptyList(),
     val liked: Set<String> = emptySet(),
     val downloads: List<DownloadItem> = emptyList(),
+    /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
+    val downloader: Downloader = Downloader.None,
     val error: String? = null,
 ) {
     /** Liked Songs always exists for the UI, even before its file is first written. */
@@ -153,8 +156,10 @@ class LibraryRepository(
     }
 
     private fun reloadDownloads() {
-        val downloads = downloadStore.list()
-        _state.update { it.copy(downloads = downloads) }
+        val store = downloadStore
+        val downloads = store.list()
+        val downloader = Downloader.of(store.worker())
+        _state.update { it.copy(downloads = downloads, downloader = downloader) }
     }
 
     private suspend fun refreshDownloads() = withContext(Dispatchers.IO) {
@@ -255,12 +260,12 @@ class LibraryRepository(
         }
     }
 
-    fun submitDownload(input: String, playlist: String?, playlistFromSource: Boolean, onDone: (Result<Unit>) -> Unit = {}) {
+    /** Queues one request per line of [text]; see [DownloadStore.submitAll]. */
+    fun submitDownloads(text: String, playlist: String?, saveAsPlaylists: Boolean, onDone: (Result<Int>) -> Unit = {}) {
         scope.launch {
             val result = runCatching {
                 ensureRoot(root)
-                downloadStore.submit(input, playlist, playlistFromSource, settings.deviceName)
-                Unit
+                downloadStore.submitAll(text, playlist, saveAsPlaylists, settings.deviceName).size
             }
             result.exceptionOrNull()?.let { _messages.tryEmit(it.message ?: it.toString()) }
             if (_state.value.hasAccess) reloadDownloads()

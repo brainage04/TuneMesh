@@ -22,7 +22,7 @@ class DownloadStoreTest {
 
     @Test
     fun requestFileMatchesTheContract() {
-        val request = DownloadStore(temp.root).submit("  https://www.youtube.com/watch?v=jNQXAC9IVRw ", null, false, "thomass-s21", now)
+        val request = DownloadStore(temp.root).submit("  https://www.youtube.com/watch?v=jNQXAC9IVRw ", null, false, "pixel-8", now)
         val file = File(temp.root, ".tunemesh/requests/${request.id}.json")
         assertTrue(file.isFile)
         assertTrue(Regex("1791262897123-[0-9a-f]{8}").matches(request.id))
@@ -36,7 +36,7 @@ class DownloadStoreTest {
         assertEquals(JsonPrimitive("https://www.youtube.com/watch?v=jNQXAC9IVRw"), json["input"])
         assertEquals(JsonNull, json["playlist"])
         assertEquals(JsonPrimitive(false), json["playlistFromSource"])
-        assertEquals(JsonPrimitive("thomass-s21"), json["requestedBy"])
+        assertEquals(JsonPrimitive("pixel-8"), json["requestedBy"])
         assertEquals(JsonPrimitive("2026-10-06T05:01:37Z"), json["requestedAt"])
         assertEquals(listOf("${request.id}.json"), File(temp.root, ".tunemesh/requests").list()!!.toList())
     }
@@ -83,10 +83,90 @@ class DownloadStoreTest {
     }
 
     @Test
+    fun statusProgressFieldsAreReadAndOptional() {
+        val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        File(status, "1000-aaaaaaaa.json").writeText(
+            """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","done":3,"total":12,"warnings":["Track 2: Video unavailable"]}""",
+        )
+        File(status, "2000-bbbbbbbb.json").writeText("""{"version":1,"id":"2000-bbbbbbbb","state":"queued"}""")
+        val items = DownloadStore(temp.root).list().associateBy { it.id }
+        val counted = items.getValue("1000-aaaaaaaa").status!!
+        assertEquals(3, counted.done)
+        assertEquals(12, counted.total)
+        assertEquals(listOf("Track 2: Video unavailable"), counted.warnings)
+        val plain = items.getValue("2000-bbbbbbbb").status!!
+        assertEquals(null, plain.done)
+        assertEquals(null, plain.total)
+        assertEquals(emptyList<String>(), plain.warnings)
+    }
+
+    @Test
+    fun submitAllWritesOneRequestPerLineInPasteOrder() {
+        val store = DownloadStore(temp.root)
+        val text = """
+            https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
+
+            https://www.youtube.com/watch?v=jNQXAC9IVRw
+            https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy
+            https://www.youtube.com/watch?v=jNQXAC9IVRw
+        """.trimIndent()
+        val requests = store.submitAll(text, null, saveAsPlaylists = true, requestedBy = "pixel-8", now = now)
+        assertEquals(
+            listOf(
+                "https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M",
+                "https://www.youtube.com/watch?v=jNQXAC9IVRw",
+                "https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy",
+            ),
+            requests.map { it.input },
+        )
+        assertEquals(listOf(true, false, true), requests.map { it.playlistFromSource })
+        // Newest first in the list, so paste order reversed; IDs order the worker's queue.
+        assertEquals(requests.map { it.id }.reversed(), store.list().map { it.id })
+        assertTrue(requests.zipWithNext().all { (a, b) -> a.id.substringBefore('-').toLong() < b.id.substringBefore('-').toLong() })
+
+        val targeted = store.submitAll("https://open.spotify.com/playlist/x\nartist - song", "Road trip", saveAsPlaylists = true, requestedBy = "x", now = now)
+        assertEquals(listOf("Road trip", "Road trip"), targeted.map { it.playlist })
+        assertEquals(listOf(false, false), targeted.map { it.playlistFromSource })
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun submitAllRefusesBlankText() {
+        DownloadStore(temp.root).submitAll(" \n\n ", null, false, "x", now)
+    }
+
+    @Test
+    fun workerFileNamesTheActiveDownloader() {
+        val store = DownloadStore(temp.root)
+        assertEquals(null, store.worker())
+        assertEquals(Downloader.None, Downloader.of(store.worker(), now))
+        val state = File(temp.root, ".tunemesh").apply { mkdirs() }
+        File(state, "worker.json").writeText(
+            """{"version":1,"device":"home-server","heartbeatAt":"2026-10-06T05:00:00Z","future":"ignored"}""",
+        )
+        val info = store.worker()!!
+        assertEquals("home-server", info.device)
+        assertEquals(Downloader.Active("home-server"), Downloader.of(info, now))
+        assertEquals("Downloads are handled by home-server", Downloader.of(info, now).description)
+        // Stale after three minutes without a heartbeat.
+        assertEquals(Downloader.Active("home-server"), Downloader.of(info, Instant.parse("2026-10-06T05:03:00Z")))
+        assertEquals(Downloader.None, Downloader.of(info, Instant.parse("2026-10-06T05:03:01Z")))
+        assertEquals("No device is downloading right now", Downloader.None.description)
+        // A heartbeat far in the future (wrong clock) is not trusted.
+        assertEquals(Downloader.None, Downloader.of(info, Instant.parse("2026-10-06T04:50:00Z")))
+
+        File(state, "worker.json").writeText("{")
+        assertEquals(null, store.worker())
+        File(state, "worker.json").writeText("""{"version":1,"device":"x","heartbeatAt":"yesterday"}""")
+        assertEquals(Downloader.None, Downloader.of(store.worker(), now))
+        File(state, "worker.json").writeText("""{"version":1,"device":" ","heartbeatAt":"2026-10-06T05:01:00Z"}""")
+        assertEquals(Downloader.None, Downloader.of(store.worker(), now))
+    }
+
+    @Test
     fun deviceSlug() {
-        assertEquals("thomass-s21", DownloadStore.deviceSlug("Thomas's S21"))
-        assertEquals("thomass-s21", DownloadStore.deviceSlug("Thomas’s S21"))
-        assertEquals("sm-g991b", DownloadStore.deviceSlug("SM-G991B"))
+        assertEquals("alexs-pixel-8", DownloadStore.deviceSlug("Alex's Pixel 8"))
+        assertEquals("alexs-pixel-8", DownloadStore.deviceSlug("Alex’s Pixel 8"))
+        assertEquals("sm-s921b", DownloadStore.deviceSlug("SM-S921B"))
         assertEquals("android", DownloadStore.deviceSlug("  "))
     }
 }
