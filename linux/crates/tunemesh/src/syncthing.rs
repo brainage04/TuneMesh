@@ -294,10 +294,10 @@ impl Client {
 pub enum Probe {
     Connected(Client, Overview),
     /// A configuration exists (or Syncthing is installed) but nothing answers.
-    NotRunning { installed: bool, config: Option<PathBuf> },
+    NotRunning { installed: bool, config: Option<PathBuf>, address: Option<String> },
     NotInstalled,
     /// Syncthing runs but its API key could not be read or was refused.
-    NeedKey { reason: String },
+    NeedKey { reason: String, address: Option<String> },
 }
 
 impl std::fmt::Debug for Client {
@@ -324,19 +324,24 @@ pub fn probe(manual: Option<Endpoint>) -> Probe {
             }
         }
     }
-    let mut last = None;
+    // Without a connection, report what the most likely configuration says.
+    let mut first = None;
     for (path, ep) in configs {
+        let address = Some(ep.base.clone());
         let client = Client::new(ep);
-        match client.overview() {
+        let result = match client.overview() {
             Ok(o) => return Probe::Connected(client, o),
-            Err(Error::Unreachable(_)) => last = Some(Probe::NotRunning { installed, config: path }),
-            Err(e) => last = Some(Probe::NeedKey { reason: e.to_string() }),
-        }
+            Err(Error::Unreachable(_)) => Probe::NotRunning { installed, config: path, address },
+            Err(e) => Probe::NeedKey { reason: e.to_string(), address },
+        };
+        first.get_or_insert(result);
     }
-    match last {
+    match first {
         Some(p) => p,
-        None if found_config.is_some() => Probe::NeedKey { reason: "The Syncthing configuration has no API key this app can read.".into() },
-        None if installed => Probe::NotRunning { installed, config: None },
+        None if found_config.is_some() => {
+            Probe::NeedKey { reason: "The Syncthing configuration has no API key this app can read".into(), address: None }
+        }
+        None if installed => Probe::NotRunning { installed, config: None, address: None },
         None => Probe::NotInstalled,
     }
 }

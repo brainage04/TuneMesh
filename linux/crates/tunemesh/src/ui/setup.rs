@@ -297,9 +297,9 @@ impl Setup {
                 b.append(&command_row("systemctl --user enable --now syncthing.service"));
                 b.append(&dim_text("Syncthing for Android (for example Syncthing-Fork from F-Droid) syncs the folder to your phone."));
                 b.append(&self.retry_button());
-                b.append(&self.manual_form(None));
+                b.append(&self.manual_form(false, None));
             }
-            Probe::NotRunning { installed, config } => {
+            Probe::NotRunning { installed, config, address } => {
                 let group = adw::PreferencesGroup::builder()
                     .title("Syncthing is not running")
                     .description(if installed {
@@ -315,29 +315,30 @@ impl Setup {
                     b.append(&dim_text(&format!("Configuration: {}", p.display())));
                 }
                 b.append(&self.retry_button());
-                b.append(&self.manual_form(None));
+                b.append(&self.manual_form(false, address));
             }
-            Probe::NeedKey { reason } => {
+            Probe::NeedKey { reason, address } => {
                 let group = adw::PreferencesGroup::builder()
                     .title("Connect to Syncthing")
                     .description(format!(
-                        "{reason} Open the Syncthing web interface (usually http://127.0.0.1:8384), go to Actions → Settings → General and copy the API key here."
+                        "{reason}. Open the Syncthing web interface (usually http://127.0.0.1:8384), go to Actions → Settings → General and copy the API key here."
                     ))
                     .build();
                 b.append(&group);
-                b.append(&self.manual_form(Some(reason)));
+                b.append(&self.manual_form(true, address));
                 b.append(&self.retry_button());
             }
         }
     }
 
-    /// Address and API key typed by the user.
-    fn manual_form(self: &Rc<Self>, reason: Option<String>) -> gtk::Widget {
+    /// Address and API key typed by the user; `address` is the one found in
+    /// Syncthing's configuration, if any.
+    fn manual_form(self: &Rc<Self>, expanded: bool, address: Option<String>) -> gtk::Widget {
         let group = adw::PreferencesGroup::new();
-        let current = self.endpoint.borrow().clone();
+        let current = self.endpoint.borrow().as_ref().map(|e| e.base.clone()).or(address);
         let address = adw::EntryRow::builder()
             .title("Syncthing address")
-            .text(current.as_ref().map_or(syncthing::DEFAULT_ADDRESS, |e| e.base.as_str()))
+            .text(current.as_deref().unwrap_or(syncthing::DEFAULT_ADDRESS))
             .build();
         let key = adw::PasswordEntryRow::builder().title("API key").build();
         group.add(&address);
@@ -360,7 +361,7 @@ impl Setup {
             *s.endpoint.borrow_mut() = Some(Endpoint { base, api_key });
             s.probe();
         });
-        if reason.is_some() {
+        if expanded {
             return box_.upcast();
         }
         let expander = gtk::Expander::builder().label("Syncthing runs elsewhere or uses another address").child(&box_).build();
