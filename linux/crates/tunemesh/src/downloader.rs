@@ -310,7 +310,7 @@ impl Downloader {
         }
         let root = self.root.borrow().clone();
         let (requests, _) = tunemesh_core::request::list_requests(&root);
-        !requests.is_empty() && !active_worker(&root).is_some_and(|w| !is_this_device(&w))
+        !requests.is_empty() && active_worker(&root).is_none_or(|w| is_this_device(&w))
     }
 
     pub fn pending_count(&self) -> usize {
