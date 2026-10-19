@@ -461,8 +461,9 @@ jobs:
           mkdir unpacked && cd unpacked
           "$(ls ../dist/TuneMesh-*.AppImage)" --appimage-extract >/dev/null
           ../packaging/ci/check-licences.sh appimage squashfs-root
-          cmp squashfs-root/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md \
-            "../dist/THIRD-PARTY-SOURCES-AppImage-${{ matrix.arch }}.md"
+          # The copy attached to the release matches the one inside (no cmp on Fedora).
+          test "$(cat squashfs-root/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md)" = \
+            "$(cat "../dist/THIRD-PARTY-SOURCES-AppImage-${{ matrix.arch }}.md")"
 
   test-flatpak:
     needs: flatpak
@@ -482,8 +483,8 @@ jobs:
       - name: Licence notices
         run: |
           packaging/ci/check-licences.sh flatpak "$(flatpak info --user --show-location "$APP_ID")/files"
-          cmp "$(flatpak info --user --show-location "$APP_ID")/files/share/licenses/$APP_ID/THIRD-PARTY-SOURCES.md" \
-            dist/THIRD-PARTY-SOURCES-Flatpak-x86_64.md
+          test "$(cat "$(flatpak info --user --show-location "$APP_ID")/files/share/licenses/$APP_ID/THIRD-PARTY-SOURCES.md")" = \
+            "$(cat dist/THIRD-PARTY-SOURCES-Flatpak-x86_64.md)"
       - name: Smoke test
         run: |
           APP="flatpak run $APP_ID" WORKER="flatpak run --command=tunemesh-worker $APP_ID" \
