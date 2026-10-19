@@ -109,7 +109,7 @@ fn run(args: Args) -> Result<(), Fatal> {
         library.display(),
         work_dir.display()
     );
-    let leader = leader::Leader::new(&library, device);
+    let leader = leader::Leader::new(&library, device, config::machine_id());
     let mut ctx = Ctx {
         root: library,
         work_dir,

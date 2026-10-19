@@ -176,6 +176,7 @@ downloading and every 60 seconds after that:
 {
   "version": 1,
   "device": "desktop",
+  "machine": "9b1f04c2a7d35e8860c1f2ab34d5e6f7",
   "instance": "5f0c1d2e3a4b6c7d",
   "pid": 41234,
   "workerVersion": "0.1.0",
@@ -184,14 +185,20 @@ downloading and every 60 seconds after that:
 ```
 
 - `device`: device name (the host name unless `--device` says otherwise),
-  for display. `instance`: random per worker process. `pid`: its process id
-  on `device`. `workerVersion`: the worker's version.
+  for display; not unique. `machine`: 32 hex characters identifying the
+  machine and its process-id namespace (a SHA-256 hash of `/etc/machine-id`,
+  or of a random id kept in `$XDG_DATA_HOME/tunemesh/worker-id`, plus the
+  namespace), so a sandboxed worker differs from one on the host; may be
+  missing in files from older workers. `instance`: random per worker
+  process. `pid`: its process id in that namespace. `workerVersion`: the
+  worker's version. Readers ignore fields they do not know.
 - A heartbeat is fresh when `heartbeatAt` is less than 3 minutes from now (in
   either direction; device clocks must be roughly in sync).
 - A worker does not process requests while the file holds a fresh heartbeat
   of another worker. It keeps running and takes over once that heartbeat is
-  stale, or at once when the other worker is on the same device and its
-  process no longer exists.
+  stale, or at once when the other heartbeat has the same non-empty
+  `machine` as its own and that `pid` no longer exists. Device names never
+  decide this.
 - An active worker that finds another worker's fresh heartbeat in the file
   (two started at once and Syncthing kept the other write) hands its current
   request back (`queued`) and stops downloading.

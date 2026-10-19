@@ -22,6 +22,11 @@ pub struct WorkerInfo {
     pub version: u32,
     /// Device name of the downloading host, for display.
     pub device: String,
+    /// Hashed id of the machine and its process-id namespace. Only a worker
+    /// with the same `machine` may treat this heartbeat as stale because
+    /// `pid` no longer exists; empty in files from older workers.
+    #[serde(default)]
+    pub machine: String,
     /// Random per-process id, telling two workers on one device apart.
     #[serde(default)]
     pub instance: String,
@@ -88,6 +93,7 @@ mod tests {
         WorkerInfo {
             version: 1,
             device: "pc".into(),
+            machine: "m".into(),
             instance: "abc".into(),
             pid: 7,
             worker_version: "0.1.0".into(),

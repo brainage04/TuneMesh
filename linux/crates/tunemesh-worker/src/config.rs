@@ -252,6 +252,61 @@ pub fn private_dir(dir: &Path) -> Result<PathBuf> {
     Ok(dir.canonicalize()?)
 }
 
+/// An id for this machine and process-id namespace, written to
+/// `worker.json` as `machine`. Two workers may judge each other's liveness by
+/// process id only when their ids match: the device name alone is not
+/// unique, and a sandbox (Flatpak, containers) has its own process ids.
+/// The id is a hash, so the synced file does not reveal `/etc/machine-id`.
+pub fn machine_id() -> String {
+    let base = ["/etc/machine-id", "/var/lib/dbus/machine-id"]
+        .iter()
+        .find_map(|p| fs::read_to_string(p).ok())
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| stored_random_id(&data_home().join("tunemesh").join("worker-id")));
+    let pid_ns = fs::read_link("/proc/self/ns/pid")
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    hash_id(&base, &pid_ns)
+}
+
+fn hash_id(base: &str, pid_ns: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("tunemesh-worker\0{base}\0{pid_ns}"));
+    digest[..16].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// A random id kept in `file` (mode 0600), created on first use. When it
+/// cannot be stored, a fresh one per process: liveness is then never judged
+/// by process id, which is the safe side.
+fn stored_random_id(file: &Path) -> String {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if let Ok(id) = fs::read_to_string(file)
+        && id.trim().len() == 32
+    {
+        return id.trim().to_owned();
+    }
+    let id = format!("{:016x}{:016x}", fastrand::u64(..), fastrand::u64(..));
+    let stored = file.parent().is_some_and(|d| fs::create_dir_all(d).is_ok())
+        && fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(file)
+            .and_then(|mut f| f.write_all(id.as_bytes()))
+            .is_ok();
+    if !stored {
+        // Another worker may have written it meanwhile.
+        if let Ok(existing) = fs::read_to_string(file)
+            && existing.trim().len() == 32
+        {
+            return existing.trim().to_owned();
+        }
+    }
+    id
+}
+
 /// This host's name.
 pub fn host_name() -> String {
     let mut buf = [0u8; 256];
@@ -296,6 +351,21 @@ mod tests {
         assert_eq!(parse_size("800K").unwrap(), 800 * 1024);
         assert_eq!(parse_size("12345").unwrap(), 12345);
         assert!(parse_size("5X").is_err());
+    }
+
+    #[test]
+    fn machine_ids() {
+        assert_eq!(machine_id(), machine_id());
+        assert_eq!(machine_id().len(), 32);
+        assert_ne!(hash_id("a", "pid:[1]"), hash_id("a", "pid:[2]"));
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("sub/worker-id");
+        let id = stored_random_id(&file);
+        assert_eq!(stored_random_id(&file), id);
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[test]

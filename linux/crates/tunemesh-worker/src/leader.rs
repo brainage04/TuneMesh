@@ -3,8 +3,8 @@
 //! The active worker rewrites `.tunemesh/worker.json` every minute. A worker
 //! that finds another worker's heartbeat younger than three minutes stays
 //! idle and checks again on every poll; it takes over once that heartbeat
-//! goes stale (or at once when the other worker runs on this host and its
-//! process is gone). An active worker that finds someone else's fresh
+//! goes stale (or at once when the other worker runs on this machine, in the
+//! same process-id namespace, and its process is gone). An active worker that finds someone else's fresh
 //! heartbeat in the file (two workers started at once, and Syncthing kept
 //! the other's write) stops after handing its current request back to the
 //! queue.
@@ -61,8 +61,10 @@ impl State {
         if self.is_me(other) || !other.is_fresh() {
             return false;
         }
-        // Another worker on this device whose process is gone has crashed.
-        other.device != self.me.device || pid_alive(other.pid)
+        // Another worker on this machine whose process is gone has crashed.
+        // Device names are not unique, so only the machine id counts; a
+        // heartbeat without one is honoured until it goes stale.
+        other.machine.is_empty() || other.machine != self.me.machine || pid_alive(other.pid)
     }
 
     fn write_beat(&mut self) {
@@ -94,10 +96,11 @@ impl State {
 }
 
 impl Leader {
-    pub fn new(root: &Path, device: String) -> Self {
+    pub fn new(root: &Path, device: String, machine: String) -> Self {
         let me = WorkerInfo {
             version: 1,
             device,
+            machine,
             instance: random_instance(),
             pid: std::process::id(),
             worker_version: config::VERSION.to_owned(),
@@ -171,9 +174,14 @@ mod tests {
     use super::*;
 
     fn other(device: &str, pid: u32, at: String) -> WorkerInfo {
+        other_on(device, "machine-b", pid, at)
+    }
+
+    fn other_on(device: &str, machine: &str, pid: u32, at: String) -> WorkerInfo {
         WorkerInfo {
             version: 1,
             device: device.into(),
+            machine: machine.into(),
             instance: "other".into(),
             pid,
             worker_version: "0".into(),
@@ -185,7 +193,7 @@ mod tests {
     fn defers_to_a_fresh_worker_and_takes_over_stale_or_dead_ones() {
         let lib = tempfile::tempdir().unwrap();
         let root = lib.path();
-        let leader = Leader::new(root, "pc".into());
+        let leader = Leader::new(root, "pc".into(), "machine-a".into());
 
         worker::write(root, &other("laptop", 1, tunemesh_core::now_rfc3339())).unwrap();
         assert!(!leader.may_work());
@@ -200,12 +208,40 @@ mod tests {
         assert!(lost());
         assert!(!leader.may_work());
 
-        // Same device, process gone: taken over at once.
+        // Same machine, process gone: taken over at once.
         let dead = 0x3fff_fff0; // above any pid_max
-        worker::write(root, &other("pc", dead, tunemesh_core::now_rfc3339())).unwrap();
+        worker::write(
+            root,
+            &other_on("pc", "machine-a", dead, tunemesh_core::now_rfc3339()),
+        )
+        .unwrap();
         assert!(leader.may_work());
         assert!(!lost());
         leader.release();
         assert!(worker::read(root).is_none());
+    }
+
+    /// Two machines that share a device name: a fresh heartbeat whose pid
+    /// does not exist here belongs to the other machine and is honoured, as
+    /// is one from an older worker without a machine id.
+    #[test]
+    fn same_device_name_on_another_machine_blocks() {
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let leader = Leader::new(root, "fedora".into(), "machine-a".into());
+        let dead = 0x3fff_fff0;
+        worker::write(
+            root,
+            &other_on("fedora", "machine-b", dead, tunemesh_core::now_rfc3339()),
+        )
+        .unwrap();
+        assert!(!leader.may_work());
+        worker::write(
+            root,
+            &other_on("fedora", "", dead, tunemesh_core::now_rfc3339()),
+        )
+        .unwrap();
+        assert!(!leader.may_work());
+        assert_eq!(worker::read(root).unwrap().machine, "");
     }
 }
