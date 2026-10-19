@@ -81,12 +81,13 @@ fn pill(label: &str, suggested: bool) -> gtk::Button {
 fn page(tag: &str, title: &str, body: &gtk::Box, buttons: &[&gtk::Button]) -> adw::NavigationPage {
     let view = adw::ToolbarView::new();
     view.add_top_bar(&adw::HeaderBar::new());
-    let clamp = adw::Clamp::builder().maximum_size(520).child(body).build();
+    // The dialog has a fixed width; an AdwClamp here lays out too narrow on
+    // libadwaita 1.5.
     body.set_margin_top(12);
     body.set_margin_bottom(24);
-    body.set_margin_start(18);
-    body.set_margin_end(18);
-    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&clamp).build();
+    body.set_margin_start(48);
+    body.set_margin_end(48);
+    let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(body).build();
     view.set_content(Some(&scroller));
     let bar = gtk::Box::builder().spacing(12).halign(gtk::Align::End).margin_top(12).margin_bottom(12).margin_end(18).build();
     for b in buttons {
