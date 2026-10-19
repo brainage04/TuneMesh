@@ -589,6 +589,8 @@ def run_once(session, app, run_dir, watcher, routes, shots_dir, idle_seconds, pl
         app.action("navigate", "playlist:Road Trip")
         time.sleep(1)
     result["sink_inputs"] = sink_inputs(session)
+    if not result["sink_inputs"]:
+        raise RuntimeError(f"{app.name} is not playing into the null sink, see {run_dir}/{app.name}.log")
     result["playback_cpu_pct"] = cpu_percent(app.pid, play_seconds)
     result["playback_memory"] = memory(app.pid)
     log(app.name, "playback", result["playback_cpu_pct"], result["playback_memory"], result["sink_inputs"])

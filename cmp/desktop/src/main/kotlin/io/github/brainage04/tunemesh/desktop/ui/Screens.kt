@@ -230,7 +230,7 @@ fun LibraryScreen(tab: LibraryTab) {
         when (tab) {
             LibraryTab.Songs -> {
                 val songs = remember(index) {
-                    index.tracks.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
+                    index.tracks.sortedWith(compareBy<Track, String>(String.CASE_INSENSITIVE_ORDER) { it.title }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.artist })
                 }
                 LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
                     itemsIndexed(songs, key = { _, track -> track.path }) { position, track ->

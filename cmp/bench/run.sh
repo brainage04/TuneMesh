@@ -7,8 +7,9 @@ B=${BENCH_DIR:-/tmp/tunemesh-cmp-bench}
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 mkdir -p "$B/bin"
 
-build() { nix build --no-link --print-out-paths --inputs-from "$ROOT" "$@" | head -n1; }
-ln -sf "$(build nixpkgs#sway)/bin/sway" "$(build nixpkgs#grim)/bin/grim" "$(build nixpkgs#glib.bin)/bin/gdbus" "$B/bin/"
+# The main output only: `head -n1` of a multi-output package can be its man pages.
+build() { nix build --no-link --print-out-paths --inputs-from "$ROOT" "$1^out"; }
+ln -sf "$(build nixpkgs#sway)/bin/sway" "$(build nixpkgs#grim)/bin/grim" "$(nix build --no-link --print-out-paths nixpkgs#glib.bin)/bin/gdbus" "$B/bin/"
 LIBGLVND=$(build nixpkgs#libglvnd)
 LIBMPV=$(build nixpkgs#mpv-unwrapped)
 
