@@ -30,11 +30,11 @@ check_version() {
         fail "$1 --version printed an unexpected line"
     fi
     # Builds from before --version existed answer it with their usage text.
-    if $2 --help 2>&1 | grep -q -- --version; then
-        fail "$1 --version failed: $out"
-    fi
+    help=$($2 --help 2>&1) || fail "$1 --version and --help failed: $out"
+    case $help in
+        *--version*) fail "$1 --version failed: $out" ;;
+    esac
     echo "::warning::$1 has no --version yet on this branch; checked --help instead"
-    $2 --help >/dev/null 2>&1 || fail "$1 --help failed"
 }
 
 check_version tunemesh "$APP" tunemesh
