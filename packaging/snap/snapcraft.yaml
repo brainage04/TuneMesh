@@ -115,5 +115,9 @@ parts:
     override-prime: |
       set -eux
       for snap in core24 gnome-46-2404 mesa-2404; do
-        cd "/snap/$snap/current" && find . -type f,l -exec rm -f "$CRAFT_PRIME/{}" \;
+        # Libraries in subdirectories stay: the snap finds them through its
+        # own LD_LIBRARY_PATH entries, which the GNOME runtime's path lacks.
+        cd "/snap/$snap/current" && find . -type f,l \
+          ! -path '*/blas/*' ! -path '*/lapack/*' ! -path '*/pulseaudio/*' \
+          -exec rm -f "$CRAFT_PRIME/{}" \;
       done
