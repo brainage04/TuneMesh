@@ -22,6 +22,9 @@ out=$(mkdir -p "${1:-dist}" && cd "${1:-dist}" && pwd)
 sudo=$([ "$(id -u)" -eq 0 ] || echo sudo)
 
 if $deps; then
+    # deb-src entries let THIRD-PARTY-SOURCES.md list the exact source files
+    # of the bundled packages.
+    $sudo sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
     $sudo apt-get update -q
     DEBIAN_FRONTEND=noninteractive $sudo apt-get install -yq --no-install-recommends \
         build-essential pkg-config ca-certificates curl file desktop-file-utils \
@@ -55,9 +58,8 @@ cp -a /usr/share/icons/Adwaita/index.theme /usr/share/icons/Adwaita/symbolic "$a
     cp -a /usr/share/icons/Adwaita/. "$appdir/usr/share/icons/Adwaita/"
 
 export DEPLOY_GTK_VERSION=4
-export LDAI_OUTPUT="$out/TuneMesh-$version-$arch.AppImage"
-export LDAI_UPDATE_INFORMATION="gh-releases-zsync|brainage04|TuneMesh|latest|TuneMesh-*-$arch.AppImage.zsync"
 cd "$out"
+# Deploy first, then add the licence notices, then package.
 linuxdeploy --appdir "$appdir" --plugin gtk \
     --executable "$appdir/usr/bin/tunemesh" \
     --executable "$appdir/usr/bin/tunemesh-worker" \
@@ -66,6 +68,60 @@ linuxdeploy --appdir "$appdir" --plugin gtk \
     --desktop-file "$appdir/usr/share/applications/io.github.brainage04.TuneMesh.desktop" \
     --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg" \
     --custom-apprun "$repo/packaging/appimage/AppRun" \
-    --library "$(/sbin/ldconfig -p | awk '/libjack\.so\.0 / { print $NF; exit }')" \
-    --output appimage
+    --library "$(/sbin/ldconfig -p | awk '/libjack\.so\.0 / { print $NF; exit }')"
+
+# The Ubuntu packages every bundled program, library, loader, schema and icon
+# comes from (linuxdeploy copies most of their copyright files already).
+packages=$(
+    find "$appdir/usr/bin" "$appdir/usr/lib" "$appdir/usr/share/glib-2.0" -type f \
+        ! -name 'tunemesh*' ! -name '*.cache' ! -name '*.compiled' -printf '%f\n' |
+        sort -u | while IFS= read -r name; do
+            dpkg -S "*/$name" 2>/dev/null | sed -n 's/^\([^:,]*\)[:,].*/\1/p'
+        done
+    echo adwaita-icon-theme
+)
+# shellcheck disable=SC2086 # one package name per word
+packages=$(printf '%s\n' $packages | sort -u)
+licences=$appdir/usr/share/licenses/tunemesh
+sources=$licences/THIRD-PARTY-SOURCES.md
+{
+    "$repo/packaging/licenses/sources-header.sh" "AppImage ($arch)" "$version"
+    cat <<EOF
+
+## Bundled Ubuntu 24.04 packages
+
+Every library, \`ffmpeg\`, \`ffprobe\`, the GDK-Pixbuf loaders, GSettings
+schemas and Adwaita icons come unmodified from these Ubuntu 24.04 packages.
+Ubuntu builds FFmpeg with \`--enable-gpl\` (and without \`--enable-nonfree\`),
+so the bundled FFmpeg libraries and programs are under the GPL-2.0-or-later;
+libmpv is GPL-2.0-or-later too. Build configuration of the bundled ffmpeg:
+
+\`\`\`
+$(ffmpeg -hide_banner -buildconf 2>&1 | sed -n 's/^ *//; /^--/p' | tr '\n' ' ')
+\`\`\`
+EOF
+} >"$appdir/sources.tmp"
+# shellcheck disable=SC2086
+"$repo/packaging/licenses/debian-notices.sh" "$appdir" "$appdir/sources.tmp" $packages
+{
+    cat <<EOF
+
+## AppImage tooling
+
+The AppImage runtime (MIT) and the GTK start-up hook come from these tools,
+used as downloaded for this build:
+
+EOF
+    for tool in linuxdeploy linuxdeploy-plugin-appimage linuxdeploy-plugin-gtk.sh; do
+        echo "- $tool, SHA-256 $(sha256sum "$tools/$tool" | cut -d' ' -f1)"
+    done
+    echo "  (https://github.com/linuxdeploy, continuous builds; MIT licence)"
+} >>"$appdir/sources.tmp"
+install -Dm644 "$appdir/sources.tmp" "$sources"
+rm "$appdir/sources.tmp"
+cp "$sources" "$out/THIRD-PARTY-SOURCES-AppImage-$arch.md"
+
+export LDAI_OUTPUT="$out/TuneMesh-$version-$arch.AppImage"
+export LDAI_UPDATE_INFORMATION="gh-releases-zsync|brainage04|TuneMesh|latest|TuneMesh-*-$arch.AppImage.zsync"
+linuxdeploy --appdir "$appdir" --output appimage
 ls -l "$out"

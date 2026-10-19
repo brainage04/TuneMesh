@@ -38,12 +38,15 @@ cleanup:
   - /lib/pkgconfig
   - /share/man
   - /share/doc
+  # share/licenses is kept: it holds every module's licence files.
   - '*.la'
   - '*.a'
 modules:
   - name: libass
     config-opts:
       - --disable-static
+    post-install:
+      - install -Dm644 -t /app/share/licenses/libass COPYING
     sources:
       - type: archive
         url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
@@ -59,6 +62,8 @@ modules:
       - -Dglslang=disabled
       - -Ddemos=false
       - -Dtests=false
+    post-install:
+      - install -Dm644 -t /app/share/licenses/libplacebo LICENSE
     sources:
       - type: git
         url: https://code.videolan.org/videolan/libplacebo.git
@@ -79,6 +84,8 @@ modules:
       - -Dpdf-build=disabled
       - -Dlibarchive=disabled
       - -Dvulkan=disabled
+    post-install:
+      - install -Dm644 -t /app/share/licenses/mpv Copyright LICENSE.GPL LICENSE.LGPL
     sources:
       - type: archive
         url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
@@ -98,7 +105,8 @@ modules:
       - packaging/linux/install.sh --prefix /app --bin-dir linux/target/release
       # No systemd in the sandbox; Flathub wants the licence under the app ID.
       - rm -r /app/lib/systemd
-      - if [ -d /app/share/licenses/tunemesh ]; then mv /app/share/licenses/tunemesh /app/share/licenses/io.github.brainage04.TuneMesh; fi
+      - mv /app/share/licenses/tunemesh /app/share/licenses/io.github.brainage04.TuneMesh
+      - packaging/flatpak/third-party-sources.sh > /app/share/licenses/io.github.brainage04.TuneMesh/THIRD-PARTY-SOURCES.md
     sources:
       - type: dir
         path: ../..
@@ -129,6 +137,7 @@ modules:
     no-make-install: true
     post-install:
       - install -Dm755 -t /app/bin ffmpeg ffprobe
+      - install -Dm644 -t /app/share/licenses/ffmpeg LICENSE.md COPYING.LGPLv2.1 COPYING.GPLv2 CREDITS
     sources:
       - type: archive
         url: https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
