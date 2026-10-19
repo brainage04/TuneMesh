@@ -1,12 +1,19 @@
-//! Keeps request URLs off the worker's own network. Any synced device can
+//! Keeps downloads off the worker's own network. Any synced device can
 //! write a request, and yt-dlp's generic extractor fetches whatever URL it is
-//! given, so a URL whose host is (or resolves to) a loopback, private,
-//! link-local, CGNAT/Tailscale or other non-public address is refused before
-//! a downloader sees it. The systemd unit's IPAddressDeny covers what this
-//! check cannot: redirects and DNS answers that change after the check.
+//! given, so an address that is loopback, private, link-local,
+//! CGNAT/Tailscale, otherwise non-public, or one of this host's own interface
+//! addresses is refused.
+//!
+//! Request URLs are checked up front for a clear error message; the real
+//! enforcement is the egress proxy (`proxy.rs`), which applies the same
+//! check to every connection yt-dlp and the worker make, including
+//! redirects, manifests, fragments and thumbnails, and connects to the
+//! address it checked (so a DNS answer that changes afterwards does not
+//! matter). What it cannot see: the host's public IPv4 address behind NAT
+//! (reachable through hairpin NAT), which only a firewall can block.
 
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 
 fn is_public_v4(ip: Ipv4Addr) -> bool {
     let [a, b, c, _] = ip.octets();
@@ -50,6 +57,91 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// Addresses assigned to this host's network interfaces (any scope).
+pub fn own_addresses() -> Vec<IpAddr> {
+    let mut out = Vec::new();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list we only read and then free.
+    unsafe {
+        if libc::getifaddrs(&mut head) != 0 {
+            return out;
+        }
+        let mut cur = head;
+        while !cur.is_null() {
+            let addr = (*cur).ifa_addr;
+            if !addr.is_null() {
+                match i32::from((*addr).sa_family) {
+                    libc::AF_INET => {
+                        let sin = &*(addr as *const libc::sockaddr_in);
+                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr))));
+                    }
+                    libc::AF_INET6 => {
+                        let sin6 = &*(addr as *const libc::sockaddr_in6);
+                        out.push(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)));
+                    }
+                    _ => {}
+                }
+            }
+            cur = (*cur).ifa_next;
+        }
+        libc::freeifaddrs(head);
+    }
+    out
+}
+
+/// Normalises IPv4-mapped IPv6 addresses so they compare equal to IPv4.
+fn canonical(ip: IpAddr) -> IpAddr {
+    match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        v4 => v4,
+    }
+}
+
+/// Why `ip` may not be reached, if it may not.
+pub fn refusal(ip: IpAddr, own: &[IpAddr]) -> Option<&'static str> {
+    if !is_public(ip) {
+        Some("it is a local or private network address")
+    } else if own.iter().any(|o| canonical(*o) == canonical(ip)) {
+        Some("it is this computer's own address")
+    } else {
+        None
+    }
+}
+
+/// Resolves `host` once and returns its addresses if every one of them may
+/// be reached. Callers connect to these addresses, never to the name again.
+pub fn resolve_checked(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
+    resolve_checked_with(host, port, &own_addresses(), system_resolve)
+}
+
+pub fn resolve_checked_with(
+    host: &str,
+    port: u16,
+    own: &[IpAddr],
+    resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>,
+) -> Result<Vec<SocketAddr>, String> {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let literal = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(&host);
+    let addresses = match literal.parse::<IpAddr>() {
+        Ok(ip) => vec![ip],
+        Err(_) => {
+            if host.is_empty() {
+                return Err("Empty host name".to_owned());
+            }
+            resolve(&host, port).map_err(|e| format!("Could not resolve {host}: {e}"))?
+        }
+    };
+    if addresses.is_empty() {
+        return Err(format!("Could not resolve {host}"));
+    }
+    for ip in &addresses {
+        if let Some(why) = refusal(*ip, own) {
+            return Err(format!("Refusing {host}: {why} ({ip})"));
+        }
+    }
+    Ok(addresses.into_iter().map(|ip| SocketAddr::new(ip, port)).collect())
+}
+
 /// The host and port of an `http(s)://` URL; IPv6 literals lose their brackets.
 fn host_port(url: &str) -> Option<(String, u16)> {
     let (scheme, rest) = url.split_once("://")?;
@@ -82,24 +174,18 @@ fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
 }
 
 /// Refuses `url` unless it is an http(s) URL whose host resolves only to
-/// public addresses.
+/// addresses that may be reached.
 pub fn check_url(url: &str) -> Result<(), String> {
-    check_url_with(url, system_resolve)
+    check_url_with(url, &own_addresses(), system_resolve)
 }
 
-pub fn check_url_with(url: &str, resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>) -> Result<(), String> {
+pub fn check_url_with(
+    url: &str,
+    own: &[IpAddr],
+    resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>,
+) -> Result<(), String> {
     let (host, port) = host_port(url).ok_or_else(|| format!("Not a web link: {url}"))?;
-    let addresses = match host.parse::<IpAddr>() {
-        Ok(ip) => vec![ip],
-        Err(_) => resolve(&host, port).map_err(|e| format!("Could not resolve {host}: {e}"))?,
-    };
-    if addresses.is_empty() {
-        return Err(format!("Could not resolve {host}"));
-    }
-    match addresses.iter().find(|ip| !is_public(**ip)) {
-        Some(ip) => Err(format!("Refusing {host}: it is a local or private network address ({ip})")),
-        None => Ok(()),
-    }
+    resolve_checked_with(&host, port, own, resolve).map(drop)
 }
 
 #[cfg(test)]
@@ -123,7 +209,7 @@ mod tests {
             "169.254.169.254",
             "100.64.0.1",
             "100.100.100.100",
-            "100.66.141.2",
+            "100.127.255.254",
             "0.0.0.0",
             "224.0.0.1",
             "255.255.255.255",
@@ -155,14 +241,19 @@ mod tests {
         let resolve = |host: &str, _port: u16| -> io::Result<Vec<IpAddr>> {
             match host {
                 "www.youtube.com" => Ok(vec![ip("142.250.70.78"), ip("2a00:1450:4006::200e")]),
-                "thomas-pc.tail0f6d2e.ts.net" => Ok(vec![ip("100.82.1.2")]),
+                "laptop.example.ts.net" => Ok(vec![ip("100.64.0.7")]),
+                "own.example" => Ok(vec![ip("11.22.33.44")]),
                 "rebind.example" => Ok(vec![ip("93.184.216.34"), ip("127.0.0.1")]),
                 _ => Err(io::Error::new(io::ErrorKind::NotFound, "no such host")),
             }
         };
-        assert!(check_url_with("https://www.youtube.com/watch?v=x", resolve).is_ok());
+        // 11.22.33.44 stands in for a public address of this host.
+        let own = [ip("11.22.33.44"), ip("::1")];
+        assert!(check_url_with("https://www.youtube.com/watch?v=x", &own, resolve).is_ok());
         for refused in [
-            "http://thomas-pc.tail0f6d2e.ts.net:8384/",
+            "http://laptop.example.ts.net:8384/",
+            "http://own.example:8384/",
+            "http://[::ffff:11.22.33.44]/",
             "https://rebind.example/a",
             "http://127.0.0.1:8384/rest/system/config",
             "http://[::1]/",
@@ -170,7 +261,13 @@ mod tests {
             "https://nonexistent.invalid/",
             "file:///etc/passwd",
         ] {
-            assert!(check_url_with(refused, resolve).is_err(), "{refused}");
+            assert!(check_url_with(refused, &own, resolve).is_err(), "{refused}");
         }
+    }
+
+    #[test]
+    fn lists_own_addresses() {
+        let own = own_addresses();
+        assert!(own.iter().any(|a| a.is_loopback()), "{own:?}");
     }
 }
