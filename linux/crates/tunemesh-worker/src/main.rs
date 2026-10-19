@@ -156,6 +156,7 @@ fn run(args: Args) -> Result<(), Fatal> {
     log!("tunemesh-worker: stopping");
     leader.release();
     let _ = fs::remove_dir_all(ctx.work_dir.join("jobs"));
+    let _ = fs::remove_dir_all(ctx.work_dir.join("tmp"));
     Ok(())
 }
 
