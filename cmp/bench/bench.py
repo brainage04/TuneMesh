@@ -671,6 +671,7 @@ def main():
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--cmp-ld-path", default="", help="LD_LIBRARY_PATH for the JVM app (libGL on NixOS)")
     parser.add_argument("--frames-runs", type=int, default=3)
+    parser.add_argument("--apps", default="gtk,cmp", help="which apps the first-launch, main and frames phases run")
     args = parser.parse_args()
 
     base = os.path.join(args.out, "session")
@@ -690,12 +691,15 @@ def main():
         cmp = CmpApp("cmp", session, homes["cmp"], [args.cmp, "--library", args.library], cmp_env)
 
         # First launch (empty tag caches), then a warm-up launch so later runs find their caches.
+        selected = args.apps.split(",")
+        apps = [a for a in (gtk, cmp) if a.name in selected]
+        caches = {"gtk": f"{homes['gtk']}/.cache/tunemesh/library.json", "cmp": f"{homes['cmp']}/.cache/tunemesh-cmp/tags.json"}
         for i in range(args.first_launch_runs):
-            for app, cache in ((gtk, f"{homes['gtk']}/.cache/tunemesh/library.json"), (cmp, f"{homes['cmp']}/.cache/tunemesh-cmp/tags.json")):
+            for app, cache in ((a, caches[a.name]) for a in apps):
                 results["first_launch"].append({"app": app.name, **first_launch(session, app, os.path.join(args.out, f"first-{i}"), watcher, cache)})
 
         for i in range(args.runs):
-            for app in (gtk, cmp):
+            for app in apps:
                 shots = None
                 if args.screenshots and i == 0:
                     shots = os.path.join(args.screenshots, app.name)
@@ -706,7 +710,7 @@ def main():
 
         results["frames"] = []
         for i in range(args.frames_runs):
-            for app in (gtk, cmp):
+            for app in apps:
                 results["frames"].append(frames_run(session, app, os.path.join(args.out, f"frames-{i}"), watcher))
                 json.dump(results, open(os.path.join(args.out, "results.json"), "w"), indent=1)
 
@@ -728,12 +732,12 @@ def main():
 
         results["summary"] = summarize(results["runs"])
         firsts = {}
-        for app in ("gtk", "cmp"):
+        for app in selected:
             mine = [r for r in results["first_launch"] if r["app"] == app]
             firsts[app] = {k: median([r.get(k) for r in mine]) for k in ("window_mapped_s", "first_paint_s", "stable_s", "scan_done_s")}
         results["first_launch_summary"] = firsts
         frames = {}
-        for app in ("gtk", "cmp"):
+        for app in selected:
             mine = [r for r in results["frames"] if r["app"] == app]
             frames[app] = {k: median([r.get(k) for r in mine]) for k in ("fps", "cpu_s", "frame_interval_p50_ms", "frame_interval_p95_ms", "frame_interval_max_ms", "long_frames")}
         results["frames_summary"] = frames
