@@ -1,0 +1,471 @@
+name: Release
+
+# On a v* tag: builds every package, install-tests each one in a clean
+# environment and publishes them with SHA256SUMS as a GitHub Release.
+# Pushes and pull requests that touch the packaging run the same builds and
+# tests without publishing.
+on:
+  push:
+    tags: ['v*']
+    branches: ['**']
+    paths:
+      - packaging/**
+      - .github/workflows/release.yml
+  pull_request:
+    paths:
+      - packaging/**
+      - .github/workflows/release.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  APP_ID: io.github.brainage04.TuneMesh
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' linux/Cargo.toml)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=${GITHUB_REF_NAME#v}
+            if [ "$tag" != "$cargo" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match linux/Cargo.toml version $cargo"
+              exit 1
+            fi
+          fi
+          echo "version=$cargo" >>"$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------- builds
+
+  deb:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: packaging/deb/build-deb.sh --deps dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: dist/*
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-24.04
+    # The oldest Fedora release still supported, so the package installs on
+    # every supported one.
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@v7
+      - run: packaging/rpm/build-rpm.sh --deps dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-rpm-x86_64
+          path: dist/*
+
+  arch:
+    needs: [version, deb]
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pkg-deb-*
+          path: bin
+          merge-multiple: true
+      - run: |
+          packaging/arch/build-arch.sh dist bin/tunemesh-*-linux-x86_64.tar.gz
+          tar -C dist -czf "dist/tunemesh-${{ needs.version.outputs.version }}-aur.tar.gz" aur
+          rm -r dist/aur
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-arch-x86_64
+          path: dist/*
+
+  appimage:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: packaging/appimage/build-appimage.sh --deps dist
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-appimage-${{ matrix.arch }}
+          path: dist/*
+
+  flatpak-sources:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: |
+          pip install --user aiohttp tomlkit
+          packaging/flatpak/update-cargo-sources.sh
+      - uses: actions/upload-artifact@v7
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak/cargo-sources.json
+
+  flatpak:
+    needs: [version, flatpak-sources]
+    runs-on: ubuntu-24.04
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: TuneMesh-${{ needs.version.outputs.version }}-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.brainage04.TuneMesh.yml
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.brainage04.TuneMesh.yml') }}
+          upload-artifact: false
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-flatpak-x86_64
+          path: TuneMesh-*.flatpak
+
+  snap:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+      - uses: canonical/action-build@v1
+        id: build
+      - run: mkdir dist && mv "${{ steps.build.outputs.snap }}" dist/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-snap-x86_64
+          path: dist/*.snap
+
+  android:
+    needs: version
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Signing key
+        id: signing
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          LINEAGE_B64: ${{ secrets.ANDROID_LINEAGE_B64 }}
+        run: |
+          if [ -z "$KEYSTORE_B64" ] || [ -z "$STORE_PASSWORD" ] || [ -z "$KEY_ALIAS" ] || [ -z "$KEY_PASSWORD" ]; then
+            echo "::notice::Android signing secrets are not set; building an unsigned release APK"
+            echo "signed=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          umask 077
+          mkdir -p android/.signing
+          echo "$KEYSTORE_B64" | base64 -d >android/.signing/tunemesh.jks
+          {
+            echo "storeFile=tunemesh.jks"
+            echo "storePassword=$STORE_PASSWORD"
+            echo "keyAlias=$KEY_ALIAS"
+            echo "keyPassword=$KEY_PASSWORD"
+          } >android/.signing/signing.properties
+          if [ -n "$LINEAGE_B64" ]; then
+            echo "$LINEAGE_B64" | base64 -d >android/.signing/lineage
+            echo "lineageFile=lineage" >>android/.signing/signing.properties
+          fi
+          echo "signed=true" >>"$GITHUB_OUTPUT"
+      - name: Build release APK
+        working-directory: android
+        run: ./gradlew --no-daemon :app:assembleRelease
+      - name: Collect APK
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+          SIGNED: ${{ steps.signing.outputs.signed }}
+        run: |
+          mkdir dist
+          if [ "$SIGNED" = true ]; then
+            cp android/app/build/outputs/apk/release/app-release.apk "dist/TuneMesh-$VERSION.apk"
+          else
+            cp android/app/build/outputs/apk/release/app-release-unsigned.apk "dist/TuneMesh-$VERSION-unsigned.apk"
+          fi
+          rm -rf android/.signing
+      - uses: actions/upload-artifact@v7
+        with:
+          name: pkg-android
+          path: dist/*.apk
+
+  # ----------------------------------------------------------------- tests
+
+  test-deb:
+    needs: deb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            arch: x86_64
+            runner: ubuntu-24.04
+          - image: debian:trixie
+            arch: x86_64
+            runner: ubuntu-24.04
+          - image: ubuntu:24.04
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: dist
+      - name: Install
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
+            ./dist/tunemesh_*.deb xvfb xauth dbus
+          dpkg -L tunemesh >installed.txt
+          cat installed.txt
+      - name: Smoke test
+        run: packaging/ci/smoke.sh
+      - name: Uninstall
+        run: |
+          apt-get purge -yq tunemesh
+          packaging/ci/check-removed.sh installed.txt
+
+  test-user-service:
+    name: test-user-service (deb on the runner)
+    needs: deb
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-deb-x86_64
+          path: dist
+      - name: Install
+        run: sudo apt-get install -yq ./dist/tunemesh_*.deb
+      - name: Run tunemesh-worker as a user service
+        run: |
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          for _ in $(seq 30); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
+          mkdir -p ~/.config/tunemesh ~/Music/Test/.tunemesh/requests
+          echo 'library_path = "~/Music/Test"' >~/.config/tunemesh/config.toml
+          systemctl --user daemon-reload
+          systemctl --user enable --now tunemesh-worker
+          sleep 15
+          journalctl --user -u tunemesh-worker --no-pager || true
+          systemctl --user status tunemesh-worker --no-pager
+          systemctl --user is-active tunemesh-worker
+          systemctl --user disable --now tunemesh-worker
+      - name: Uninstall
+        run: |
+          dpkg -L tunemesh >installed.txt
+          sudo apt-get purge -yq tunemesh
+          packaging/ci/check-removed.sh installed.txt
+
+  test-rpm:
+    needs: rpm
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [fedora:latest, opensuse/tumbleweed]
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install tar for checkout
+        run: |
+          if command -v dnf >/dev/null; then dnf install -y tar gzip; else zypper --non-interactive install tar gzip; fi
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-rpm-x86_64
+          path: dist
+      - name: Install
+        run: |
+          rpm=$(ls dist/tunemesh-[0-9]*.x86_64.rpm)
+          if command -v dnf >/dev/null; then
+            dnf install -y "$rpm" /usr/bin/xvfb-run /usr/bin/xauth /usr/bin/dbus-run-session
+          else
+            zypper --non-interactive install --allow-unsigned-rpm "$rpm" xvfb-run xauth dbus-1
+          fi
+          rpm -ql tunemesh >installed.txt
+          cat installed.txt
+      - name: Smoke test
+        run: packaging/ci/smoke.sh
+      - name: Uninstall
+        run: |
+          if command -v dnf >/dev/null; then dnf remove -y tunemesh; else zypper --non-interactive remove tunemesh; fi
+          packaging/ci/check-removed.sh installed.txt
+
+  test-arch:
+    needs: arch
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-arch-x86_64
+          path: dist
+      - run: pacman -Syu --noconfirm xorg-server-xvfb xorg-xauth
+      - name: tunemesh (source build)
+        run: |
+          pacman -U --noconfirm dist/tunemesh-[0-9]*.pkg.tar.zst
+          pacman -Qlq tunemesh >installed.txt
+          packaging/ci/smoke.sh
+          pacman -Rns --noconfirm tunemesh
+          packaging/ci/check-removed.sh installed.txt
+      - name: tunemesh-bin
+        run: |
+          pacman -U --noconfirm dist/tunemesh-bin-*.pkg.tar.zst
+          pacman -Qlq tunemesh-bin >installed.txt
+          packaging/ci/smoke.sh
+          pacman -Rns --noconfirm tunemesh-bin
+          packaging/ci/check-removed.sh installed.txt
+
+  test-appimage:
+    needs: appimage
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+            image: fedora:latest
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      - name: Install test tools
+        run: |
+          if command -v dnf >/dev/null; then
+            dnf install -y tar gzip /usr/bin/xvfb-run /usr/bin/xauth /usr/bin/dbus-run-session
+          else
+            sudo apt-get update -q && sudo apt-get install -yq xvfb
+          fi
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-appimage-${{ matrix.arch }}
+          path: dist
+      - name: Smoke test
+        run: |
+          appimage=$(ls "$PWD"/dist/TuneMesh-*.AppImage)
+          chmod +x "$appimage"
+          APP="$appimage" WORKER="$appimage worker" packaging/ci/smoke.sh
+
+  test-flatpak:
+    needs: flatpak
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-flatpak-x86_64
+          path: dist
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq flatpak xvfb
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive dist/TuneMesh-*.flatpak
+          flatpak info --user "$APP_ID"
+      - name: Smoke test
+        run: |
+          APP="flatpak run $APP_ID" WORKER="flatpak run --command=tunemesh-worker $APP_ID" \
+            LIB_PARENT="$HOME/Music/TuneMesh" packaging/ci/smoke.sh
+      - name: Uninstall
+        run: |
+          flatpak uninstall --user -y --noninteractive --delete-data "$APP_ID"
+          if flatpak info --user "$APP_ID" 2>/dev/null; then exit 1; fi
+          test ! -e "$HOME/.var/app/$APP_ID"
+
+  test-snap:
+    needs: snap
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-snap-x86_64
+          path: dist
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq xvfb
+          sudo snap install --dangerous dist/tunemesh_*.snap
+          sudo snap connect tunemesh:syncthing-config
+          snap connections tunemesh
+      - name: Smoke test
+        run: |
+          APP=/snap/bin/tunemesh WORKER=/snap/bin/tunemesh.worker \
+            LIB_PARENT="$HOME/Music" packaging/ci/smoke.sh
+      - name: Uninstall
+        run: |
+          sudo snap remove --purge tunemesh
+          if snap list tunemesh 2>/dev/null; then exit 1; fi
+          test ! -e "$HOME/snap/tunemesh"
+
+  # --------------------------------------------------------------- publish
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [version, android, test-deb, test-user-service, test-rpm, test-arch, test-appimage, test-flatpak, test-snap]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * >SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "TuneMesh ${{ needs.version.outputs.version }}" --generate-notes dist/*
