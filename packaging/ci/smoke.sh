@@ -1,8 +1,10 @@
 #!/bin/sh
 # Smoke test for an installed TuneMesh package:
 #   1. `tunemesh --version` and `tunemesh-worker --version` print a version;
-#   2. the worker starts on an empty library and keeps running;
-#   3. if xvfb-run is available (and dbus-run-session, unless SESSION_BUS=user),
+#   2. `tunemesh-worker --self-test` passes: the worker finds the package's
+#      ffmpeg and runs it through its confining ffmpeg/ffprobe shim;
+#   3. the worker starts on an empty library and keeps running;
+#   4. if xvfb-run is available (and dbus-run-session, unless SESSION_BUS=user),
 #      the app starts headless on an empty library and is still running 15 s
 #      later.
 #
@@ -27,21 +29,18 @@ fail() { echo "smoke: FAIL: $*" >&2; exit 1; }
 
 # $1 = label, $2 = command, $3 = expected first word of the version line.
 check_version() {
-    if out=$($2 --version 2>&1); then
-        echo "$1 --version: $out"
-        case $out in "$3 "[0-9]*) return 0 ;; esac
-        fail "$1 --version printed an unexpected line"
-    fi
-    # Builds from before --version existed answer it with their usage text.
-    help=$($2 --help 2>&1) || fail "$1 --version and --help failed: $out"
-    case $help in
-        *--version*) fail "$1 --version failed: $out" ;;
-    esac
-    echo "::warning::$1 has no --version yet on this branch; checked --help instead"
+    out=$($2 --version 2>&1) || fail "$1 --version failed: $out"
+    echo "$1 --version: $out"
+    case $out in "$3 "[0-9]*) return 0 ;; esac
+    fail "$1 --version printed an unexpected line"
 }
 
 check_version tunemesh "$APP" tunemesh
 check_version tunemesh-worker "$WORKER" tunemesh-worker
+
+# APP and WORKER are commands with arguments: split them on purpose.
+# shellcheck disable=SC2086
+$WORKER --self-test --work-dir "$work/self-test" || fail "tunemesh-worker --self-test failed"
 
 # Exit status 124 means timeout had to stop it: it was still running.
 set +e

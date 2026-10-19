@@ -171,10 +171,14 @@ jobs:
           manifest-path: packaging/flatpak/io.github.brainage04.TuneMesh.yml
           cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.brainage04.TuneMesh.yml') }}
           upload-artifact: false
+      # The same list the Flatpak carries in share/licenses/<app id>/.
+      - run: packaging/flatpak/third-party-sources.sh >THIRD-PARTY-SOURCES-Flatpak-x86_64.md
       - uses: actions/upload-artifact@v7
         with:
           name: pkg-flatpak-x86_64
-          path: TuneMesh-*.flatpak
+          path: |
+            TuneMesh-*.flatpak
+            THIRD-PARTY-SOURCES-Flatpak-x86_64.md
 
   snap:
     needs: deb
@@ -198,11 +202,19 @@ jobs:
           mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
       - uses: canonical/action-build@v1
         id: build
-      - run: mkdir dist && mv "${{ steps.build.outputs.snap }}" dist/
+      - name: Collect the snap and its source list
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir dist && mv "$SNAP_FILE" dist/
+          sudo apt-get install -yq squashfs-tools
+          unsquashfs -cat dist/*.snap usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md \
+            >"dist/THIRD-PARTY-SOURCES-snap-$ARCH.md"
       - uses: actions/upload-artifact@v7
         with:
           name: pkg-snap-${{ matrix.arch }}
-          path: dist/*.snap
+          path: dist/*
 
   android:
     needs: version
@@ -257,10 +269,13 @@ jobs:
             cp android/app/build/outputs/apk/release/app-release-unsigned.apk "dist/TuneMesh-$VERSION-unsigned.apk"
           fi
           rm -rf android/.signing
+          # Licence notices of the libraries in the APK (also its assets/NOTICE.txt).
+          cp android/app/build/generated/notice/NOTICE.txt "dist/TuneMesh-$VERSION-android-NOTICE.txt"
+          unzip -l dist/*.apk | grep -q ' assets/NOTICE.txt$'
       - uses: actions/upload-artifact@v7
         with:
           name: pkg-android
-          path: dist/*.apk
+          path: dist/*
 
   # ----------------------------------------------------------------- tests
 
@@ -294,6 +309,8 @@ jobs:
             ./dist/tunemesh_*.deb xvfb xauth dbus
           dpkg -L tunemesh >installed.txt
           cat installed.txt
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh deb /
       - name: Smoke test
         run: packaging/ci/smoke.sh
       - name: Uninstall
@@ -361,6 +378,8 @@ jobs:
           fi
           rpm -ql tunemesh >installed.txt
           cat installed.txt
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh rpm /
       - name: Smoke test
         run: packaging/ci/smoke.sh
       - name: Uninstall
@@ -383,6 +402,7 @@ jobs:
         run: |
           pacman -U --noconfirm dist/tunemesh-[0-9]*.pkg.tar.zst
           pacman -Qlq tunemesh >installed.txt
+          packaging/ci/check-licences.sh arch /
           packaging/ci/smoke.sh
           pacman -Rns --noconfirm tunemesh
           packaging/ci/check-removed.sh installed.txt
@@ -390,6 +410,7 @@ jobs:
         run: |
           pacman -U --noconfirm dist/tunemesh-bin-*.pkg.tar.zst
           pacman -Qlq tunemesh-bin >installed.txt
+          packaging/ci/check-licences.sh arch /
           packaging/ci/smoke.sh
           pacman -Rns --noconfirm tunemesh-bin
           packaging/ci/check-removed.sh installed.txt
@@ -435,6 +456,13 @@ jobs:
           appimage=$(ls "$PWD"/dist/TuneMesh-*.AppImage)
           chmod +x "$appimage"
           APP="$appimage" WORKER="$appimage worker" packaging/ci/smoke.sh
+      - name: Licence notices
+        run: |
+          mkdir unpacked && cd unpacked
+          "$(ls ../dist/TuneMesh-*.AppImage)" --appimage-extract >/dev/null
+          ../packaging/ci/check-licences.sh appimage squashfs-root
+          cmp squashfs-root/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md \
+            "../dist/THIRD-PARTY-SOURCES-AppImage-${{ matrix.arch }}.md"
 
   test-flatpak:
     needs: flatpak
@@ -451,6 +479,11 @@ jobs:
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive dist/TuneMesh-*.flatpak
           flatpak info --user "$APP_ID"
+      - name: Licence notices
+        run: |
+          packaging/ci/check-licences.sh flatpak "$(flatpak info --user --show-location "$APP_ID")/files"
+          cmp "$(flatpak info --user --show-location "$APP_ID")/files/share/licenses/$APP_ID/THIRD-PARTY-SOURCES.md" \
+            dist/THIRD-PARTY-SOURCES-Flatpak-x86_64.md
       - name: Smoke test
         run: |
           APP="flatpak run $APP_ID" WORKER="flatpak run --command=tunemesh-worker $APP_ID" \
@@ -485,6 +518,8 @@ jobs:
           sudo snap connect tunemesh:syncthing-config
           snap connections tunemesh
           snap list
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh snap /snap/tunemesh/current
       - name: Smoke test
         # snap run needs the user's systemd and session bus, as on a desktop.
         run: |
