@@ -58,7 +58,7 @@ class M3u8Test {
 
     @Test
     fun readerAcceptsBomCrlfCommentsBlankLinesAndAbsolutePaths() {
-        val text = "\uFEFF#EXTM3U\r\n#PLAYLIST:Ignored\r\n\r\n$root/A/B/Song.mp3\r\n./../A/B/Other.flac\r\n/home/thomas/Music/TuneMesh/A/B/Song.mp3\r\n"
+        val text = "\uFEFF#EXTM3U\r\n#PLAYLIST:Ignored\r\n\r\n$root/A/B/Song.mp3\r\n./../A/B/Other.flac\r\n/home/user/Music/TuneMesh/A/B/Song.mp3\r\n"
         val entries = M3u8.parse(text, root)
         assertEquals(listOf("A/B/Song.mp3", "A/B/Other.flac", null), entries.map { it.path })
         assertNull(entries[0].extinf)
@@ -66,10 +66,10 @@ class M3u8Test {
 
     @Test
     fun entriesOutsideTheLibraryAreKeptVerbatim() {
-        val entries = M3u8.parse("#EXTM3U\n../../outside.mp3\n/home/thomas/Music/TuneMesh/A/B/Song.mp3\n", root)
+        val entries = M3u8.parse("#EXTM3U\n../../outside.mp3\n/home/user/Music/TuneMesh/A/B/Song.mp3\n", root)
         assertEquals(listOf(null, null), entries.map { it.path })
         assertEquals(
-            "#EXTM3U\n#EXTINF:-1,outside\n../../outside.mp3\n#EXTINF:-1,Song\n/home/thomas/Music/TuneMesh/A/B/Song.mp3\n",
+            "#EXTM3U\n#EXTINF:-1,outside\n../../outside.mp3\n#EXTINF:-1,Song\n/home/user/Music/TuneMesh/A/B/Song.mp3\n",
             M3u8.write(entries) { null },
         )
     }

@@ -4,11 +4,13 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.os.Handler
 import android.os.Looper
+import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
@@ -137,10 +139,14 @@ class PlaybackService : MediaSessionService() {
             controller: MediaSession.ControllerInfo,
             mediaItems: List<MediaItem>,
         ): ListenableFuture<List<MediaItem>> {
-            val root = (application as TuneMeshApp).settings.libraryRoot
-            return Futures.immediateFuture(mediaItems.mapNotNull { QueueItems.resolve(it, root) })
+            val repository = (application as TuneMeshApp).repository
+            val root = repository.root
+            return Futures.immediateFuture(
+                mediaItems.mapNotNull { QueueItems.resolve(this@PlaybackService, it, root, repository::track) },
+            )
         }
 
+        @OptIn(UnstableApi::class)
         override fun onPlaybackResumption(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,

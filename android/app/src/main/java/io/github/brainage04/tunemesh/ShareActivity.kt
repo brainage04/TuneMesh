@@ -43,8 +43,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.brainage04.tunemesh.library.Downloader
 import io.github.brainage04.tunemesh.ui.AppIcons
+import io.github.brainage04.tunemesh.ui.screens.DownloaderBanner
 import io.github.brainage04.tunemesh.ui.screens.RequestForm
+import io.github.brainage04.tunemesh.ui.screens.effectiveSaveAsPlaylists
 import io.github.brainage04.tunemesh.ui.theme.Accent
 import io.github.brainage04.tunemesh.ui.theme.AppTheme
 import io.github.brainage04.tunemesh.ui.theme.Surface
@@ -84,13 +87,13 @@ private fun ShareSheet(input: String, onClose: () -> Unit) {
     val app = LocalContext.current.applicationContext as TuneMeshApp
     val library by app.repository.state.collectAsStateWithLifecycle()
     var playlist by remember { mutableStateOf("") }
-    var fromSource by remember { mutableStateOf(false) }
+    var saveAsPlaylists by remember { mutableStateOf<Boolean?>(null) }
     var submitting by remember { mutableStateOf(false) }
     var queued by remember { mutableStateOf(false) }
     val context = LocalContext.current
     LaunchedEffect(queued) {
         if (queued) {
-            delay(1500)
+            delay(if (library.downloader is Downloader.Active) 1500 else 3000)
             onClose()
         }
     }
@@ -119,7 +122,12 @@ private fun ShareSheet(input: String, onClose: () -> Unit) {
                 queued -> Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(AppIcons.Check, null, tint = Accent, modifier = Modifier.size(28.dp))
                     Spacer(Modifier.width(10.dp))
-                    Text("Queued. It appears in your library once thomas-server has downloaded it.")
+                    Text(
+                        when (val downloader = library.downloader) {
+                            is Downloader.Active -> "Queued. It appears in your library once ${downloader.device} has downloaded it."
+                            Downloader.None -> "Queued. No device is downloading right now; it is downloaded once one picks it up."
+                        },
+                    )
                 }
                 !library.hasAccess -> Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("TuneMesh needs All files access to write the request into your library folder.")
@@ -133,25 +141,28 @@ private fun ShareSheet(input: String, onClose: () -> Unit) {
                         modifier = Modifier.fillMaxWidth().height(48.dp),
                     ) { Text("Open settings") }
                 }
-                else -> RequestForm(
-                    repository = app.repository,
-                    playlists = library.playlists,
-                    input = input,
-                    onInput = {},
-                    playlist = playlist,
-                    onPlaylist = { playlist = it },
-                    fromSource = fromSource,
-                    onFromSource = { fromSource = it },
-                    submitting = submitting,
-                    onSubmit = {
-                        submitting = true
-                        app.repository.submitDownload(input, playlist.ifBlank { null }, fromSource) { result ->
-                            submitting = false
-                            queued = result.isSuccess
-                        }
-                    },
-                    showInput = false,
-                )
+                else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    DownloaderBanner(library.downloader, Modifier.padding(horizontal = 16.dp))
+                    RequestForm(
+                        hasAccess = library.hasAccess,
+                        playlists = library.playlists,
+                        input = input,
+                        onInput = {},
+                        playlist = playlist,
+                        onPlaylist = { playlist = it },
+                        saveAsPlaylists = saveAsPlaylists,
+                        onSaveAsPlaylists = { saveAsPlaylists = it },
+                        submitting = submitting,
+                        onSubmit = {
+                            submitting = true
+                            app.repository.submitDownloads(input, playlist.ifBlank { null }, effectiveSaveAsPlaylists(input, saveAsPlaylists)) { result ->
+                                submitting = false
+                                queued = result.isSuccess
+                            }
+                        },
+                        showInput = false,
+                    )
+                }
             }
         }
     }

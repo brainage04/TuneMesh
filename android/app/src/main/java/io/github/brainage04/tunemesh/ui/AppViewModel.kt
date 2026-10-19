@@ -46,6 +46,19 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var playingFrom by mutableStateOf(app.getSharedPreferences("playback", 0).getString(KEY_CONTEXT, "") ?: "")
         private set
 
+    /** The onboarding's Syncthing step: shown once after All files access is granted, reopened from Settings. */
+    var syncthingSetupOpen by mutableStateOf(!app.settings.syncthingSetupSeen)
+        private set
+
+    fun openSyncthingSetup() {
+        syncthingSetupOpen = true
+    }
+
+    fun closeSyncthingSetup() {
+        app.settings.syncthingSetupSeen = true
+        syncthingSetupOpen = false
+    }
+
     val screen: Screen get() = stacks.getValue(tab).last()
 
     fun select(target: Tab) {

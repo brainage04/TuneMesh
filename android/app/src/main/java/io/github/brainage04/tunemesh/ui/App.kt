@@ -59,6 +59,7 @@ import io.github.brainage04.tunemesh.ui.screens.PlaylistScreen
 import io.github.brainage04.tunemesh.ui.screens.QueueScreen
 import io.github.brainage04.tunemesh.ui.screens.SearchScreen
 import io.github.brainage04.tunemesh.ui.screens.SettingsScreen
+import io.github.brainage04.tunemesh.ui.screens.SyncthingSetupScreen
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 
 @Composable
@@ -76,6 +77,11 @@ fun App(viewModel: AppViewModel, finish: () -> Unit) {
     ) {
         if (!library.hasAccess) {
             OnboardingScreen()
+            return@CompositionLocalProvider
+        }
+        if (viewModel.syncthingSetupOpen) {
+            BackHandler { viewModel.closeSyncthingSetup() }
+            SyncthingSetupScreen(onDone = { viewModel.closeSyncthingSetup() })
             return@CompositionLocalProvider
         }
         BackHandler { if (!viewModel.back()) finish() }
