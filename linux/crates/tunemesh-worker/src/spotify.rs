@@ -121,7 +121,9 @@ pub fn parse_url(url: &str) -> Result<(Kind, String), String> {
         "album" => Kind::Album,
         "playlist" => Kind::Playlist,
         "" => {
-            return Err("This Spotify link does not point to a track, album or playlist".to_owned());
+            return Err(
+                "This Spotify link does not point to a track, album or playlist".to_owned(),
+            );
         }
         other => {
             return Err(format!(
