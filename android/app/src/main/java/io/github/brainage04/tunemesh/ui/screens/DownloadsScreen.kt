@@ -219,7 +219,7 @@ fun RequestForm(
 @Composable
 private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
     val status = item.status
-    val count = status?.total?.takeIf { it > 1 }?.let { total -> "${(status.done ?: 0).coerceIn(0, total)} of $total" }
+    val count = status?.itemsTotal?.takeIf { it > 1 }?.let { total -> "${(status.itemsDone ?: 0).coerceIn(0, total)} of $total" }
     val (label, color) = when (status?.state) {
         null -> "Waiting for the downloader" to TextSecondary
         "queued" -> "Queued" to TextSecondary
@@ -233,7 +233,7 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
         "cancelled" -> "Cancelled" + (count?.let { " • $it done" } ?: "") to TextSecondary
         else -> status.state to TextSecondary
     }
-    var warningsOpen by remember { mutableStateOf(false) }
+    var problemsOpen by remember { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
@@ -280,31 +280,37 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
             Spacer(Modifier.height(6.dp))
             Text(message, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
         }
-        val warnings = status?.warnings.orEmpty()
-        if (warnings.isNotEmpty()) {
+        // The final message repeats the warnings; list only what it does not already say.
+        val failures = status?.failures.orEmpty()
+        val warnings = status?.warnings.orEmpty().filterNot { status?.message?.contains(it) == true }
+        if (failures.isNotEmpty() || warnings.isNotEmpty()) {
             Spacer(Modifier.height(6.dp))
             Row(
-                Modifier.fillMaxWidth().clickable { warningsOpen = !warningsOpen }.padding(vertical = 4.dp),
+                Modifier.fillMaxWidth().clickable { problemsOpen = !problemsOpen }.padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(AppIcons.Warning, null, tint = WarningColor, modifier = Modifier.size(16.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    if (warnings.size == 1) "1 warning" else "${warnings.size} warnings",
+                    listOfNotNull(
+                        failures.size.takeIf { it > 0 }?.let { "$it failed" },
+                        warnings.size.takeIf { it > 0 }?.let { if (it == 1) "1 warning" else "$it warnings" },
+                    ).joinToString(" • "),
                     color = WarningColor,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
                 )
                 Icon(
                     AppIcons.Down,
-                    if (warningsOpen) "Hide warnings" else "Show warnings",
+                    if (problemsOpen) "Hide details" else "Show details",
                     tint = TextSecondary,
-                    modifier = Modifier.size(18.dp).rotate(if (warningsOpen) 180f else 0f),
+                    modifier = Modifier.size(18.dp).rotate(if (problemsOpen) 180f else 0f),
                 )
             }
-            if (warningsOpen) {
-                warnings.forEach { warning ->
-                    Text("• $warning", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
+            if (problemsOpen) {
+                val lines = failures.map { failure -> listOf(failure.item, failure.error).filter { it.isNotBlank() }.joinToString(": ") } + warnings
+                lines.forEach { line ->
+                    Text("• $line", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
                 }
             }
         }

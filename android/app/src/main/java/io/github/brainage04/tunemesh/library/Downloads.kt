@@ -6,6 +6,7 @@ import java.io.File
 import java.io.IOException
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
 
@@ -31,11 +32,13 @@ data class DownloadStatus(
     val message: String? = null,
     val tracks: List<String> = emptyList(),
     val updatedAt: String? = null,
-    /** Items of the request finished so far (downloaded, matched or skipped), once [total] is known. */
-    val done: Int? = null,
-    /** Items the request resolved to: 1 for a single track, the entry count for a playlist or album. */
-    val total: Int? = null,
-    /** Per-item problems that did not fail the whole request, for example an unavailable playlist entry. */
+    /** Items finished so far (downloaded, already present or failed), once [itemsTotal] is known. */
+    val itemsDone: Int? = null,
+    /** Items the request covers once the source is listed: 1 for a track, the entry count for a playlist or album. */
+    val itemsTotal: Int? = null,
+    /** Items that could not be downloaded; the request went on without them. */
+    val failures: List<DownloadFailure> = emptyList(),
+    /** Things to know although the request went on, for example that a source was cut to the item limit. */
     val warnings: List<String> = emptyList(),
 ) {
     val isFinal: Boolean get() = state in FINAL_STATES
@@ -44,6 +47,12 @@ data class DownloadStatus(
         val FINAL_STATES = setOf("done", "failed", "cancelled")
     }
 }
+
+@Serializable
+data class DownloadFailure(
+    val item: String = "",
+    val error: String = "",
+)
 
 /** A request as shown in the Downloads list: the request file, the status file, or both. */
 data class DownloadItem(
@@ -59,7 +68,10 @@ data class DownloadItem(
     val sortKey: Long get() = id.substringBefore('-').toLongOrNull() ?: 0L
 }
 
-/** `.tunemesh/worker.json`: the device whose worker currently takes requests for this library. */
+/**
+ * `.tunemesh/worker.json`: the device whose worker currently takes requests for this library. The worker also
+ * writes `instance`, `pid` and `workerVersion`, which clients do not need.
+ */
 @Serializable
 data class WorkerInfo(
     val version: Int = 1,
@@ -79,22 +91,22 @@ sealed interface Downloader {
         }
 
     companion object {
-        /** A worker counts as active while its heartbeat is at most this old. */
+        /** A worker counts as active while its heartbeat is less than this far from now, either way. */
         val FRESH: Duration = Duration.ofMinutes(3)
 
         fun of(info: WorkerInfo?, now: Instant = Instant.now()): Downloader {
             val heartbeat = info?.heartbeatAt?.let {
                 try {
-                    Instant.parse(it)
+                    OffsetDateTime.parse(it).toInstant()
                 } catch (_: DateTimeParseException) {
                     null
                 }
             } ?: return None
             val device = info.device.trim()
             if (device.isEmpty()) return None
-            // A clock a little ahead of ours still counts; a heartbeat far in the future is not trusted forever.
-            val age = Duration.between(heartbeat, now)
-            return if (age <= FRESH && age >= FRESH.negated()) Active(device) else None
+            // Clocks of different devices drift a little, so a heartbeat slightly ahead of ours still counts.
+            val age = Duration.between(heartbeat, now).abs()
+            return if (age < FRESH) Active(device) else None
         }
     }
 }

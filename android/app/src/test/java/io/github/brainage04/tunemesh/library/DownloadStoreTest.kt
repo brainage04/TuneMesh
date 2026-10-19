@@ -86,17 +86,20 @@ class DownloadStoreTest {
     fun statusProgressFieldsAreReadAndOptional() {
         val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
         File(status, "1000-aaaaaaaa.json").writeText(
-            """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","done":3,"total":12,"warnings":["Track 2: Video unavailable"]}""",
+            """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","itemsDone":3,"itemsTotal":12,""" +
+                """"failures":[{"item":"Artist - Title","error":"Video unavailable"}],"warnings":["Imported the first 100 tracks"]}""",
         )
         File(status, "2000-bbbbbbbb.json").writeText("""{"version":1,"id":"2000-bbbbbbbb","state":"queued"}""")
         val items = DownloadStore(temp.root).list().associateBy { it.id }
         val counted = items.getValue("1000-aaaaaaaa").status!!
-        assertEquals(3, counted.done)
-        assertEquals(12, counted.total)
-        assertEquals(listOf("Track 2: Video unavailable"), counted.warnings)
+        assertEquals(3, counted.itemsDone)
+        assertEquals(12, counted.itemsTotal)
+        assertEquals(listOf(DownloadFailure("Artist - Title", "Video unavailable")), counted.failures)
+        assertEquals(listOf("Imported the first 100 tracks"), counted.warnings)
         val plain = items.getValue("2000-bbbbbbbb").status!!
-        assertEquals(null, plain.done)
-        assertEquals(null, plain.total)
+        assertEquals(null, plain.itemsDone)
+        assertEquals(null, plain.itemsTotal)
+        assertEquals(emptyList<DownloadFailure>(), plain.failures)
         assertEquals(emptyList<String>(), plain.warnings)
     }
 
@@ -141,18 +144,20 @@ class DownloadStoreTest {
         assertEquals(Downloader.None, Downloader.of(store.worker(), now))
         val state = File(temp.root, ".tunemesh").apply { mkdirs() }
         File(state, "worker.json").writeText(
-            """{"version":1,"device":"home-server","heartbeatAt":"2026-10-06T05:00:00Z","future":"ignored"}""",
+            """{"version":1,"device":"home-server","instance":"5f0c1d2e3a4b6c7d","pid":41234,"workerVersion":"0.1.0","heartbeatAt":"2026-10-06T05:00:00Z"}""",
         )
         val info = store.worker()!!
         assertEquals("home-server", info.device)
         assertEquals(Downloader.Active("home-server"), Downloader.of(info, now))
         assertEquals("Downloads are handled by home-server", Downloader.of(info, now).description)
-        // Stale after three minutes without a heartbeat.
-        assertEquals(Downloader.Active("home-server"), Downloader.of(info, Instant.parse("2026-10-06T05:03:00Z")))
-        assertEquals(Downloader.None, Downloader.of(info, Instant.parse("2026-10-06T05:03:01Z")))
+        // Stale once the heartbeat is three minutes old, in either direction.
+        assertEquals(Downloader.Active("home-server"), Downloader.of(info, Instant.parse("2026-10-06T05:02:59Z")))
+        assertEquals(Downloader.None, Downloader.of(info, Instant.parse("2026-10-06T05:03:00Z")))
         assertEquals("No device is downloading right now", Downloader.None.description)
-        // A heartbeat far in the future (wrong clock) is not trusted.
+        assertEquals(Downloader.Active("home-server"), Downloader.of(info, Instant.parse("2026-10-06T04:57:01Z")))
         assertEquals(Downloader.None, Downloader.of(info, Instant.parse("2026-10-06T04:50:00Z")))
+        File(state, "worker.json").writeText("""{"version":1,"device":"desktop","heartbeatAt":"2026-10-06T15:01:00+10:00"}""")
+        assertEquals(Downloader.Active("desktop"), Downloader.of(store.worker(), now))
 
         File(state, "worker.json").writeText("{")
         assertEquals(null, store.worker())
