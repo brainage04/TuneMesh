@@ -67,7 +67,7 @@ cat >"$root/DEBIAN/control" <<EOF
 Package: tunemesh
 Version: $version-1
 Architecture: $arch
-Maintainer: brainage04 <thomasmcmah21@gmail.com>
+Maintainer: brainage04 <brainage04@users.noreply.github.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$root" | cut -f1)
 Depends: $shlibs, ffmpeg
 Recommends: syncthing

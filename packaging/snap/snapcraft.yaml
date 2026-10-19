@@ -66,6 +66,8 @@ apps:
     plugs:
       - home
       - network
+      # The worker's egress proxy listens on 127.0.0.1.
+      - network-bind
       - audio-playback
       - removable-media
       - syncthing-config
@@ -77,6 +79,7 @@ apps:
     plugs:
       - home
       - network
+      - network-bind
       - removable-media
 
 parts:
