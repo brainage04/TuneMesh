@@ -72,19 +72,18 @@
 
         nativeBuildInputs = [ pkgs.makeWrapper ];
 
+        # The worker finds yt-dlp, deno (yt-dlp's JavaScript runtime for
+        # YouTube) and ffmpeg through these variables, so it never downloads
+        # its own copies on NixOS.
         postInstall = ''
           wrapProgram $out/bin/tunemesh-worker \
-            --prefix PATH : ${
-              lib.makeBinPath [
-                pkgs.yt-dlp
-                pkgs.ffmpeg
-                pkgs.spotdl
-              ]
-            }
+            --set-default TUNEMESH_YTDLP ${lib.getExe pkgs.yt-dlp} \
+            --set-default TUNEMESH_DENO ${lib.getExe pkgs.deno} \
+            --set-default TUNEMESH_FFMPEG_DIR ${lib.getBin pkgs.ffmpeg}/bin
         '';
 
         meta = {
-          description = "TuneMesh download worker (yt-dlp / spotDL)";
+          description = "TuneMesh download worker (yt-dlp)";
           mainProgram = "tunemesh-worker";
           platforms = [ system ];
         };
@@ -145,7 +144,7 @@
             };
             libraryPath = lib.mkOption {
               type = lib.types.str;
-              example = "/home/thomas/Music/TuneMesh";
+              example = "/home/user/Music/TuneMesh";
               description = "Root of the TuneMesh library (the Syncthing folder).";
             };
             workDir = lib.mkOption {
@@ -153,8 +152,21 @@
               default = "/var/cache/tunemesh-worker";
               description = ''
                 Directory outside the library where downloads are assembled
-                before they are moved into place. Created and owned by `user`.
+                before they are moved into place. Created for `user` with mode
+                0700; the worker refuses a work directory that other users can
+                access or that it does not own.
               '';
+            };
+            extraArgs = lib.mkOption {
+              type = lib.types.listOf lib.types.str;
+              default = [ ];
+              example = [
+                "--max-items"
+                "1000"
+                "--min-free-space"
+                "10G"
+              ];
+              description = "Extra `tunemesh-worker` options, such as its limits (see `tunemesh-worker --help`).";
             };
             memoryMax = lib.mkOption {
               type = lib.types.str;
@@ -163,19 +175,27 @@
             };
             allowedAddresses = lib.mkOption {
               type = lib.types.listOf lib.types.str;
-              default = [
-                "100.100.100.100/32"
-                "fd7a:115c:a1e0::53/128"
-                "127.0.0.53/32"
-              ];
+              default =
+                lib.optional config.services.resolved.enable "127.0.0.53/32"
+                ++ lib.optionals config.services.tailscale.enable [
+                  "100.100.100.100/32"
+                  "fd7a:115c:a1e0::53/128"
+                ];
+              defaultText = lib.literalExpression ''
+                lib.optional config.services.resolved.enable "127.0.0.53/32"
+                ++ lib.optionals config.services.tailscale.enable [ "100.100.100.100/32" "fd7a:115c:a1e0::53/128" ]
+              '';
               description = ''
-                Addresses the worker may reach although they are in a blocked
-                private range: the DNS resolvers (Tailscale MagicDNS and the
-                systemd-resolved stub by default). Everything else on
-                loopback, link-local, RFC 1918, CGNAT/Tailscale (100.64.0.0/10)
-                and IPv6 unique-local addresses is unreachable, so a request
-                (or a redirect it follows) cannot reach services on the host
-                or the tailnet.
+                DNS resolvers in a blocked range that the worker must reach to
+                resolve host names: the systemd-resolved stub and Tailscale
+                MagicDNS when those are enabled. Add a LAN resolver here only
+                if the host sends DNS to one directly (with nscd, the NixOS
+                default, lookups go through nscd's socket and need no entry).
+
+                systemd cannot limit these entries to port 53: every port on
+                them is reachable from the service. Only the worker's own
+                resolver lookups use them; its egress proxy refuses them (and
+                every other non-public address) as download targets.
               '';
             };
           };
@@ -184,7 +204,7 @@
             systemd.tmpfiles.settings."10-tunemesh-worker".${cfg.workDir}.d = {
               inherit (cfg) user;
               group = config.users.users.${cfg.user}.group;
-              mode = "0750";
+              mode = "0700";
             };
 
             systemd.services.tunemesh-worker = {
@@ -192,17 +212,29 @@
               wantedBy = [ "multi-user.target" ];
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];
-              # yt-dlp's cache and spotDL's config live in the work directory,
-              # the only writable place besides the library.
+              # Caches live in the work directory, the only writable place
+              # besides the library.
               environment = {
                 XDG_CACHE_HOME = "${cfg.workDir}/.cache";
                 XDG_CONFIG_HOME = "${cfg.workDir}/.config";
+                XDG_DATA_HOME = "${cfg.workDir}/.local/share";
               };
               serviceConfig = {
                 User = cfg.user;
                 Group = config.users.users.${cfg.user}.group;
-                ExecStart = "${lib.getExe cfg.package} --library ${lib.escapeShellArg cfg.libraryPath} --work-dir ${lib.escapeShellArg cfg.workDir}";
+                ExecStart = lib.escapeShellArgs (
+                  [
+                    (lib.getExe cfg.package)
+                    "--library"
+                    cfg.libraryPath
+                    "--work-dir"
+                    cfg.workDir
+                  ]
+                  ++ cfg.extraArgs
+                );
+                # Exit code 2 means a configuration error: retrying will not help.
                 Restart = "on-failure";
+                RestartPreventExitStatus = 2;
                 RestartSec = 10;
                 # Files written into the Syncthing folder stay group-readable
                 # like the user's own files.
@@ -247,6 +279,11 @@
                   "@system-service"
                   "~@privileged"
                 ];
+                # A second layer under the worker's egress proxy, which already
+                # refuses every non-public address and the host's own interface
+                # addresses for yt-dlp, its ffmpeg and the worker itself. Not
+                # covered by either: the host's public IPv4 address behind NAT
+                # (hairpin NAT), which only a firewall on the router can block.
                 IPAddressDeny = [
                   "127.0.0.0/8"
                   "::1/128"
@@ -261,7 +298,12 @@
                   "192.168.0.0/16"
                   "fc00::/7"
                 ];
-                IPAddressAllow = cfg.allowedAddresses;
+                # 127.0.0.1: yt-dlp reaches the worker's egress proxy there (the
+                # filter applies to loopback traffic as well). Like the resolver
+                # entries this opens every port, so a process in the service
+                # that bypassed the proxy could reach services bound to
+                # 127.0.0.1; yt-dlp and ffmpeg are only given the proxy.
+                IPAddressAllow = [ "127.0.0.1/32" ] ++ cfg.allowedAddresses;
               };
             };
           };
