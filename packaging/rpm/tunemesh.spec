@@ -60,5 +60,5 @@ rm -rf %{buildroot}%{_datadir}/licenses
 %{_prefix}/lib/systemd/user/tunemesh-worker.service
 
 %changelog
-* Sun Oct 19 2026 brainage04 <brainage04@users.noreply.github.com> - 0.1.0-1
+* Mon Oct 19 2026 brainage04 <brainage04@users.noreply.github.com> - 0.1.0-1
 - First package
