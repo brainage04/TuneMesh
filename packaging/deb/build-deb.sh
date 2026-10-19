@@ -69,7 +69,7 @@ Version: $version-1
 Architecture: $arch
 Maintainer: brainage04 <brainage04@users.noreply.github.com>
 Installed-Size: $(du -sk --exclude=DEBIAN "$root" | cut -f1)
-Depends: $shlibs, ffmpeg
+Depends: $shlibs, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), ffmpeg
 Recommends: syncthing
 Section: sound
 Priority: optional
