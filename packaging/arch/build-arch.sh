@@ -5,9 +5,11 @@
 #
 #   podman run --rm -v "$PWD:/src" -w /src archlinux packaging/arch/build-arch.sh dist [bin-tarball]
 #
-# The source package builds from a tarball of this checkout laid out like
-# GitHub's tag archive. With bin-tarball (tunemesh-<version>-linux-<machine>.tar.gz
-# from packaging/deb/build-deb.sh) it also builds tunemesh-bin from it.
+# tunemesh builds from the release's source tarball tunemesh-<version>.tar.gz:
+# TUNEMESH_SOURCE_TARBALL names it (the release workflow passes the one it
+# publishes, so the checksum matches); without it, one is made from this
+# checkout. With bin-tarball (tunemesh-<version>-linux-<machine>.tar.gz from
+# packaging/deb/build-deb.sh) it also builds tunemesh-bin from it.
 set -eu
 # shellcheck source=packaging/linux/common.sh
 . "$(dirname "$0")/../linux/common.sh"
@@ -21,11 +23,13 @@ id builder >/dev/null 2>&1 || useradd -m builder
 work=$(mktemp -d)
 chown builder "$work"
 
-# tunemesh: source build from the GitHub-style archive.
+# tunemesh: source build.
 mkdir -p "$work/tunemesh"
-tar -C "$repo" --transform "s|^\.|TuneMesh-$version|" \
-    --exclude=./.git --exclude=./linux/target --exclude=./android --exclude=./dist \
-    --exclude='./result*' -czf "$work/tunemesh/tunemesh-$version.tar.gz" .
+if [ -n "${TUNEMESH_SOURCE_TARBALL:-}" ]; then
+    cp "$TUNEMESH_SOURCE_TARBALL" "$work/tunemesh/tunemesh-$version.tar.gz"
+else
+    make_source_tarball "$work/tunemesh/tunemesh-$version.tar.gz" "$version"
+fi
 sha=$(sha256sum "$work/tunemesh/tunemesh-$version.tar.gz" | cut -d' ' -f1)
 sed -e "s/^pkgver=.*/pkgver=$version/" -e "s/^sha256sums=.*/sha256sums=('$sha')/" \
     "$repo/packaging/arch/tunemesh/PKGBUILD" >"$work/tunemesh/PKGBUILD"

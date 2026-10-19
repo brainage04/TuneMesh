@@ -11,30 +11,30 @@ makedepends=(cargo)
 optdepends=('syncthing: keeps the library in sync between devices')
 conflicts=(tunemesh-bin)
 options=(!lto !debug)
-source=("$pkgname-$pkgver.tar.gz::https://github.com/brainage04/TuneMesh/archive/refs/tags/v$pkgver.tar.gz")
+source=("https://github.com/brainage04/TuneMesh/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 prepare() {
-    cd "TuneMesh-$pkgver"
+    cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     cargo fetch --locked --manifest-path linux/Cargo.toml --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-    cd "TuneMesh-$pkgver"
+    cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=linux/target
     cargo build --frozen --release --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker
 }
 
 check() {
-    cd "TuneMesh-$pkgver"
+    cd "$pkgname-$pkgver"
     export RUSTUP_TOOLCHAIN=stable
     export CARGO_TARGET_DIR=linux/target
     cargo test --frozen --release --manifest-path linux/Cargo.toml -p tunemesh-core
 }
 
 package() {
-    cd "TuneMesh-$pkgver"
+    cd "$pkgname-$pkgver"
     packaging/linux/install.sh --destdir "$pkgdir" --prefix /usr
 }

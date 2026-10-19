@@ -25,10 +25,7 @@ top=$(mktemp -d)
 trap 'rm -rf "$top"' EXIT
 mkdir -p "$top/SOURCES" "$top/SPECS"
 
-# Source tarball: the checkout without build output or the Android app.
-tar -C "$repo" --transform "s|^\.|tunemesh-$version|" \
-    --exclude=./.git --exclude=./linux/target --exclude=./android --exclude=./dist \
-    --exclude='./result*' -czf "$top/SOURCES/tunemesh-$version.tar.gz" .
+make_source_tarball "$top/SOURCES/tunemesh-$version.tar.gz" "$version"
 
 # Vendored crates, so the spec builds without network access (mock, COPR, OBS).
 vendor=$(mktemp -d)

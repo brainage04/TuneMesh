@@ -27,3 +27,13 @@ build_binaries() {
     cargo build --release --locked --manifest-path "$repo/linux/Cargo.toml" \
         -p tunemesh -p tunemesh-worker
 }
+
+# Writes the source tarball $1 (top directory tunemesh-$2): this checkout
+# without git data, build output or the Android app. The release publishes it;
+# the RPM spec and the AUR PKGBUILD build from it.
+make_source_tarball() {
+    tar -C "$repo" --transform "s|^\.|tunemesh-$2|" \
+        --exclude=./.git --exclude=./linux/target --exclude=./android --exclude=./dist \
+        --exclude='./result*' --exclude=./snap --exclude=./packaging/flatpak/cargo-sources.json \
+        --sort=name --owner=0 --group=0 --numeric-owner -czf "$1" .
+}

@@ -83,9 +83,11 @@ jobs:
           path: dist/*
 
   arch:
-    needs: [version, deb]
+    needs: [version, deb, rpm]
     runs-on: ubuntu-24.04
     container: archlinux:latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
@@ -93,9 +95,15 @@ jobs:
           pattern: pkg-deb-*
           path: bin
           merge-multiple: true
+      # The published source tarball, so the PKGBUILD's checksum matches it.
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-rpm-x86_64
+          path: src
       - run: |
-          packaging/arch/build-arch.sh dist bin/tunemesh-*-linux-x86_64.tar.gz
-          tar -C dist -czf "dist/tunemesh-${{ needs.version.outputs.version }}-aur.tar.gz" aur
+          TUNEMESH_SOURCE_TARBALL="src/tunemesh-$VERSION.tar.gz" \
+            packaging/arch/build-arch.sh dist "bin/tunemesh-$VERSION-linux-x86_64.tar.gz"
+          tar -C dist -czf "dist/tunemesh-$VERSION-aur.tar.gz" aur
           rm -r dist/aur
       - uses: actions/upload-artifact@v7
         with:
