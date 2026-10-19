@@ -243,6 +243,11 @@ impl Dir {
         rustix::fs::unlinkat(&self.fd, component(name)?, AtFlags::empty()).map_err(io::Error::from)
     }
 
+    /// Removes the empty subdirectory `name` (a symlink is refused).
+    pub fn remove_dir(&self, name: &str) -> io::Result<()> {
+        rustix::fs::unlinkat(&self.fd, component(name)?, AtFlags::REMOVEDIR).map_err(io::Error::from)
+    }
+
     /// Renames `from` to `to` inside this directory, replacing `to`.
     pub fn rename(&self, from: &str, to: &str) -> io::Result<()> {
         rustix::fs::renameat(&self.fd, component(from)?, &self.fd, component(to)?).map_err(io::Error::from)
@@ -338,6 +343,10 @@ mod tests {
         assert!(!root.is_file("file"));
         assert!(root.is_file("real/x"));
         assert!(root.read("../etc/passwd", 100).is_err());
+        assert!(root.remove_dir("link").is_err());
+        assert!(outside.path().exists());
+        fs::create_dir(lib.path().join("empty")).unwrap();
+        root.remove_dir("empty").unwrap();
 
         // Replacing a symlink replaces the link, not its target.
         root.write_atomic("file", b"new").unwrap();

@@ -133,11 +133,6 @@ impl Job<'_> {
         }
     }
 
-    pub fn set_progress(&mut self, p: f64) {
-        self.status.progress = Some(p.clamp(0.0, 1.0));
-        self.flush(false);
-    }
-
     pub fn set_title(&mut self, title: Option<String>) {
         if title.is_some() && self.status.title != title {
             self.status.title = title;
@@ -151,10 +146,12 @@ impl Job<'_> {
         self.flush(true);
     }
 
-    /// Marks item `index` (0-based) of `total` finished.
+    /// Marks item `index` (0-based) of `total` finished and writes the
+    /// status.
     pub fn item_done(&mut self, index: usize, total: usize) {
         self.status.items_done = Some((index + 1) as u32);
-        self.set_progress((index + 1) as f64 / total.max(1) as f64);
+        self.status.progress = Some(((index + 1) as f64 / total.max(1) as f64).clamp(0.0, 1.0));
+        self.flush(true);
     }
 
     pub fn warn(&mut self, warning: String) {
@@ -163,11 +160,11 @@ impl Job<'_> {
         self.flush(true);
     }
 
+    /// Records a failed item; written with the next `item_done`.
     pub fn fail_item(&mut self, item: String, error: String) {
         log!("[{}] {item}: {error}", self.req.id);
         self.failed += 1;
         self.status.add_failure(item, error);
-        self.flush(true);
     }
 
     fn root_dir(&self) -> io::Result<Dir> {
@@ -180,9 +177,9 @@ impl Job<'_> {
         self.ids.get(id).filter(|rel| root.is_file(rel)).cloned()
     }
 
+    /// Records a track; written with the next `item_done`.
     pub fn add_track(&mut self, rel: String) {
         self.status.tracks.push(rel);
-        self.flush(true);
     }
 
     /// Free space check before a download starts.
