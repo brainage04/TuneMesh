@@ -128,19 +128,31 @@ pub fn run(
     let mut last_check = Instant::now();
     let mut stopped: Option<Stop> = None;
     let mut kill_at: Option<Instant> = None;
-    loop {
-        match rx.recv_timeout(Duration::from_millis(250)) {
-            Ok((stream, line)) => {
-                if let Stream::Err = stream {
-                    if tail.len() == 20 {
-                        tail.remove(0);
+    let mut output_open = true;
+    let mut exited = None;
+    // Runs until the process has exited and its output is closed; the time
+    // limit, `check` and the SIGTERM-to-SIGKILL escalation apply the whole
+    // time, also when the process closes its output early.
+    while output_open || exited.is_none() {
+        if output_open {
+            match rx.recv_timeout(Duration::from_millis(250)) {
+                Ok((stream, line)) => {
+                    if let Stream::Err = stream {
+                        if tail.len() == 20 {
+                            tail.remove(0);
+                        }
+                        tail.push(line.clone());
                     }
-                    tail.push(line.clone());
+                    on_line(stream, &line);
                 }
-                on_line(stream, &line);
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => output_open = false,
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        } else {
+            thread::sleep(Duration::from_millis(50));
+        }
+        if exited.is_none() {
+            exited = child.try_wait()?;
         }
         if stopped.is_none() && last_check.elapsed() >= Duration::from_millis(500) {
             last_check = Instant::now();
@@ -164,19 +176,6 @@ pub fn run(
             signal_group(pid, libc::SIGKILL);
             kill_at = None;
         }
-    }
-    // Output closed; the process may still be exiting after SIGTERM.
-    loop {
-        if child.try_wait()?.is_some() {
-            break;
-        }
-        if let Some(at) = kill_at
-            && Instant::now() >= at
-        {
-            signal_group(pid, libc::SIGKILL);
-            kill_at = None;
-        }
-        thread::sleep(Duration::from_millis(50));
     }
     let status = child.wait()?;
     // Grandchildren (ffmpeg) that outlived yt-dlp go too.
@@ -231,6 +230,60 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(out.end, End::Stopped(Stop::Cancelled)));
+    }
+
+    /// A child that closes stdout and stderr early still gets its time limit.
+    #[test]
+    fn times_out_after_output_is_closed() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec 1>&- 2>&-; sleep 30"]);
+        let start = Instant::now();
+        let out = run(&mut cmd, Duration::from_secs(1), |_, _| {}, || None).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(matches!(out.end, End::Stopped(Stop::Limit(_))));
+    }
+
+    /// ... and can still be cancelled.
+    #[test]
+    fn cancels_after_output_is_closed() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exec 1>&- 2>&-; sleep 30"]);
+        let start = Instant::now();
+        let out = run(
+            &mut cmd,
+            Duration::from_secs(60),
+            |_, _| {},
+            || (start.elapsed() > Duration::from_millis(800)).then_some(Stop::Cancelled),
+        )
+        .unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "{:?}",
+            start.elapsed()
+        );
+        assert!(matches!(out.end, End::Stopped(Stop::Cancelled)));
+    }
+
+    /// SIGTERM is ignored: SIGKILL follows 5 s later.
+    #[test]
+    fn escalates_to_sigkill() {
+        let mut cmd = Command::new("sh");
+        cmd.args([
+            "-c",
+            "trap '' TERM; exec 1>&- 2>&-; while :; do sleep 1; done",
+        ]);
+        let start = Instant::now();
+        let out = run(&mut cmd, Duration::from_secs(1), |_, _| {}, || None).unwrap();
+        let took = start.elapsed();
+        assert!(
+            took >= Duration::from_secs(5) && took < Duration::from_secs(10),
+            "{took:?}"
+        );
+        assert!(matches!(out.end, End::Stopped(Stop::Limit(_))));
     }
 
     #[test]
