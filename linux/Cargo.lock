@@ -1552,6 +1552,7 @@ dependencies = [
  "fastrand",
  "humantime",
  "lofty",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

@@ -12,6 +12,7 @@ serde_json.workspace = true
 fastrand.workspace = true
 humantime.workspace = true
 lofty = "0.25"
+rustix = { version = "1", features = ["fs"] }
 unicode-normalization = "0.1"
 
 [dev-dependencies]

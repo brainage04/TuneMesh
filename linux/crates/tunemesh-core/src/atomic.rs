@@ -1,5 +1,9 @@
 //! Atomic file replacement: write `.~tunemesh-<random>.tmp` next to the
 //! target, then rename it over the target.
+//!
+//! This follows symlinks and is meant for per-device files outside the
+//! library (settings, caches). Files below the library root are written
+//! through `fsx::Dir`, which refuses symlinks.
 
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -31,32 +35,6 @@ pub fn write(target: &Path, contents: &[u8]) -> io::Result<()> {
         let _ = fs::remove_file(&tmp);
     }
     result
-}
-
-/// Moves `from` to `to` without ever exposing a partial file at `to`: a plain
-/// rename when both are on one filesystem, otherwise a copy into a temporary
-/// file next to `to` that is then renamed into place.
-pub fn move_file(from: &Path, to: &Path) -> io::Result<()> {
-    let dir = to
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "target has no parent"))?;
-    fs::create_dir_all(dir)?;
-    match fs::rename(from, to) {
-        Ok(()) => return Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {}
-        Err(e) => return Err(e),
-    }
-    let tmp = temp_path_in(dir);
-    let result = (|| {
-        fs::copy(from, &tmp)?;
-        File::open(&tmp)?.sync_all()?;
-        fs::rename(&tmp, to)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
-        return result;
-    }
-    fs::remove_file(from)
 }
 
 #[cfg(test)]

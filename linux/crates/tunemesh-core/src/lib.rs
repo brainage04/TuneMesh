@@ -2,11 +2,13 @@
 //! track identity and metadata, playlists, download requests and status.
 
 pub mod atomic;
+pub mod fsx;
 pub mod library;
 pub mod playlist;
 pub mod request;
 pub mod sanitize;
 pub mod search;
+pub mod worker;
 
 pub use library::{CoverSource, Library, Track};
 pub use playlist::{LIKED_SONGS, Playlist, PlaylistEntry};
