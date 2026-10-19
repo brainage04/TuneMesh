@@ -147,7 +147,19 @@ jobs:
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51
       options: --privileged
+      # The SDK, the build and the export need more than the runner's free
+      # disk: the host's preinstalled toolchains are mounted to be deleted.
+      volumes:
+        - /usr/share/dotnet:/host/dotnet
+        - /usr/local/lib/android:/host/android
+        - /opt/hostedtoolcache:/host/toolcache
+        - /opt/ghc:/host/ghc
     steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          rm -rf /host/dotnet/* /host/android/* /host/toolcache/* /host/ghc/*
+          df -h /
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
@@ -472,6 +484,7 @@ jobs:
           sudo snap install --dangerous dist/tunemesh_*.snap
           sudo snap connect tunemesh:syncthing-config
           snap connections tunemesh
+          snap list
       - name: Smoke test
         run: |
           APP=/snap/bin/tunemesh WORKER=/snap/bin/tunemesh.worker \
