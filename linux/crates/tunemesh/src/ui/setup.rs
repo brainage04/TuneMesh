@@ -455,7 +455,7 @@ impl Setup {
         let me_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
         me_box.append(&me);
         me_box.append(&id_row);
-        if let Some(tex) = qr_texture(&o.my_id, 5) {
+        if let Some(tex) = qr_texture(&o.my_id, 4) {
             let pic = gtk::Picture::builder().paintable(&tex).can_shrink(false).halign(gtk::Align::Center).css_classes(["tm-qr"]).build();
             pic.set_tooltip_text(Some("This device's Syncthing ID"));
             me_box.append(&pic);

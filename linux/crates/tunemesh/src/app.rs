@@ -603,7 +603,7 @@ impl App {
         let dialog = adw::AlertDialog::new(
             Some("Downloads are still running"),
             Some(&format!(
-                "{} left. TuneMesh can keep downloading in the background and quit once they are done, or stop now and continue next time.",
+                "{} left. TuneMesh can keep downloading in the background and quit when the queue is empty, or stop now and continue next time.",
                 ui::widgets::plural(n, "download is", "downloads are")
             )),
         );

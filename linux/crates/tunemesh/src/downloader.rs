@@ -188,7 +188,8 @@ impl Downloader {
             let last = self.last_line.clone();
             let _ = std::thread::Builder::new().name("worker-log".into()).spawn(move || {
                 for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-                    eprintln!("{WORKER_BIN}: {line}");
+                    // The worker prefixes its own lines.
+                    eprintln!("{line}");
                     if !line.trim().is_empty() {
                         *last.lock().unwrap() = line;
                     }
@@ -228,13 +229,14 @@ impl Downloader {
         let code = libc::WIFEXITED(status).then(|| libc::WEXITSTATUS(status));
         let last = self.last_line.lock().unwrap().clone();
         let how = match code {
-            Some(c) => format!("exited with status {c}"),
-            None => format!("was stopped by signal {}", libc::WTERMSIG(status)),
+            Some(c) => format!("stopped unexpectedly (exit status {c})"),
+            None => format!("stopped unexpectedly (signal {})", libc::WTERMSIG(status)),
         };
-        let reason = if last.is_empty() { how } else { format!("{how}: {last}") };
+        let reason = if last.is_empty() { how } else { format!("{how}; its last message was “{last}”") };
         eprintln!("tunemesh: {WORKER_BIN} {reason}");
         if code == Some(EXIT_USAGE) {
-            self.set_state(State::Failed(format!("The downloader {reason}")));
+            let msg = if last.is_empty() { String::new() } else { format!(": “{last}”") };
+            self.set_state(State::Failed(format!("The downloader refused to start{msg}. Turn it off and on again after fixing this.")));
             return;
         }
         if !self.enabled.get() {
