@@ -1,0 +1,109 @@
+# Snap for TuneMesh. snapcraft expects this file at snap/snapcraft.yaml in the
+# project root, so build with:
+#
+#   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/ && snapcraft pack
+#
+# Install a local build:
+#   sudo snap install --dangerous ./tunemesh_<version>_amd64.snap
+#   sudo snap connect tunemesh:syncthing-config     # optional, see below
+name: tunemesh
+title: TuneMesh
+summary: Music player for a Syncthing-shared library
+description: |
+  TuneMesh plays a music library that lives in one Syncthing folder shared
+  between your devices, and downloads new songs into it with yt-dlp.
+
+  The library lives in your home folder (default ~/Music/TuneMesh). For a
+  library on a removable drive, connect removable-media:
+  sudo snap connect tunemesh:removable-media
+  To let TuneMesh read Syncthing's API key, connect syncthing-config:
+  sudo snap connect tunemesh:syncthing-config
+  The download worker also runs on its own as tunemesh.worker.
+adopt-info: tunemesh
+license: MIT
+base: core24
+grade: stable
+confinement: strict
+icon: linux/data/io.github.brainage04.TuneMesh.svg
+website: https://github.com/brainage04/TuneMesh
+source-code: https://github.com/brainage04/TuneMesh
+platforms:
+  amd64:
+  arm64:
+
+plugs:
+  syncthing-config:
+    interface: personal-files
+    read:
+      - $HOME/.config/syncthing
+      - $HOME/.local/state/syncthing
+
+slots:
+  # GApplication's unique name, used for single-instance and its D-Bus actions.
+  tunemesh-dbus:
+    interface: dbus
+    bus: session
+    name: io.github.brainage04.TuneMesh
+  # org.mpris.MediaPlayer2.tunemesh: media keys and desktop media controls.
+  tunemesh-mpris:
+    interface: mpris
+    name: tunemesh
+
+environment:
+  LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/blas:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/lapack
+  TUNEMESH_FFMPEG_DIR: $SNAP/usr/bin
+
+apps:
+  tunemesh:
+    command: bin/tunemesh
+    desktop: share/applications/io.github.brainage04.TuneMesh.desktop
+    common-id: io.github.brainage04.TuneMesh
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - audio-playback
+      - removable-media
+      - syncthing-config
+    slots:
+      - tunemesh-dbus
+      - tunemesh-mpris
+  worker:
+    command: bin/tunemesh-worker
+    plugs:
+      - home
+      - network
+      - removable-media
+
+parts:
+  tunemesh:
+    plugin: rust
+    source: .
+    rust-channel: stable
+    rust-path:
+      - linux/crates/tunemesh
+      - linux/crates/tunemesh-worker
+    build-packages:
+      - libmpv-dev
+    stage-packages:
+      - libmpv2
+      - ffmpeg
+    override-pull: |
+      craftctl default
+      craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' linux/Cargo.toml)"
+    override-build: |
+      craftctl default
+      install -Dm644 linux/data/io.github.brainage04.TuneMesh.desktop \
+        "$CRAFT_PART_INSTALL/share/applications/io.github.brainage04.TuneMesh.desktop"
+      sed -i 's|^Icon=.*|Icon=${SNAP}/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
+        "$CRAFT_PART_INSTALL/share/applications/io.github.brainage04.TuneMesh.desktop"
+      install -Dm644 linux/data/io.github.brainage04.TuneMesh.svg \
+        "$CRAFT_PART_INSTALL/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg"
+      if [ -f linux/data/io.github.brainage04.TuneMesh.metainfo.xml ]; then
+        install -Dm644 linux/data/io.github.brainage04.TuneMesh.metainfo.xml \
+          "$CRAFT_PART_INSTALL/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml"
+      fi
+    prime:
+      # The gnome extension's content snap provides GTK, GLib and friends.
+      - -usr/share/doc
+      - -usr/share/man
