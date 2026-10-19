@@ -282,9 +282,9 @@ impl Tools {
         self.checked.get(tool).is_some_and(|t| t.elapsed() < every)
     }
 
-    /// Finds or downloads everything; the error explains what is missing.
-    pub fn resolve(&mut self, http: &Http) -> Result<Resolved, String> {
-        let (ffmpeg, ffprobe) = match &self.ffmpeg_dir {
+    /// The real ffmpeg and ffprobe: `$TUNEMESH_FFMPEG_DIR`, else `PATH`.
+    pub fn ffmpeg(&self) -> Result<(PathBuf, PathBuf), String> {
+        Ok(match &self.ffmpeg_dir {
             Some(dir) => {
                 if !is_executable(&dir.join("ffmpeg")) || !is_executable(&dir.join("ffprobe")) {
                     return Err(format!(
@@ -300,7 +300,12 @@ impl Tools {
                     return Err("ffmpeg and ffprobe are not installed (install ffmpeg or set TUNEMESH_FFMPEG_DIR)".to_owned());
                 }
             },
-        };
+        })
+    }
+
+    /// Finds or downloads everything; the error explains what is missing.
+    pub fn resolve(&mut self, http: &Http) -> Result<Resolved, String> {
+        let (ffmpeg, ffprobe) = self.ffmpeg()?;
         let yt_dlp = match &self.yt_dlp {
             Some(p) if is_executable(p) => p.clone(),
             Some(p) => return Err(format!("yt-dlp at {} is not an executable file", p.display())),

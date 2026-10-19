@@ -27,6 +27,8 @@ usage: tunemesh-worker [options]
   --min-free-space <size>  free space to keep on the library's and work
                            directory's filesystems (default: 2G)
   --poll-seconds <n>       request scan interval (default: 2)
+  --self-test              check ffmpeg/ffprobe through the worker's confinement
+                           (in --work-dir) and exit; needs no library
   --version                print the version and exit
   -h, --help               print this help and exit
 
@@ -65,6 +67,8 @@ pub struct Args {
     pub device: Option<String>,
     pub poll: Duration,
     pub limits: Limits,
+    /// `--self-test`: check the ffmpeg setup and exit.
+    pub self_test: bool,
 }
 
 pub enum Parsed {
@@ -107,6 +111,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed> {
         device: None,
         poll: Duration::from_secs(2),
         limits: Limits::default(),
+        self_test: false,
     };
     let mut args = args.into_iter();
     while let Some(arg) = args.next() {
@@ -139,6 +144,7 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed> {
                 let n: f64 = value()?.parse().context("--poll-seconds")?;
                 a.poll = Duration::from_secs_f64(n.clamp(0.1, 3600.0));
             }
+            "--self-test" => a.self_test = true,
             "--version" | "-V" => return Ok(Parsed::Version),
             "-h" | "--help" => return Ok(Parsed::Help),
             other => bail!("unknown argument {other:?}"),

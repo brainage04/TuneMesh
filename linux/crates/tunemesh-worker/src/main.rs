@@ -12,6 +12,7 @@ mod job;
 mod leader;
 mod netguard;
 mod proxy;
+mod selftest;
 mod signals;
 mod spotify;
 mod tools;
@@ -63,6 +64,9 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    if args.self_test {
+        return selftest::main(args.work_dir);
+    }
     match run(args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(Fatal::Config(e)) => {

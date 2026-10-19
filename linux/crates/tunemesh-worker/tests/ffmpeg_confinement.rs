@@ -181,3 +181,30 @@ fn disguised_hls_cannot_read_outside_files() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("outside the work directory"));
 }
+
+/// `--self-test` passes where ffmpeg is installed and needs no library.
+#[test]
+fn self_test_passes() {
+    if which("ffmpeg").is_none() || which("ffprobe").is_none() {
+        eprintln!("skipped: ffmpeg/ffprobe not on PATH");
+        return;
+    }
+    let work = tempfile::tempdir().unwrap();
+    let dir = work.path().join("w");
+    let out = Command::new(env!("CARGO_BIN_EXE_tunemesh-worker"))
+        .args(["--self-test", "--work-dir", dir.to_str().unwrap()])
+        .env_remove("TUNEMESH_FFMPEG_DIR")
+        .output()
+        .unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "{text}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !text.contains("FAIL") && text.contains("disguised playlist refused"),
+        "{text}"
+    );
+    assert!(!dir.join("jobs/self-test").exists());
+}
