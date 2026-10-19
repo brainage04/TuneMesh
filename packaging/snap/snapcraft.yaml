@@ -76,6 +76,8 @@ apps:
       - tunemesh-mpris
   worker:
     command: usr/bin/tunemesh-worker
+    # For the GNOME runtime's libraries, which ffmpeg needs as well.
+    extensions: [gnome]
     plugs:
       - home
       - network
@@ -102,3 +104,16 @@ parts:
     prime:
       - -usr/share/doc
       - -usr/share/man
+
+  # Drop the staged copies of libraries that core24 and the GNOME and Mesa
+  # content snaps provide: older duplicates (librsvg, HarfBuzz, ...) would
+  # shadow theirs and break GTK.
+  cleanup:
+    after: [tunemesh]
+    plugin: nil
+    build-snaps: [core24, gnome-46-2404, mesa-2404]
+    override-prime: |
+      set -eux
+      for snap in core24 gnome-46-2404 mesa-2404; do
+        cd "/snap/$snap/current" && find . -type f,l -exec rm -f "$CRAFT_PRIME/{}" \;
+      done
