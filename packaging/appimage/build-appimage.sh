@@ -8,7 +8,8 @@
 # The AppImage needs glibc 2.39 or newer on the host (Ubuntu 24.04, Debian 13,
 # Fedora 40 and later) and, like every AppImage, the host's graphics, font and
 # sound libraries (Mesa/libGL/EGL, X11/xcb, Wayland, fontconfig, freetype,
-# HarfBuzz, FriBidi, ALSA, PipeWire), which any desktop installation has.
+# HarfBuzz, FriBidi, ALSA, PipeWire, shared-mime-info), which any desktop
+# installation has.
 # JACK is bundled, since desktops often lack it. TUNEMESH_VERSION overrides
 # the version.
 set -euo pipefail

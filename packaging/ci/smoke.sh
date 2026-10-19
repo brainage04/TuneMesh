@@ -59,6 +59,10 @@ if command -v xvfb-run >/dev/null 2>&1 && command -v dbus-run-session >/dev/null
     set -e
     cat "$work/app.log"
     [ $status -eq 124 ] || fail "app exited with $status during the headless launch"
+    # Missing icon loaders or GSettings schemas show up only as log lines.
+    if grep -qE 'Failed to load icon|-CRITICAL \*\*|No GSettings schemas' "$work/app.log"; then
+        fail "the app logged missing resources during the headless launch"
+    fi
     echo "app ran headless for 15 s"
 else
     echo "xvfb-run or dbus-run-session missing; headless launch skipped"
