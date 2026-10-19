@@ -165,17 +165,31 @@ jobs:
           path: TuneMesh-*.flatpak
 
   snap:
-    needs: version
-    runs-on: ubuntu-24.04
+    needs: deb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
-      - run: mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+      - uses: actions/download-artifact@v8
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: bin
+      - run: |
+          cp bin/tunemesh-*-linux-${{ matrix.arch }}.tar.gz packaging/snap/tunemesh-linux.tar.gz
+          mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
       - uses: canonical/action-build@v1
         id: build
       - run: mkdir dist && mv "${{ steps.build.outputs.snap }}" dist/
       - uses: actions/upload-artifact@v7
         with:
-          name: pkg-snap-x86_64
+          name: pkg-snap-${{ matrix.arch }}
           path: dist/*.snap
 
   android:
@@ -431,12 +445,20 @@ jobs:
 
   test-snap:
     needs: snap
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          name: pkg-snap-x86_64
+          name: pkg-snap-${{ matrix.arch }}
           path: dist
       - name: Install
         run: |

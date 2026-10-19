@@ -1,6 +1,10 @@
-# Snap for TuneMesh. snapcraft expects this file at snap/snapcraft.yaml in the
-# project root, so build with:
+# Snap for TuneMesh. It packages the binaries of the Ubuntu 24.04 build (the
+# generic tarball from packaging/deb/build-deb.sh, the same base as core24),
+# so they link against the gnome extension's GTK 4.14 and libadwaita 1.5.
+# snapcraft expects this file at snap/snapcraft.yaml in the project root:
 #
+#   packaging/deb/build-deb.sh dist        # on Ubuntu 24.04
+#   cp dist/tunemesh-*-linux-$(uname -m).tar.gz packaging/snap/tunemesh-linux.tar.gz
 #   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/ && snapcraft pack
 #
 # Install a local build:
@@ -55,8 +59,8 @@ environment:
 
 apps:
   tunemesh:
-    command: bin/tunemesh
-    desktop: share/applications/io.github.brainage04.TuneMesh.desktop
+    command: usr/bin/tunemesh
+    desktop: usr/share/applications/io.github.brainage04.TuneMesh.desktop
     common-id: io.github.brainage04.TuneMesh
     extensions: [gnome]
     plugs:
@@ -69,7 +73,7 @@ apps:
       - tunemesh-dbus
       - tunemesh-mpris
   worker:
-    command: bin/tunemesh-worker
+    command: usr/bin/tunemesh-worker
     plugs:
       - home
       - network
@@ -77,35 +81,20 @@ apps:
 
 parts:
   tunemesh:
-    plugin: rust
-    source: .
-    rust-channel: stable
-    build-snaps:
-      - rustup
-    rust-path:
-      - linux/crates/tunemesh
-      - linux/crates/tunemesh-worker
-    build-packages:
-      - libmpv-dev
+    plugin: dump
+    source: packaging/snap/tunemesh-linux.tar.gz
+    source-type: tar
     stage-packages:
       - libmpv2
       - ffmpeg
-    override-pull: |
-      craftctl default
-      craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' linux/Cargo.toml)"
     override-build: |
       craftctl default
-      install -Dm644 linux/data/io.github.brainage04.TuneMesh.desktop \
-        "$CRAFT_PART_INSTALL/share/applications/io.github.brainage04.TuneMesh.desktop"
-      sed -i 's|^Icon=.*|Icon=${SNAP}/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
-        "$CRAFT_PART_INSTALL/share/applications/io.github.brainage04.TuneMesh.desktop"
-      install -Dm644 linux/data/io.github.brainage04.TuneMesh.svg \
-        "$CRAFT_PART_INSTALL/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg"
-      if [ -f linux/data/io.github.brainage04.TuneMesh.metainfo.xml ]; then
-        install -Dm644 linux/data/io.github.brainage04.TuneMesh.metainfo.xml \
-          "$CRAFT_PART_INSTALL/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml"
-      fi
+      craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$CRAFT_PROJECT_DIR/linux/Cargo.toml")"
+      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
+        "$CRAFT_PART_INSTALL/usr/share/applications/io.github.brainage04.TuneMesh.desktop"
+    stage:
+      # No systemd user units in a snap; the worker runs as tunemesh.worker.
+      - -usr/lib/systemd
     prime:
-      # The gnome extension's content snap provides GTK, GLib and friends.
       - -usr/share/doc
       - -usr/share/man
