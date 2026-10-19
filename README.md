@@ -208,6 +208,20 @@ may break the terms of service of the sites involved and copyright law where
 you live. Only download what you have the right to. TuneMesh is not affiliated
 with Spotify, YouTube or Syncthing.
 
+Third-party licences: TuneMesh is MIT licensed; the software it is built with
+keeps its own licences. Every Linux package carries the licences of the Rust
+crates linked into both programs (`THIRD-PARTY-RUST.txt` next to TuneMesh's
+licence, in `/usr/share/licenses/tunemesh/` or, for the .deb,
+`/usr/share/doc/tunemesh/`). The AppImage, Snap and Flatpak also bundle libmpv,
+FFmpeg and other libraries: their licence files ship inside the package
+(`usr/share/doc/<package>/copyright` and `share/licenses/<component>/`), and
+`THIRD-PARTY-SOURCES.md`, inside each of them and attached to every release,
+names the exact source of each bundled component. The bundled libmpv is
+GPL-2.0-or-later; the bundled FFmpeg is GPL-2.0-or-later in the AppImage and
+Snap (Ubuntu's build) and LGPL-2.1-or-later in the Flatpak. The Android app
+lists its libraries' licences in the APK's `assets/NOTICE.txt`, which is also
+attached to every release.
+
 ## Development
 
 | Directory | What |
