@@ -1,0 +1,120 @@
+{
+ "runs": [],
+ "first_launch": [
+  {
+   "app": "gtk",
+   "window_mapped_s": 1.607,
+   "first_paint_s": 1.638,
+   "stable_s": 1.638,
+   "screenshot_samples": 95,
+   "scan_done_s": 0.681
+  },
+  {
+   "app": "cmp",
+   "window_mapped_s": 1.693,
+   "first_paint_s": 1.736,
+   "stable_s": 1.736,
+   "screenshot_samples": 95,
+   "scan_done_s": 0.877
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.543,
+   "first_paint_s": 0.577,
+   "stable_s": 0.577,
+   "screenshot_samples": 64,
+   "scan_done_s": 0.256
+  },
+  {
+   "app": "cmp",
+   "window_mapped_s": 1.366,
+   "first_paint_s": 1.392,
+   "stable_s": 1.392,
+   "screenshot_samples": 84,
+   "scan_done_s": 0.714
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.594,
+   "first_paint_s": 0.632,
+   "stable_s": 0.632,
+   "screenshot_samples": 63,
+   "scan_done_s": 0.334
+  },
+  {
+   "app": "cmp",
+   "window_mapped_s": 1.374,
+   "first_paint_s": 1.404,
+   "stable_s": 1.404,
+   "screenshot_samples": 85,
+   "scan_done_s": 0.764
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.483,
+   "first_paint_s": 0.522,
+   "stable_s": 0.522,
+   "screenshot_samples": 63,
+   "scan_done_s": 0.255
+  },
+  {
+   "app": "cmp",
+   "window_mapped_s": 1.322,
+   "first_paint_s": 1.364,
+   "stable_s": 1.364,
+   "screenshot_samples": 86,
+   "scan_done_s": 0.706
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.552,
+   "first_paint_s": 0.589,
+   "stable_s": 0.589,
+   "screenshot_samples": 64,
+   "scan_done_s": 0.316
+  },
+  {
+   "app": "cmp",
+   "window_mapped_s": 1.367,
+   "first_paint_s": 1.393,
+   "stable_s": 1.393,
+   "screenshot_samples": 88,
+   "scan_done_s": 0.737
+  }
+ ],
+ "variants": {},
+ "frames": [],
+ "summary": {},
+ "first_launch_summary": {
+  "gtk": {
+   "window_mapped_s": 0.552,
+   "first_paint_s": 0.589,
+   "stable_s": 0.589,
+   "scan_done_s": 0.316
+  },
+  "cmp": {
+   "window_mapped_s": 1.367,
+   "first_paint_s": 1.393,
+   "stable_s": 1.393,
+   "scan_done_s": 0.737
+  }
+ },
+ "frames_summary": {
+  "gtk": {
+   "fps": null,
+   "cpu_s": null,
+   "frame_interval_p50_ms": null,
+   "frame_interval_p95_ms": null,
+   "frame_interval_max_ms": null,
+   "long_frames": null
+  },
+  "cmp": {
+   "fps": null,
+   "cpu_s": null,
+   "frame_interval_p50_ms": null,
+   "frame_interval_p95_ms": null,
+   "frame_interval_max_ms": null,
+   "long_frames": null
+  }
+ }
+}

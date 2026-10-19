@@ -1,0 +1,216 @@
+{
+ "runs": [
+  {
+   "app": "gtk",
+   "startup": {
+    "window_mapped_s": 0.476,
+    "first_paint_s": 0.513,
+    "stable_s": 0.513,
+    "screenshot_samples": 64
+   },
+   "idle_memory": {
+    "rss_mib": 237.3,
+    "pss_mib": 131.8
+   },
+   "threads_idle": 43,
+   "idle_cpu_pct": 0.13,
+   "browsed_memory": {
+    "rss_mib": 316.0,
+    "pss_mib": 209.5
+   },
+   "sink_inputs": [
+    {
+     "app": "TuneMesh",
+     "binary": null,
+     "pid": null,
+     "corked": false
+    }
+   ],
+   "playback_cpu_pct": 1.25,
+   "playback_memory": {
+    "rss_mib": 352.7,
+    "pss_mib": 244.5
+   },
+   "scroll_cpu_s": 0.91,
+   "scroll_wall_s": 6.0,
+   "after_scroll_memory": {
+    "rss_mib": 353.5,
+    "pss_mib": 245.2
+   }
+  },
+  {
+   "app": "gtk",
+   "startup": {
+    "window_mapped_s": 0.581,
+    "first_paint_s": 0.619,
+    "stable_s": 0.656,
+    "screenshot_samples": 64
+   },
+   "idle_memory": {
+    "rss_mib": 255.8,
+    "pss_mib": 150.3
+   },
+   "threads_idle": 43,
+   "idle_cpu_pct": 0.15,
+   "browsed_memory": {
+    "rss_mib": 317.4,
+    "pss_mib": 211.0
+   },
+   "sink_inputs": [
+    {
+     "app": "TuneMesh",
+     "binary": null,
+     "pid": null,
+     "corked": false
+    }
+   ],
+   "playback_cpu_pct": 1.22,
+   "playback_memory": {
+    "rss_mib": 351.1,
+    "pss_mib": 242.3
+   },
+   "scroll_cpu_s": 1.0,
+   "scroll_wall_s": 6.0,
+   "after_scroll_memory": {
+    "rss_mib": 353.0,
+    "pss_mib": 244.2
+   }
+  },
+  {
+   "app": "gtk",
+   "startup": {
+    "window_mapped_s": 0.616,
+    "first_paint_s": 0.657,
+    "stable_s": 0.691,
+    "screenshot_samples": 67
+   },
+   "idle_memory": {
+    "rss_mib": 225.0,
+    "pss_mib": 119.7
+   },
+   "threads_idle": 43,
+   "idle_cpu_pct": 0.15,
+   "browsed_memory": {
+    "rss_mib": 287.5,
+    "pss_mib": 181.2
+   },
+   "sink_inputs": [
+    {
+     "app": "TuneMesh",
+     "binary": null,
+     "pid": null,
+     "corked": false
+    }
+   ],
+   "playback_cpu_pct": 1.17,
+   "playback_memory": {
+    "rss_mib": 314.1,
+    "pss_mib": 205.9
+   },
+   "scroll_cpu_s": 0.85,
+   "scroll_wall_s": 6.0,
+   "after_scroll_memory": {
+    "rss_mib": 316.8,
+    "pss_mib": 208.7
+   }
+  }
+ ],
+ "first_launch": [
+  {
+   "app": "gtk",
+   "window_mapped_s": 1.628,
+   "first_paint_s": 1.665,
+   "stable_s": 1.665,
+   "screenshot_samples": 96,
+   "scan_done_s": 0.636
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.501,
+   "first_paint_s": 0.537,
+   "stable_s": 0.537,
+   "screenshot_samples": 63,
+   "scan_done_s": 0.302
+  },
+  {
+   "app": "gtk",
+   "window_mapped_s": 0.49,
+   "first_paint_s": 0.543,
+   "stable_s": 0.543,
+   "screenshot_samples": 64,
+   "scan_done_s": 0.27
+  }
+ ],
+ "variants": {},
+ "frames": [
+  {
+   "app": "gtk",
+   "scroll_s": 5.0,
+   "cpu_s": 0.88,
+   "frames": 280,
+   "fps": 56.0,
+   "frame_interval_p50_ms": 15.85,
+   "frame_interval_p95_ms": 24.59,
+   "frame_interval_max_ms": 297.1,
+   "renderer": "Using renderer 'GskVulkanRenderer' for surface 'GdkWaylandToplevel'"
+  },
+  {
+   "app": "gtk",
+   "scroll_s": 5.0,
+   "cpu_s": 0.88,
+   "frames": 280,
+   "fps": 56.0,
+   "frame_interval_p50_ms": 16.36,
+   "frame_interval_p95_ms": 22.34,
+   "frame_interval_max_ms": 296.42,
+   "renderer": "Using renderer 'GskVulkanRenderer' for surface 'GdkWaylandToplevel'"
+  },
+  {
+   "app": "gtk",
+   "scroll_s": 5.0,
+   "cpu_s": 0.78,
+   "frames": 280,
+   "fps": 56.0,
+   "frame_interval_p50_ms": 16.29,
+   "frame_interval_p95_ms": 21.68,
+   "frame_interval_max_ms": 298.81,
+   "renderer": "Using renderer 'GskVulkanRenderer' for surface 'GdkWaylandToplevel'"
+  }
+ ],
+ "summary": {
+  "gtk": {
+   "window_mapped_s": 0.581,
+   "first_paint_s": 0.619,
+   "stable_s": 0.656,
+   "idle_rss_mib": 237.3,
+   "idle_pss_mib": 131.8,
+   "browsed_rss_mib": 316.0,
+   "browsed_pss_mib": 209.5,
+   "playback_rss_mib": 351.1,
+   "playback_pss_mib": 242.3,
+   "idle_cpu_pct": 0.15,
+   "playback_cpu_pct": 1.22,
+   "scroll_cpu_s": 0.91,
+   "threads_idle": 43,
+   "runs": 3
+  }
+ },
+ "first_launch_summary": {
+  "gtk": {
+   "window_mapped_s": 0.501,
+   "first_paint_s": 0.543,
+   "stable_s": 0.543,
+   "scan_done_s": 0.302
+  }
+ },
+ "frames_summary": {
+  "gtk": {
+   "fps": 56.0,
+   "cpu_s": 0.88,
+   "frame_interval_p50_ms": 16.29,
+   "frame_interval_p95_ms": 22.34,
+   "frame_interval_max_ms": 297.1,
+   "long_frames": null
+  }
+ }
+}
