@@ -1,5 +1,7 @@
-//! Runs a downloader process, streaming its output lines and killing its
-//! whole process group when the request is cancelled.
+//! Runs a downloader process, streaming its output lines, and kills its
+//! whole process group when the request is cancelled, the worker stops, the
+//! run exceeds its wall-clock limit or a check (such as the size of the
+//! scratch directory) fails.
 
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::process::CommandExt;
@@ -13,9 +15,20 @@ pub enum Stream {
     Err,
 }
 
+/// Why a run was stopped before it ended by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Stop {
+    /// The request file was deleted.
+    Cancelled,
+    /// The worker is shutting down or handing over to another device.
+    Interrupted,
+    /// A limit was hit; the text says which.
+    Limit(String),
+}
+
 pub enum End {
     Exited(ExitStatus),
-    Cancelled,
+    Stopped(Stop),
 }
 
 pub struct Outcome {
@@ -27,6 +40,9 @@ pub struct Outcome {
 impl Outcome {
     /// The most useful error line: the last `ERROR:` line, else the last line.
     pub fn error_message(&self) -> String {
+        if let End::Stopped(Stop::Limit(why)) = &self.end {
+            return why.clone();
+        }
         let line = self
             .stderr_tail
             .iter()
@@ -43,7 +59,7 @@ impl Outcome {
             }
             None => match &self.end {
                 End::Exited(s) => format!("downloader exited with {s}"),
-                End::Cancelled => "cancelled".to_owned(),
+                End::Stopped(_) => "stopped".to_owned(),
             },
         }
     }
@@ -51,9 +67,15 @@ impl Outcome {
 
 fn pump(stream: impl Read + Send + 'static, kind: fn(String) -> (Stream, String), tx: mpsc::Sender<(Stream, String)>) {
     thread::spawn(move || {
-        for line in BufReader::new(stream).split(b'\n') {
-            let Ok(line) = line else { break };
-            let line = String::from_utf8_lossy(&line).trim_end_matches('\r').to_owned();
+        // Lines are capped so a child cannot make the worker buffer without bound.
+        let mut reader = BufReader::new(stream);
+        loop {
+            let mut line = Vec::new();
+            match reader.by_ref().take(64 * 1024).read_until(b'\n', &mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let line = String::from_utf8_lossy(&line).trim_end_matches(['\r', '\n']).to_owned();
             if tx.send(kind(line)).is_err() {
                 break;
             }
@@ -68,14 +90,17 @@ fn signal_group(pid: u32, signal: i32) {
     }
 }
 
-/// Runs `cmd`, calling `on_line` for every output line, and polls
-/// `cancelled` about once a second.
+/// Runs `cmd` for at most `timeout`, calling `on_line` for every output
+/// line and `check` about twice a second; when `check` returns a reason, or
+/// time runs out, the process group gets SIGTERM, then SIGKILL 5 s later.
 pub fn run(
     cmd: &mut Command,
+    timeout: Duration,
     mut on_line: impl FnMut(Stream, &str),
-    cancelled: impl Fn() -> bool,
+    mut check: impl FnMut() -> Option<Stop>,
 ) -> io::Result<Outcome> {
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
+    let started = Instant::now();
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
@@ -84,9 +109,10 @@ pub fn run(
 
     let mut tail: Vec<String> = Vec::new();
     let mut last_check = Instant::now();
-    let mut was_cancelled = false;
+    let mut stopped: Option<Stop> = None;
+    let mut kill_at: Option<Instant> = None;
     loop {
-        match rx.recv_timeout(Duration::from_millis(500)) {
+        match rx.recv_timeout(Duration::from_millis(250)) {
             Ok((stream, line)) => {
                 if let Stream::Err = stream {
                     if tail.len() == 20 {
@@ -99,25 +125,88 @@ pub fn run(
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
-        if !was_cancelled && last_check.elapsed() >= Duration::from_secs(1) {
+        if stopped.is_none() && last_check.elapsed() >= Duration::from_millis(500) {
             last_check = Instant::now();
-            if cancelled() {
-                was_cancelled = true;
+            let reason = check().or_else(|| {
+                (started.elapsed() >= timeout)
+                    .then(|| Stop::Limit(format!("Took longer than {}", humantime::format_duration(timeout))))
+            });
+            if let Some(reason) = reason {
+                stopped = Some(reason);
                 signal_group(pid, libc::SIGTERM);
-                let deadline = Instant::now() + Duration::from_secs(5);
-                let mut exited = false;
-                while !exited && Instant::now() < deadline {
-                    exited = child.try_wait()?.is_some();
-                    if !exited {
-                        thread::sleep(Duration::from_millis(100));
-                    }
-                }
-                if !exited {
-                    signal_group(pid, libc::SIGKILL);
-                }
+                kill_at = Some(Instant::now() + Duration::from_secs(5));
             }
         }
+        if let Some(at) = kill_at
+            && Instant::now() >= at
+        {
+            signal_group(pid, libc::SIGKILL);
+            kill_at = None;
+        }
+    }
+    // Output closed; the process may still be exiting after SIGTERM.
+    loop {
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        if let Some(at) = kill_at
+            && Instant::now() >= at
+        {
+            signal_group(pid, libc::SIGKILL);
+            kill_at = None;
+        }
+        thread::sleep(Duration::from_millis(50));
     }
     let status = child.wait()?;
-    Ok(Outcome { end: if was_cancelled { End::Cancelled } else { End::Exited(status) }, stderr_tail: tail })
+    // Grandchildren (ffmpeg) that outlived yt-dlp go too.
+    if stopped.is_some() {
+        signal_group(pid, libc::SIGKILL);
+    }
+    Ok(Outcome {
+        end: match stopped {
+            Some(s) => End::Stopped(s),
+            None => End::Exited(status),
+        },
+        stderr_tail: tail,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_out_and_kills_the_group() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & sleep 30; echo never"]);
+        let start = Instant::now();
+        let mut lines = Vec::new();
+        let out = run(&mut cmd, Duration::from_secs(1), |_, l| lines.push(l.to_owned()), || None).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(matches!(out.end, End::Stopped(Stop::Limit(_))));
+        assert!(out.error_message().starts_with("Took longer than"));
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn check_stops_the_run() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo hi; exec sleep 30"]);
+        let mut n = 0;
+        let out = run(&mut cmd, Duration::from_secs(60), |_, _| {}, || {
+            n += 1;
+            (n > 1).then_some(Stop::Cancelled)
+        })
+        .unwrap();
+        assert!(matches!(out.end, End::Stopped(Stop::Cancelled)));
+    }
+
+    #[test]
+    fn reports_exit_and_error_lines() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo 'ERROR: [youtube] x: Video unavailable (caused by Foo)' >&2; exit 1"]);
+        let out = run(&mut cmd, Duration::from_secs(60), |_, _| {}, || None).unwrap();
+        assert!(matches!(out.end, End::Exited(s) if !s.success()));
+        assert_eq!(out.error_message(), "[youtube] x: Video unavailable");
+    }
 }
