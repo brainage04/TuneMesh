@@ -14,16 +14,18 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
 }
 
-// Debug and release builds are signed with this app's own key, so every machine produces the same
-// signature and installs update in place. The key lives in the git-ignored .signing/ directory,
-// which the Borg backups include; Bitwarden keeps a copy in the item
-// "Android signing key – TuneMesh".
-// .signing/signing.properties describes it (file names are relative to .signing/):
-//   storeFile, storePassword, keyAlias, keyPassword   this app's key
-//   lineageFile                                      APK Signature Scheme v3 rotation lineage from
-//                                                    the debug key that signed earlier installs
-// Without the file, builds fall back to the machine's own debug key, which Android rejects as an
-// update to the installed app.
+// When android/.signing/signing.properties exists (git-ignored), debug and release builds are signed
+// with the key it describes, so every machine that has it produces the same signature and installs
+// update in place. Release CI writes the directory from repository secrets; keep your own copy of
+// the key somewhere safe, since Android only accepts updates signed with it.
+// Keys (file names are relative to .signing/):
+//   storeFile, storePassword, keyAlias, keyPassword   the app's key
+//   lineageFile                                      optional APK Signature Scheme v3 rotation lineage
+//                                                    from an earlier key (see RotateApkSignature)
+//   previousStoreFile, previousStorePassword,        optional earlier key, needed for the v2 signature
+//   previousKeyAlias, previousKeyPassword            when minSdk is below 28
+// Without the file, builds fall back to the machine's own debug key; Android rejects such an APK as
+// an update to an install signed with another key.
 val signing = rootProject.file(".signing/signing.properties")
     .takeIf { it.isFile }
     ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
