@@ -11,6 +11,7 @@ use tunemesh_core::LIKED_SONGS;
 
 use crate::config::Config;
 use crate::covers::Covers;
+use crate::downloader::Downloader;
 use crate::player::{Change, Player};
 use crate::store::{Store, StoreChange};
 use crate::ui;
@@ -70,6 +71,10 @@ pub struct App {
     pub store: Rc<Store>,
     pub player: Rc<Player>,
     pub covers: Rc<Covers>,
+    pub downloader: Rc<Downloader>,
+    /// Held while the window is closed but downloads are still running.
+    background: RefCell<Option<gio::ApplicationHoldGuard>>,
+    background_timer: RefCell<Option<glib::SourceId>>,
     pub toasts: adw::ToastOverlay,
     content: gtk::Box,
     pub search_entry: gtk::SearchEntry,
@@ -91,7 +96,8 @@ impl App {
         let root = config.library_path.clone();
         let store = Store::new(root.clone());
         let player = Player::new(root.clone());
-        let covers = Covers::new(root);
+        let covers = Covers::new(root.clone());
+        let downloader = Downloader::new(root, config.downloader);
 
         let window = adw::ApplicationWindow::builder()
             .application(gtk_app)
@@ -128,6 +134,9 @@ impl App {
             store,
             player,
             covers,
+            downloader,
+            background: RefCell::new(None),
+            background_timer: RefCell::new(None),
             toasts: adw::ToastOverlay::new(),
             content: gtk::Box::new(gtk::Orientation::Vertical, 0),
             search_entry,
@@ -273,8 +282,22 @@ impl App {
 
         let app = self.clone();
         self.window.connect_close_request(move |_| {
+            if app.background.borrow().is_some() {
+                return glib::Propagation::Stop;
+            }
+            if app.downloader.has_pending_work() {
+                app.ask_background();
+                return glib::Propagation::Stop;
+            }
             app.player.shutdown();
             glib::Propagation::Proceed
+        });
+
+        let weak = Rc::downgrade(self);
+        self.downloader.connect(move || {
+            if weak.upgrade().is_some() {
+                ui::downloads::refresh_status();
+            }
         });
     }
 
@@ -300,9 +323,10 @@ impl App {
             app.navigate(Route::Search(app.search_entry.text().to_string()));
             app.search_entry.grab_focus();
         }));
-        add("quit", None, Box::new(|app, _| {
-            app.player.shutdown();
-            app.gtk_app.quit();
+        add("quit", None, Box::new(|app, _| app.quit()));
+        add("setup", None, Box::new(|app, _| {
+            app.present();
+            ui::setup::open(&app.rc());
         }));
         add("navigate", Some(glib::VariantTy::STRING), Box::new(|app, v| {
             let s: String = v.and_then(|v| v.get()).unwrap_or_default();
@@ -528,6 +552,7 @@ impl App {
         }
         self.covers.set_root(path.clone());
         self.player.set_root(path.clone());
+        self.downloader.set_root(path.clone());
         self.store.set_root(path);
         self.toast("Library folder changed");
     }
@@ -543,6 +568,96 @@ impl App {
     }
 
     pub fn present(&self) {
+        self.leave_background();
         self.window.present();
+    }
+
+    /// Saves playback state, stops the downloader and quits.
+    pub fn quit(&self) {
+        self.leave_background();
+        self.player.shutdown();
+        self.downloader.stop_blocking();
+        self.gtk_app.quit();
+    }
+
+    /// Turns the built-in downloader on or off and remembers it.
+    pub fn set_downloader(&self, on: bool) {
+        if self.config.borrow().downloader != on {
+            let mut config = self.config.borrow_mut();
+            config.downloader = on;
+            let saved = config.save();
+            drop(config);
+            if let Err(e) = saved {
+                self.error("Could not save settings", e);
+            }
+        }
+        self.downloader.set_enabled(on);
+    }
+
+    // ---- running in the background --------------------------------------
+
+    /// The window is being closed while this device still has downloads to
+    /// finish: offer to keep downloading in the background.
+    fn ask_background(&self) {
+        let n = self.downloader.pending_count();
+        let dialog = adw::AlertDialog::new(
+            Some("Downloads are still running"),
+            Some(&format!(
+                "{} left. TuneMesh can keep downloading in the background and quit once they are done, or stop now and continue next time.",
+                ui::widgets::plural(n, "download is", "downloads are")
+            )),
+        );
+        dialog.add_responses(&[("quit", "Stop and Quit"), ("background", "Keep Downloading")]);
+        dialog.set_response_appearance("background", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("background"));
+        dialog.set_close_response("cancel");
+        let weak = self.me.clone();
+        dialog.connect_response(None, move |_, response| {
+            let Some(app) = weak.upgrade() else { return };
+            match response {
+                "background" => app.enter_background(),
+                "quit" => app.quit(),
+                _ => {}
+            }
+        });
+        dialog.present(Some(&self.window));
+    }
+
+    fn enter_background(&self) {
+        if self.background.borrow().is_some() {
+            return;
+        }
+        self.player.pause();
+        self.player.save();
+        *self.background.borrow_mut() = Some(self.gtk_app.hold());
+        self.window.set_visible(false);
+        let n = self.downloader.pending_count();
+        let note = gio::Notification::new("TuneMesh is downloading in the background");
+        note.set_body(Some(&format!(
+            "It quits when the {} finished. Open TuneMesh to see progress.",
+            ui::widgets::plural(n, "download has", "downloads have")
+        )));
+        note.add_button("Stop and Quit", "app.quit");
+        self.gtk_app.send_notification(Some("background"), &note);
+        let weak = self.me.clone();
+        let id = glib::timeout_add_seconds_local(3, move || {
+            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if app.downloader.has_pending_work() {
+                return glib::ControlFlow::Continue;
+            }
+            app.background_timer.borrow_mut().take();
+            app.quit();
+            glib::ControlFlow::Break
+        });
+        *self.background_timer.borrow_mut() = Some(id);
+    }
+
+    fn leave_background(&self) {
+        if let Some(id) = self.background_timer.borrow_mut().take() {
+            id.remove();
+        }
+        if self.background.borrow_mut().take().is_some() {
+            self.gtk_app.withdraw_notification("background");
+        }
     }
 }

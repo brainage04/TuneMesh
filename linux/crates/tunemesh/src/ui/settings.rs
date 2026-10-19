@@ -1,4 +1,5 @@
-//! Settings: library folder, library status, device info, shortcuts.
+//! Settings: library folder, sync and downloads, library status, device
+//! info, shortcuts.
 
 use std::rc::Rc;
 
@@ -7,6 +8,7 @@ use gtk::gio;
 
 use crate::app::{App, Page};
 use crate::config::{self, expand_home};
+use crate::ui::downloads;
 use crate::ui::widgets::{label, plural};
 
 fn card(title: &str) -> gtk::Box {
@@ -75,6 +77,31 @@ pub fn page(app: &Rc<App>) -> Page {
     apply.connect_clicked(move |_| ap());
     entry.connect_activate(move |_| apply_path());
     b.append(&lib_card);
+
+    let sync = card("Sync");
+    sync.append(&dim(
+        "Syncthing keeps the library folder the same on all your devices. The setup assistant shares the folder from the Syncthing on this computer and adds your other devices.",
+    ));
+    let setup = gtk::Button::builder().label("Open setup assistant").css_classes(["tm-pill-outline"]).halign(gtk::Align::Start).build();
+    setup.set_action_name(Some("app.setup"));
+    sync.append(&setup);
+    b.append(&sync);
+
+    let dl = card("Downloads");
+    let row = gtk::Box::builder().spacing(12).build();
+    let text = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).hexpand(true).build();
+    text.append(&label("This device downloads songs", &[]));
+    text.append(&dim(
+        "Runs the downloader while TuneMesh is open: it fetches what any device asks for. One device per library downloads. Needs ffmpeg; yt-dlp is fetched automatically.",
+    ));
+    row.append(&text);
+    let switch = gtk::Switch::builder().active(app.config.borrow().downloader).valign(gtk::Align::Center).build();
+    let a = app.clone();
+    switch.connect_active_notify(move |s| a.set_downloader(s.is_active()));
+    row.append(&switch);
+    dl.append(&row);
+    dl.append(&downloads::status_label(app));
+    b.append(&dl);
 
     let lib = app.store.library();
     let status = card("Library");
