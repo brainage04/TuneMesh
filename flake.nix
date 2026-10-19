@@ -54,13 +54,15 @@
             $out/share/applications/io.github.brainage04.TuneMesh.desktop
           install -Dm644 data/io.github.brainage04.TuneMesh.svg \
             $out/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
-          if [ -f data/io.github.brainage04.TuneMesh.metainfo.xml ]; then
-            install -Dm644 data/io.github.brainage04.TuneMesh.metainfo.xml \
-              $out/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml
-          fi
+          install -Dm644 data/io.github.brainage04.TuneMesh.metainfo.xml \
+            $out/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml
           mkdir -p $out/lib/systemd/user
           substitute ${./packaging/systemd/tunemesh-worker.service.in} \
             $out/lib/systemd/user/tunemesh-worker.service --subst-var-by bindir $out/bin
+          # TuneMesh's licence and the Rust crates linked into both binaries.
+          install -Dm644 ${./LICENSE} $out/share/licenses/tunemesh/LICENSE
+          install -Dm644 ${./packaging/licenses/THIRD-PARTY-RUST.txt} \
+            $out/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
         '';
 
         # The app starts the worker from its own bin directory. Linked in after
@@ -84,6 +86,8 @@
         cargoTestFlags = [ "-p" "tunemesh-worker" ];
 
         nativeBuildInputs = [ pkgs.makeWrapper ];
+        # tests/ffmpeg_confinement.rs runs the real ffmpeg.
+        nativeCheckInputs = [ pkgs.ffmpeg ];
 
         # The worker finds yt-dlp, deno (yt-dlp's JavaScript runtime for
         # YouTube) and ffmpeg through these variables, so it never downloads
@@ -93,6 +97,9 @@
             --set-default TUNEMESH_YTDLP ${lib.getExe pkgs.yt-dlp} \
             --set-default TUNEMESH_DENO ${lib.getExe pkgs.deno} \
             --set-default TUNEMESH_FFMPEG_DIR ${lib.getBin pkgs.ffmpeg}/bin
+          install -Dm644 ${./LICENSE} $out/share/licenses/tunemesh-worker/LICENSE
+          install -Dm644 ${./packaging/licenses/THIRD-PARTY-RUST.txt} \
+            $out/share/licenses/tunemesh-worker/THIRD-PARTY-RUST.txt
         '';
 
         meta = {
@@ -119,6 +126,8 @@
           test -f ${tunemesh}/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
           grep -qx 'ExecStart=${tunemesh}/bin/tunemesh-worker' \
             ${tunemesh}/lib/systemd/user/tunemesh-worker.service
+          test -s ${tunemesh}/share/licenses/tunemesh/LICENSE
+          test -s ${tunemesh}/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
           touch $out
         '';
       };

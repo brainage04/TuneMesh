@@ -6,12 +6,14 @@ import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.Properties
+import groovy.json.JsonSlurper
 
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.androidx.baseline.profile)
     alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
+    alias(libs.plugins.aboutlibraries)
 }
 
 // When android/.signing/signing.properties exists (git-ignored), debug and release builds are signed
@@ -99,6 +101,38 @@ baselineProfile {
     dexLayoutOptimization = true
     mergeIntoMain = true
     saveInSrc = true
+}
+
+// Licence notices of every library in the release APK: AboutLibraries collects them (licence
+// texts included) and writeThirdPartyNotice turns that into assets/NOTICE.txt in every APK, also
+// published next to the release APK.
+aboutLibraries {
+    collect {
+        fetchRemoteLicense = false
+        filterVariants.add("release")
+    }
+    export {
+        variant = "release"
+        outputFile = layout.buildDirectory.file("generated/aboutlibraries/aboutlibraries.json")
+    }
+    library {
+        requireLicense = true
+    }
+}
+
+val thirdPartyNotice = tasks.register<WriteThirdPartyNotice>("writeThirdPartyNotice") {
+    dependsOn("exportLibraryDefinitions")
+    definitions.set(aboutLibraries.export.outputFile)
+    outputDirectory.set(layout.buildDirectory.dir("generated/notice"))
+}
+
+androidComponents {
+    onVariants { variant ->
+        variant.sources.assets?.addGeneratedSourceDirectory(
+            thirdPartyNotice,
+            WriteThirdPartyNotice::outputDirectory,
+        )
+    }
 }
 
 dependencies {
@@ -228,5 +262,48 @@ abstract class RotateApkSignature : DefaultTask() {
         val key = keyStore.getKey(alias, keyPassword.toCharArray()) as PrivateKey
         val certificates = keyStore.getCertificateChain(alias).map { it as X509Certificate }
         return ApkSigner.SignerConfig.Builder(name, key, certificates).build()
+    }
+}
+
+abstract class WriteThirdPartyNotice : DefaultTask() {
+    @get:InputFile abstract val definitions: RegularFileProperty
+    @get:OutputDirectory abstract val outputDirectory: DirectoryProperty
+
+    @TaskAction
+    @Suppress("UNCHECKED_CAST")
+    fun write() {
+        val json = JsonSlurper().parse(definitions.get().asFile) as Map<String, Any?>
+        val libraries = (json["libraries"] as List<Map<String, Any?>>)
+            .sortedBy { it["uniqueId"] as String }
+        val licenses = json["licenses"] as Map<String, Map<String, Any?>>
+        val text = buildString {
+            appendLine("Third-party software in TuneMesh for Android")
+            appendLine("============================================")
+            appendLine()
+            appendLine("TuneMesh is MIT licensed. The app includes the libraries below, each under")
+            appendLine("the licence named; the full licence texts follow the list.")
+            appendLine()
+            for (library in libraries) {
+                val ids = library["licenses"] as List<String>
+                check(ids.isNotEmpty()) { "no licence found for ${library["uniqueId"]}" }
+                val names = ids.joinToString(", ") { id -> licenses[id]?.get("name") as? String ?: id }
+                appendLine("- ${library["name"]} (${library["uniqueId"]} ${library["artifactVersion"]}): $names")
+                (library["website"] as? String)?.let { appendLine("  $it") }
+            }
+            for ((id, license) in licenses.toSortedMap()) {
+                appendLine()
+                appendLine("-".repeat(80))
+                appendLine("${license["name"] ?: id}")
+                (license["url"] as? String)?.let { appendLine(it) }
+                appendLine()
+                val content = license["content"] as? String
+                checkNotNull(content) { "no licence text for $id" }
+                appendLine(content.trim())
+            }
+        }
+        val dir = outputDirectory.get().asFile
+        dir.deleteRecursively()
+        dir.mkdirs()
+        dir.resolve("NOTICE.txt").writeText(text)
     }
 }

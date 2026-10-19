@@ -10,7 +10,8 @@ Name:           tunemesh
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        Music player for a Syncthing-shared library
-License:        MIT
+# TuneMesh is MIT; the rest covers the statically linked Rust crates.
+License:        MIT AND Apache-2.0 AND BSD-3-Clause AND CC0-1.0 AND CDLA-Permissive-2.0 AND ISC AND MPL-2.0 AND Unicode-3.0
 URL:            https://github.com/brainage04/TuneMesh
 Source0:        %{name}-%{version}.tar.gz
 Source1:        %{name}-%{version}-vendor.tar.xz
@@ -51,7 +52,7 @@ packaging/linux/install.sh --destdir %{buildroot} --prefix %{_prefix}
 rm -rf %{buildroot}%{_datadir}/licenses
 
 %files
-%license LICENSE
+%license LICENSE packaging/licenses/THIRD-PARTY-RUST.txt
 %{_bindir}/tunemesh
 %{_bindir}/tunemesh-worker
 %{_datadir}/applications/io.github.brainage04.TuneMesh.desktop

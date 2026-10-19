@@ -47,7 +47,8 @@ $datadir/applications/$app_id.desktop
 $datadir/icons/hicolor/scalable/apps/$app_id.svg
 $datadir/metainfo/$app_id.metainfo.xml
 $userunitdir/tunemesh-worker.service
-$datadir/licenses/tunemesh/LICENSE"
+$datadir/licenses/tunemesh/LICENSE
+$datadir/licenses/tunemesh/THIRD-PARTY-RUST.txt"
 
 refresh_caches() {
     # Only when installing into the live system; package managers run these
@@ -82,18 +83,13 @@ install -Dm755 "$bin_dir/tunemesh" "$destdir$bindir/tunemesh"
 install -Dm755 "$bin_dir/tunemesh-worker" "$destdir$bindir/tunemesh-worker"
 install -Dm644 "$data/$app_id.desktop" "$destdir$datadir/applications/$app_id.desktop"
 install -Dm644 "$data/$app_id.svg" "$destdir$datadir/icons/hicolor/scalable/apps/$app_id.svg"
-if [ -f "$data/$app_id.metainfo.xml" ]; then
-    install -Dm644 "$data/$app_id.metainfo.xml" "$destdir$datadir/metainfo/$app_id.metainfo.xml"
-else
-    echo "install.sh: warning: $data/$app_id.metainfo.xml is missing; skipped" >&2
-fi
+install -Dm644 "$data/$app_id.metainfo.xml" "$destdir$datadir/metainfo/$app_id.metainfo.xml"
 mkdir -p "$destdir$userunitdir"
 sed "s|@bindir@|$bindir|g" "$repo/packaging/systemd/tunemesh-worker.service.in" \
     >"$destdir$userunitdir/tunemesh-worker.service"
 chmod 644 "$destdir$userunitdir/tunemesh-worker.service"
-if [ -f "$repo/LICENSE" ]; then
-    install -Dm644 "$repo/LICENSE" "$destdir$datadir/licenses/tunemesh/LICENSE"
-else
-    echo "install.sh: warning: $repo/LICENSE is missing; skipped" >&2
-fi
+# TuneMesh's licence and those of the Rust crates linked into both binaries.
+install -Dm644 "$repo/LICENSE" "$destdir$datadir/licenses/tunemesh/LICENSE"
+install -Dm644 "$repo/packaging/licenses/THIRD-PARTY-RUST.txt" \
+    "$destdir$datadir/licenses/tunemesh/THIRD-PARTY-RUST.txt"
 refresh_caches
