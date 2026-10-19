@@ -440,7 +440,7 @@ impl Setup {
         let id_label = gtk::Label::builder()
             .label(&o.my_id)
             .wrap(true)
-            .wrap_mode(gtk::pango::WrapMode::Char)
+            .wrap_mode(gtk::pango::WrapMode::WordChar)
             .selectable(true)
             .xalign(0.0)
             .hexpand(true)
