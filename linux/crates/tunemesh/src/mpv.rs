@@ -39,6 +39,9 @@ struct RawEventEndFile {
     playlist_insert_num_entries: c_int,
 }
 
+/// `MPV_ERROR_OPTION_NOT_FOUND` from mpv/client.h.
+const MPV_ERROR_OPTION_NOT_FOUND: c_int = -5;
+
 const FORMAT_STRING: c_int = 1;
 const FORMAT_FLAG: c_int = 3;
 const FORMAT_INT64: c_int = 4;
@@ -182,7 +185,11 @@ impl Mpv {
                     unsafe { mpv_terminate_destroy(handle) };
                     return Err(e);
                 }
-                eprintln!("tunemesh: {e}");
+                // Older libmpv (0.37 on Ubuntu 24.04) lacks some built-in
+                // scripts; an unknown option there means nothing to turn off.
+                if rc != MPV_ERROR_OPTION_NOT_FOUND {
+                    eprintln!("tunemesh: {e}");
+                }
             }
         }
         // SAFETY: valid, not yet initialised handle.
