@@ -54,6 +54,19 @@
             $out/share/applications/io.github.brainage04.TuneMesh.desktop
           install -Dm644 data/io.github.brainage04.TuneMesh.svg \
             $out/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
+          if [ -f data/io.github.brainage04.TuneMesh.metainfo.xml ]; then
+            install -Dm644 data/io.github.brainage04.TuneMesh.metainfo.xml \
+              $out/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml
+          fi
+          mkdir -p $out/lib/systemd/user
+          substitute ${./packaging/systemd/tunemesh-worker.service.in} \
+            $out/lib/systemd/user/tunemesh-worker.service --subst-var-by bindir $out/bin
+        '';
+
+        # The app starts the worker from its own bin directory. Linked in after
+        # wrapGAppsHook has run, so the worker keeps only its own wrapper.
+        postFixup = ''
+          ln -s ${tunemesh-worker}/bin/tunemesh-worker $out/bin/tunemesh-worker
         '';
 
         meta = {
@@ -98,6 +111,17 @@
 
       checks.${system} = {
         inherit tunemesh tunemesh-worker;
+        # The app package carries everything the other packages do: the worker
+        # next to the app (where the app looks for it) and the user unit.
+        tunemesh-layout = pkgs.runCommand "tunemesh-layout" { } ''
+          test -x ${tunemesh}/bin/tunemesh
+          test -x ${tunemesh}/bin/tunemesh-worker
+          test -f ${tunemesh}/share/applications/io.github.brainage04.TuneMesh.desktop
+          test -f ${tunemesh}/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
+          grep -qx 'ExecStart=${tunemesh}/bin/tunemesh-worker' \
+            ${tunemesh}/lib/systemd/user/tunemesh-worker.service
+          touch $out
+        '';
       };
 
       devShells.${system}.default = pkgs.mkShell {
@@ -113,7 +137,6 @@
           rust-analyzer
           yt-dlp
           ffmpeg
-          spotdl
         ];
         shellHook = ''
           export XDG_DATA_DIRS="${pkgs.adwaita-icon-theme}/share:${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:$XDG_DATA_DIRS"
