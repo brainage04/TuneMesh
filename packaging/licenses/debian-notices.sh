@@ -74,8 +74,9 @@ sort -u "$list" | awk '
         # apt-get source writes nothing with --print-uris, but runs in /tmp anyway.
         uris=$(cd /tmp || exit; apt-get source -qq --print-uris --only-source "$src=$ver" 2>/dev/null |
             sed -n "s/^'\([^']*\)' [^ ]* \([0-9]*\) \([A-Z0-9]*\):\([0-9a-f]*\)$/- \1 (\2 bytes, \3 \4)/p" |
-            # Name the main archive rather than whichever mirror the build used.
-            sed -E 's#https?://[^/]+/ubuntu(-ports)?/pool/#http://archive.ubuntu.com/ubuntu/pool/#')
+            # Name the main archive rather than whichever mirror the build used
+            # (GitHub's runners use mirror+file:/etc/apt/apt-mirrors.txt).
+            sed 's#^- [^ ]*/pool/#- http://archive.ubuntu.com/ubuntu/pool/#')
         if [ -n "$uris" ]; then
             echo "$uris"
         else
