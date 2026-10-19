@@ -2,13 +2,19 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Sideloaded personal app: reads and writes the Syncthing library folder directly. -->
+    <!-- Distributed outside Google Play: reads and writes the Syncthing library folder directly. -->
     <uses-permission
         android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- The onboarding's "Open Syncthing-Fork" button: F-Droid/GitHub package, then the Google Play one. -->
+    <queries>
+        <package android:name="com.github.catfriend1.syncthingfork" />
+        <package android:name="com.github.catfriend1.syncthingandroid" />
+    </queries>
 
     <application
         android:name=".TuneMeshApp"

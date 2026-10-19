@@ -15,7 +15,12 @@ class AppSettings(private val context: Context) {
         get() = File(prefs.getString(KEY_ROOT, null) ?: defaultRoot().absolutePath)
         set(value) = prefs.edit().putString(KEY_ROOT, value.absolutePath).apply()
 
-    /** `thomass-s21`-style name for `requestedBy`. */
+    /** Whether the onboarding's Syncthing step was finished or skipped; Settings can open it again. */
+    var syncthingSetupSeen: Boolean
+        get() = prefs.getBoolean(KEY_SYNCTHING_SETUP_SEEN, false)
+        set(value) = prefs.edit().putBoolean(KEY_SYNCTHING_SETUP_SEEN, value).apply()
+
+    /** `pixel-8`-style name for `requestedBy`. */
     val deviceName: String
         get() {
             val name = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
@@ -25,6 +30,7 @@ class AppSettings(private val context: Context) {
 
     companion object {
         private const val KEY_ROOT = "libraryRoot"
+        private const val KEY_SYNCTHING_SETUP_SEEN = "syncthingSetupSeen"
 
         @Suppress("DEPRECATION")
         fun defaultRoot(): File = File(Environment.getExternalStorageDirectory(), "Music/TuneMesh")
