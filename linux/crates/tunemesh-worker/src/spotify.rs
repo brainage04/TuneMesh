@@ -32,7 +32,7 @@ use serde_json::{Value, json};
 use crate::child::Stop;
 use crate::http::Http;
 use crate::job::{Job, SourceResult};
-use crate::ytdlp::{self, Fail, Fetch, Target};
+use crate::ytdlp::{self, Fail, Fetch, Target, limit_note, plural};
 use crate::log;
 
 /// The embed page lists at most this many tracks.
@@ -192,15 +192,19 @@ fn parse_embed(kind: Kind, id: &str, data: &Value) -> Embed {
 /// Persisted query hashes, learned ones first, stored in the work directory.
 struct Hashes {
     file: PathBuf,
+    /// Hashes to try first: saved ones, then freshly discovered ones.
     learned: BTreeMap<String, String>,
+    /// What the file holds.
+    saved: BTreeMap<String, String>,
     discovered: bool,
 }
 
 impl Hashes {
     fn load(work_dir: &Path) -> Self {
         let file = work_dir.join("spotify-queries.json");
-        let learned = fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        Self { file, learned, discovered: false }
+        let saved: BTreeMap<String, String> =
+            fs::read(&file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        Self { file, learned: saved.clone(), saved, discovered: false }
     }
 
     fn candidates(&self, op: &str) -> Vec<String> {
@@ -213,10 +217,12 @@ impl Hashes {
         v
     }
 
+    /// Records a hash that worked, in memory and in the work directory.
     fn remember(&mut self, op: &str, hash: &str) {
-        if self.learned.get(op).map(String::as_str) != Some(hash) {
-            self.learned.insert(op.to_owned(), hash.to_owned());
-            if let Ok(json) = serde_json::to_vec_pretty(&self.learned) {
+        self.learned.insert(op.to_owned(), hash.to_owned());
+        if self.saved.get(op).map(String::as_str) != Some(hash) {
+            self.saved.insert(op.to_owned(), hash.to_owned());
+            if let Ok(json) = serde_json::to_vec_pretty(&self.saved) {
                 let _ = tunemesh_core::atomic::write(&self.file, &json);
             }
         }
@@ -445,7 +451,7 @@ pub fn fetch_source(http: &Http, work_dir: &Path, kind: Kind, id: &str, max: usi
             let mut warnings = Vec::new();
             if kind != Kind::Track && n >= EMBED_LIMIT {
                 warnings.push(format!(
-                    "Imported only the first {EMBED_LIMIT} tracks: Spotify's public page lists at most \
+                    "Only the first {EMBED_LIMIT} tracks could be read: Spotify's public page lists at most \
                      {EMBED_LIMIT} and the full list could not be fetched ({why})"
                 ));
             }
@@ -645,7 +651,7 @@ pub fn run(job: &mut Job, url: &str) -> SourceResult {
     if src.tracks.len() > max || src.total.is_some_and(|t| t > max) {
         src.tracks.truncate(max);
         let of = src.total.map(|t| format!(" of {t}")).unwrap_or_default();
-        job.warn(format!("Imported the first {max}{of} tracks: a request downloads at most {max} items"));
+        job.warn(format!("Imported the first {}{of}: {}", plural(max, "track", "tracks"), limit_note(max)));
     } else if let Some(t) = src.total.filter(|t| *t > listed) {
         job.warn(format!("Spotify listed {listed} of {t} tracks"));
     }
@@ -731,6 +737,19 @@ mod tests {
         assert_eq!(missing_boolean(&v["errors"]).as_deref(), Some("enableWatchFeedEntrypoint"));
         v = json!([{"message":"PersistedQueryNotFound"}]);
         assert_eq!(missing_boolean(&v), None);
+    }
+
+    #[test]
+    fn working_hashes_are_saved_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = Hashes::load(dir.path());
+        assert_eq!(h.candidates("getTrack").len(), 1);
+        h.learned.insert("getTrack".into(), "a".repeat(64));
+        assert_eq!(h.candidates("getTrack")[0], "a".repeat(64));
+        h.remember("getTrack", &"a".repeat(64));
+        let again = Hashes::load(dir.path());
+        assert_eq!(again.candidates("getTrack")[0], "a".repeat(64));
+        assert_eq!(again.candidates("getTrack").len(), 2);
     }
 
     #[test]

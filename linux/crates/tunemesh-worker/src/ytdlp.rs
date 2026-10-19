@@ -369,11 +369,21 @@ pub fn run_url(job: &mut Job, url: &str) -> SourceResult {
         if listing.items.len() > max {
             listing.items.truncate(max);
             let of = listing.count.filter(|c| *c > max).map(|c| format!(" of {c}")).unwrap_or_default();
-            job.warn(format!("Imported the first {max}{of} items: a request downloads at most {max} items"));
+            job.warn(format!("Imported the first {}{of}: {}", plural(max, "item", "items"), limit_note(max)));
         }
     }
     download_all(job, &listing.items, &mut result);
     result
+}
+
+/// `1 item`, `2 items`.
+pub fn plural(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+/// Why a source was cut to `max` items.
+pub fn limit_note(max: usize) -> String {
+    format!("a request downloads at most {} (--max-items)", plural(max, "item", "items"))
 }
 
 pub fn percent_encode(s: &str) -> String {
