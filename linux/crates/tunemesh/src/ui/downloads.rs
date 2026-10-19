@@ -36,24 +36,8 @@ pub fn refresh_if_shown() {
 
 // ---- who downloads ---------------------------------------------------------
 
-fn status_text(app: &App) -> (String, bool) {
-    let mut text = downloader::handled_by_text(&app.store.root());
-    let mut error = false;
-    match downloader::state_text(&app.downloader.state()) {
-        Some((t, e)) => {
-            text = format!("{text} {t}");
-            error = e;
-        }
-        None if downloader::active_worker(&app.store.root()).is_none() => {
-            text.push_str(" Requests wait until a device runs the downloader; turn on “This device downloads songs” in Settings to download here.");
-        }
-        None => {}
-    }
-    (text, error)
-}
-
 fn apply_status(app: &App, l: &gtk::Label) {
-    let (text, error) = status_text(app);
+    let (text, error) = downloader::summary(&app.store.root(), &app.downloader.state());
     l.set_text(&text);
     if error { l.add_css_class("tm-error") } else { l.remove_css_class("tm-error") }
 }
@@ -214,7 +198,8 @@ fn fraction(s: &Status) -> Option<f64> {
 }
 
 fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
-    let Some(s) = &row.status else { return ("Waiting for the downloader".to_owned(), "waiting") };
+    // The worker gives a request its status when it scans the queue.
+    let Some(s) = &row.status else { return ("Waiting".to_owned(), "waiting") };
     if !s.state.is_final() && !pending {
         return ("Cancelling…".to_owned(), "waiting");
     }
@@ -340,7 +325,8 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
             }
             b.append(&bar);
         }
-        if let Some(m) = &s.message {
+        // The final message repeats the warnings, which are listed below.
+        if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
             let l = gtk::Label::builder().label(m).xalign(0.0).wrap(true).selectable(true).css_classes(["tm-small"]).build();
             l.add_css_class(if s.state == RequestState::Failed { "tm-error" } else { "dim" });
             b.append(&l);

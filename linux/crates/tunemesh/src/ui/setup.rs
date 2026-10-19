@@ -10,8 +10,8 @@ use gtk::{gdk, gio, glib};
 
 use crate::app::App;
 use crate::config::{self, expand_home};
-use crate::downloader;
 use crate::syncthing::{self, Client, Endpoint, Overview, Probe};
+use crate::ui::downloads;
 
 struct Setup {
     app: Rc<App>,
@@ -529,14 +529,10 @@ impl Setup {
             .build();
         group.add(&row);
         body.append(&group);
-        let status = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim-label"]).build();
-        body.append(&status);
-        self.update_downloads_status(&status);
-        let (s, st) = (self.clone(), status.clone());
-        row.connect_active_notify(move |r| {
-            s.app.set_downloader(r.is_active());
-            s.update_downloads_status(&st);
-        });
+        // Updates itself when the downloader starts, fails or hands over.
+        body.append(&downloads::status_label(&self.app));
+        let s = self.clone();
+        row.connect_active_notify(move |r| s.app.set_downloader(r.is_active()));
         let next = pill("Continue", true);
         let s = self.clone();
         next.connect_clicked(move |_| s.nav.push(&s.done_page()));
@@ -544,14 +540,6 @@ impl Setup {
         let s = self.clone();
         skip.connect_clicked(move |_| s.nav.push(&s.done_page()));
         page("downloads", "Downloads", &body, &[&skip, &next])
-    }
-
-    fn update_downloads_status(&self, label: &gtk::Label) {
-        let mut text = downloader::handled_by_text(&self.app.store.root());
-        if let Some((t, _)) = downloader::state_text(&self.app.downloader.state()) {
-            text = format!("{text} {t}");
-        }
-        label.set_text(&text);
     }
 
     // ---- step 4: done ------------------------------------------------------------

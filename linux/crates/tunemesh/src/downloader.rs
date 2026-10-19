@@ -336,30 +336,41 @@ fn is_this_device(w: &WorkerInfo) -> bool {
     w.device == config::device_name()
 }
 
-/// One line for the Downloads page and Settings: who downloads.
-pub fn handled_by_text(root: &Path) -> String {
-    match active_worker(root) {
-        Some(w) if is_this_device(&w) => format!("Downloads are handled by this device ({}).", w.device),
+/// What the Downloads page, Settings and the setup assistant say about who
+/// downloads, and whether it is a problem the user should see in red.
+pub fn summary(root: &Path, state: &State) -> (String, bool) {
+    let active = active_worker(root);
+    let mut text = match &active {
+        Some(w) if is_this_device(w) => format!("Downloads are handled by this device ({}).", w.device),
         Some(w) => format!("Downloads are handled by {}.", w.device),
         None => "No device is downloading right now.".to_owned(),
-    }
-}
-
-/// A sentence about the built-in downloader's state, if it is on or broken.
-pub fn state_text(state: &State) -> Option<(String, bool)> {
-    Some(match state {
-        State::Off => return None,
-        State::Missing => (
+    };
+    let extra = match (state, &active) {
+        (State::Off, None) => Some((
+            "Requests wait until a device runs the downloader; turn on “This device downloads songs” in Settings to download here.".to_owned(),
+            false,
+        )),
+        (State::Off, Some(_)) => None,
+        (State::Running, Some(w)) if is_this_device(w) => None,
+        (State::Running, Some(w)) => Some((format!("The downloader on this device waits and takes over if {} stops.", w.device), false)),
+        (State::Running, None) => Some(("The downloader is starting on this device.".to_owned(), false)),
+        (State::Missing, _) => Some((
             format!("The downloader program ({WORKER_BIN}) is not installed: it was not found next to TuneMesh or on PATH."),
             true,
-        ),
-        State::Running => ("The downloader is running on this device.".to_owned(), false),
-        State::Restarting { at, reason } => {
+        )),
+        (State::Restarting { at, reason }, _) => {
             let secs = at.saturating_duration_since(Instant::now()).as_secs().max(1);
-            (format!("The downloader {reason}. Restarting in {secs} s."), true)
+            Some((format!("The downloader {reason}. Restarting in {secs} s."), true))
         }
-        State::Failed(e) => (e.clone(), true),
-    })
+        (State::Failed(e), _) => Some((e.clone(), true)),
+    };
+    let mut error = false;
+    if let Some((t, e)) = extra {
+        text.push(' ');
+        text.push_str(&t);
+        error = e;
+    }
+    (text, error)
 }
 
 #[cfg(test)]
