@@ -431,10 +431,15 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
             result = Err(e);
             continue;
         }
-        // Empty parents go too, as long as each is still a real directory.
+        // Emptied parent folders go too (never through a symlink).
         let mut dir = parent;
-        while !dir.is_empty() && top.sub(dir, false).is_ok() && fs::remove_dir(root.join(dir)).is_ok() {
-            dir = dir.rsplit_once('/').map_or("", |(p, _)| p);
+        while !dir.is_empty() {
+            let (up, name) = dir.rsplit_once('/').unwrap_or(("", dir));
+            let removed = if up.is_empty() { top.try_clone() } else { top.sub(up, false) }.and_then(|d| d.remove_dir(name));
+            if removed.is_err() {
+                break;
+            }
+            dir = up;
         }
     }
     result
