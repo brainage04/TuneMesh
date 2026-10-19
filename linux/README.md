@@ -32,35 +32,89 @@ cargo run -p tunemesh-worker -- --library ~/Music/TuneMesh   # work dir: ~/.cach
 ## The app
 
 ```sh
-tunemesh [--library <folder>]
+tunemesh [--library <folder>] [--setup]
+tunemesh --version
 ```
 
 `--library` uses another folder for this session without changing the saved
-setting.
+setting. `--setup` opens the setup assistant, which also opens by itself on
+the first start and from Settings.
+
+Requirements: GTK 4.14 and libadwaita 1.5 or newer, and libmpv. The built-in
+downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
+`PATH`) and ffmpeg.
 
 - Config: `~/.config/tunemesh/config.toml`
 
   ```toml
-  library_path = "/home/thomas/Music/TuneMesh"
+  library_path = "/home/user/Music/TuneMesh"
+  downloader = false   # Settings: "This device downloads songs"
+  setup_done = true    # the setup assistant was finished or skipped
   ```
 
-  The default is `~/Music/TuneMesh`. The Settings page changes it.
+  The default library is `~/Music/TuneMesh`. The Settings page changes it.
 - Per-device state (queue, position, shuffle/repeat, volume):
   `~/.local/state/tunemesh/state.json`. The queue comes back paused at the
   saved position on the next launch.
 - Cache (library scan, MPRIS cover art): `~/.cache/tunemesh/`. The scan cache
   makes startup instant; a background rescan follows, and file changes (for
   example songs arriving through Syncthing) are picked up within a second.
-- The desktop file and icon install as `io.github.brainage04.TuneMesh`.
+- The built-in downloader's work directory: `~/.cache/tunemesh/worker/`
+  (mode 0700).
+- The desktop file, icon and AppStream metainfo install as
+  `io.github.brainage04.TuneMesh`.
+
+### Setup assistant
+
+1. Library folder: `~/Music/TuneMesh` by default; created if missing.
+2. Syncthing: the app reads the GUI address and API key from Syncthing's
+   `config.xml` (`~/.config/syncthing/` or `~/.local/state/syncthing/`), or
+   asks for them (Syncthing web interface, Actions → Settings → General).
+   It then adds the folder with ID `tunemesh` at the library path (or offers
+   to use the folder Syncthing already has under that ID), writes the
+   library's `.stignore` when missing, shows this device's ID with a QR code,
+   and shares the folder with other device IDs you enter. When Syncthing is
+   not installed or not running it shows how to install and start it.
+3. Downloads: the "This device downloads songs" switch.
+
+Every step can be skipped.
+
+### Downloads
+
+The Downloads page takes links or search text, one per line: songs, albums
+and playlists from YouTube, YouTube Music and Spotify, and other sites
+yt-dlp supports. Each line becomes one request. When a line is a playlist
+link, "Save playlists and albums as TuneMesh playlists" turns on by default.
+Each request shows its progress (songs done of the total), failed songs and
+warnings.
+
+One device per library downloads. The page and Settings show which device
+that is (from `.tunemesh/worker.json`). With "This device downloads songs"
+on, the app runs `tunemesh-worker --library <library> --work-dir
+~/.cache/tunemesh/worker` as a child process while it is open, restarts it
+with a growing delay (up to a minute) if it stops unexpectedly, and stops it
+when the app quits. Closing the window while this device still has requests
+asks whether to keep downloading in the background; TuneMesh then quits once
+the queue is empty (a notification offers "Stop and Quit").
+
+### Playback
+
+Library files arrive from every synced device, so mpv only plays the local
+file itself: libavformat is the only demuxer (no playlist, EDL or CUE
+handling), references inside files are not followed, nested opens are
+limited to local files and nothing next to a file is loaded automatically. A
+synced `.mp3` that is really a playlist of URLs fails to play instead of
+fetching them.
 
 Keyboard: Space play/pause, Ctrl+F search, Ctrl+→/← next/previous,
 Alt+← back, Ctrl+Alt+Q queue panel, Ctrl+Q quit. Double-click plays a
 track; right-click opens the track menu (play next, add to queue, add to
 playlist, remove from playlist, like, go to album/artist, delete from
 library). Playlist tracks and queue entries reorder by drag and drop.
+Ctrl+Enter in the Downloads box requests the downloads.
 
 MPRIS: the app registers `org.mpris.MediaPlayer2.tunemesh`, so media keys and
-KDE's media controls work and show title, artist, cover and position.
+desktop media controls work and show title, artist, cover and position.
 
 Memory: GTK draws with the GPU (Vulkan) by default; while playing, the app
 uses about 130 MiB PSS on an NVIDIA desktop, most of it the GPU driver.
@@ -70,10 +124,10 @@ at roughly twice the CPU time for redraws.
 The application also exports its actions on D-Bus
 (`io.github.brainage04.TuneMesh`, object `/io/github/brainage04/TuneMesh`,
 interface `org.gtk.Actions`): `play-pause`, `next`, `previous`,
-`toggle-queue`, `navigate` (`home`, `search:<text>`, `albums`, `artists`,
-`playlists`, `liked`, `downloads`, `settings`, `album:<name>`,
-`artist:<name>`, `playlist:<name>`), `play-route` (same strings) and
-`seek` (seconds). For example:
+`toggle-queue`, `setup`, `quit`, `navigate` (`home`, `search:<text>`,
+`albums`, `artists`, `playlists`, `liked`, `downloads`, `settings`,
+`album:<name>`, `artist:<name>`, `playlist:<name>`), `play-route` (same
+strings) and `seek` (seconds). For example:
 
 ```sh
 gdbus call --session --dest io.github.brainage04.TuneMesh \

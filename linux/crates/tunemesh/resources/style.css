@@ -1,22 +1,4 @@
-/* TuneMesh: dark, minimalist, Spotify-like. */
-
-:root {
-  --accent-bg-color: #1ed760;
-  --accent-fg-color: #000000;
-  --accent-color: #1ed760;
-  --window-bg-color: #000000;
-  --window-fg-color: #ffffff;
-  --view-bg-color: #121212;
-  --view-fg-color: #ffffff;
-  --headerbar-bg-color: #000000;
-  --headerbar-fg-color: #ffffff;
-  --headerbar-shade-color: transparent;
-  --popover-bg-color: #282828;
-  --popover-fg-color: #ffffff;
-  --dialog-bg-color: #282828;
-  --card-bg-color: #181818;
-  --sidebar-bg-color: #121212;
-}
+/* TuneMesh: dark and minimalist. Named colours are in colors*.css. */
 
 window.tunemesh {
   background: #000000;
@@ -287,6 +269,11 @@ listview.tm-queue-list > row:hover .tm-remove { opacity: 1; }
 .tm-state.failed { color: #f15e6c; }
 .tm-state.downloading { color: #ffffff; background: #1d4d32; }
 .tm-error { color: #f15e6c; }
+.tm-warning { color: #f5c26b; }
+.tm-state.partial { color: #f5c26b; }
+.tm-input-frame { background: #242424; border-radius: 8px; }
+.tm-input-frame textview, .tm-input-frame textview text { background: transparent; color: #ffffff; }
+.tm-qr { border-radius: 8px; }
 progressbar.tm-progress trough { min-height: 4px; background: #3e3e3e; border-radius: 2px; }
 progressbar.tm-progress progress { min-height: 4px; background: #1ed760; border-radius: 2px; }
 

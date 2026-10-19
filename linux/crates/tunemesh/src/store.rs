@@ -14,6 +14,7 @@ use notify_debouncer_mini::notify::{RecommendedWatcher, RecursiveMode};
 use notify_debouncer_mini::{DebounceEventResult, Debouncer, new_debouncer};
 use serde::{Deserialize, Serialize};
 use tunemesh_core::playlist::{self, LIKED_SONGS, TrackInfo};
+use tunemesh_core::fsx::Dir;
 use tunemesh_core::{Library, PLAYLISTS_DIR, Playlist, TUNEMESH_DIR, Track, library};
 
 use crate::config;
@@ -406,27 +407,62 @@ impl Store {
     /// Deletes track files (this syncs to every device) and empty parent
     /// directories, then drops them from the in-memory library.
     pub fn delete_tracks(&self, paths: &[String]) -> io::Result<()> {
-        let root = self.root();
-        let mut result = Ok(());
-        for rel in paths {
-            let abs = root.join(rel);
-            if let Err(e) = fs::remove_file(&abs)
-                && e.kind() != io::ErrorKind::NotFound {
-                    result = Err(e);
-                    continue;
-                }
-            let mut dir = abs.parent().map(Path::to_path_buf);
-            while let Some(d) = dir {
-                if d == root || !d.starts_with(&root) || fs::remove_dir(&d).is_err() {
-                    break;
-                }
-                dir = d.parent().map(Path::to_path_buf);
-            }
-        }
+        let result = delete_files(&self.root(), paths);
         let remaining: Vec<Track> =
             self.lib.borrow().tracks.iter().filter(|t| !paths.contains(&t.path)).cloned().collect();
         *self.lib.borrow_mut() = Rc::new(Library::new(remaining));
         self.emit(StoreChange::Library);
         result
+    }
+}
+
+/// Deletes library files and their emptied parent directories. Paths are
+/// opened below `root` without following symlinks, so a synced symlinked
+/// folder cannot redirect a delete outside the library.
+fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
+    let top = Dir::open(root)?;
+    let mut result = Ok(());
+    for rel in paths {
+        let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
+        let removed = if parent.is_empty() { top.try_clone() } else { top.sub(parent, false) }.and_then(|d| d.remove_file(name));
+        if let Err(e) = removed
+            && e.kind() != io::ErrorKind::NotFound
+        {
+            result = Err(e);
+            continue;
+        }
+        // Emptied parent folders go too (never through a symlink).
+        let mut dir = parent;
+        while !dir.is_empty() {
+            let (up, name) = dir.rsplit_once('/').unwrap_or(("", dir));
+            let removed = if up.is_empty() { top.try_clone() } else { top.sub(up, false) }.and_then(|d| d.remove_dir(name));
+            if removed.is_err() {
+                break;
+            }
+            dir = up;
+        }
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deleting_never_follows_a_symlinked_folder() {
+        let base = std::env::temp_dir().join(format!("tunemesh-delete-test-{}", std::process::id()));
+        let (root, outside) = (base.join("lib"), base.join("outside"));
+        fs::create_dir_all(root.join("Artist/Album")).unwrap();
+        fs::create_dir_all(outside.join("Album")).unwrap();
+        fs::write(root.join("Artist/Album/Song [a].opus"), b"x").unwrap();
+        fs::write(outside.join("Album/Keep [b].opus"), b"x").unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("Linked")).unwrap();
+
+        let r = delete_files(&root, &["Linked/Album/Keep [b].opus".into(), "Artist/Album/Song [a].opus".into()]);
+        assert!(r.is_err(), "the symlinked path must be refused");
+        assert!(outside.join("Album/Keep [b].opus").exists());
+        assert!(!root.join("Artist").exists(), "the real track and its empty folders are gone");
+        fs::remove_dir_all(&base).unwrap();
     }
 }

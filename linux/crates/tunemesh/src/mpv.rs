@@ -39,6 +39,9 @@ struct RawEventEndFile {
     playlist_insert_num_entries: c_int,
 }
 
+/// `MPV_ERROR_OPTION_NOT_FOUND` from mpv/client.h.
+const MPV_ERROR_OPTION_NOT_FOUND: c_int = -5;
+
 const FORMAT_STRING: c_int = 1;
 const FORMAT_FLAG: c_int = 3;
 const FORMAT_INT64: c_int = 4;
@@ -95,6 +98,55 @@ pub enum Event {
 const PROP_PAUSE: u64 = 1;
 const PROP_DURATION: u64 = 2;
 
+/// Audio-only playback without user config, scripts or key bindings.
+const BASE_OPTIONS: &[(&str, &str)] = &[
+    ("config", "no"),
+    ("terminal", "no"),
+    ("input-default-bindings", "no"),
+    ("input-vo-keyboard", "no"),
+    ("osc", "no"),
+    ("ytdl", "no"),
+    ("load-scripts", "no"),
+    // Built-in scripts each run their own Lua VM and thread; none
+    // matter for audio-only playback.
+    ("load-stats-overlay", "no"),
+    ("load-console", "no"),
+    ("load-select", "no"),
+    ("load-positioning", "no"),
+    ("load-context-menu", "no"),
+    ("load-commands", "no"),
+    ("load-auto-profiles", "no"),
+    ("input-terminal", "no"),
+    ("video", "no"),
+    ("audio-display", "no"),
+    ("idle", "yes"),
+    ("gapless-audio", "weak"),
+    ("prefetch-playlist", "yes"),
+    ("volume-max", "100"),
+    ("audio-client-name", "TuneMesh"),
+    ("title", "TuneMesh"),
+    ("demuxer-max-bytes", "8MiB"),
+    ("demuxer-max-back-bytes", "1MiB"),
+    // Nothing next to a file is loaded automatically.
+    ("autoload-files", "no"),
+    ("cover-art-auto", "no"),
+    ("audio-file-auto", "no"),
+    ("sub-auto", "no"),
+];
+
+/// Library files arrive from every synced device, so a "song" may really be
+/// a playlist or a reference file pointing at URLs. mpv only plays the local
+/// file itself: libavformat demuxes it (mpv's own playlist, EDL, CUE and
+/// archive demuxers are never tried), references inside files are not
+/// followed and nested opens are limited to local files. If mpv rejects any
+/// of these, playback stays unavailable.
+const LOCAL_ONLY: &[(&str, &str)] = &[
+    ("demuxer", "lavf"),
+    ("access-references", "no"),
+    ("demuxer-lavf-o", "protocol_whitelist=file"),
+    ("load-unsafe-playlists", "no"),
+];
+
 pub struct Mpv {
     handle: *mut MpvHandle,
 }
@@ -104,8 +156,13 @@ unsafe impl Send for Mpv {}
 unsafe impl Sync for Mpv {}
 
 impl Mpv {
-    /// Creates an audio-only player instance.
+    /// Creates an audio-only player instance that opens local files only.
     pub fn new() -> Result<Arc<Self>, String> {
+        Self::create(BASE_OPTIONS, LOCAL_ONLY)
+    }
+
+    /// `required` options must all be accepted, `base` ones are best effort.
+    fn create(base: &[(&str, &str)], required: &[(&str, &str)]) -> Result<Arc<Self>, String> {
         // libmpv refuses to start unless numbers are formatted the C way;
         // GTK has set the user's locale by now.
         // SAFETY: called on the main thread before any other thread uses
@@ -116,40 +173,23 @@ impl Mpv {
         if handle.is_null() {
             return Err("mpv_create failed".into());
         }
-        for (k, v) in [
-            ("config", "no"),
-            ("terminal", "no"),
-            ("input-default-bindings", "no"),
-            ("input-vo-keyboard", "no"),
-            ("osc", "no"),
-            ("ytdl", "no"),
-            ("load-scripts", "no"),
-            // Built-in scripts each run their own Lua VM and thread; none
-            // matter for audio-only playback.
-            ("load-stats-overlay", "no"),
-            ("load-console", "no"),
-            ("load-select", "no"),
-            ("load-positioning", "no"),
-            ("load-context-menu", "no"),
-            ("load-commands", "no"),
-            ("load-auto-profiles", "no"),
-            ("input-terminal", "no"),
-            ("video", "no"),
-            ("audio-display", "no"),
-            ("idle", "yes"),
-            ("gapless-audio", "weak"),
-            ("prefetch-playlist", "yes"),
-            ("volume-max", "100"),
-            ("audio-client-name", "TuneMesh"),
-            ("title", "TuneMesh"),
-            ("demuxer-max-bytes", "8MiB"),
-            ("demuxer-max-back-bytes", "1MiB"),
-        ] {
-            let (k, v) = (cstr(k), cstr(v));
+        let options = base.iter().map(|o| (o, false)).chain(required.iter().map(|o| (o, true)));
+        for (&(k, v), must) in options {
+            let (ck, cv) = (cstr(k), cstr(v));
             // SAFETY: valid handle and NUL-terminated strings.
-            let rc = unsafe { mpv_set_option_string(handle, k.as_ptr(), v.as_ptr()) };
+            let rc = unsafe { mpv_set_option_string(handle, ck.as_ptr(), cv.as_ptr()) };
             if rc < 0 {
-                eprintln!("tunemesh: mpv option {k:?}: {}", error_string(rc));
+                let e = format!("mpv option {k}={v}: {}", error_string(rc));
+                if must {
+                    // SAFETY: handle is valid and not used afterwards.
+                    unsafe { mpv_terminate_destroy(handle) };
+                    return Err(e);
+                }
+                // Older libmpv (0.37 on Ubuntu 24.04) lacks some built-in
+                // scripts; an unknown option there means nothing to turn off.
+                if rc != MPV_ERROR_OPTION_NOT_FOUND {
+                    eprintln!("tunemesh: {e}");
+                }
             }
         }
         // SAFETY: valid, not yet initialised handle.
@@ -266,5 +306,51 @@ impl Drop for Mpv {
     fn drop(&mut self) {
         // SAFETY: last reference; no thread waits on the handle any more.
         unsafe { mpv_terminate_destroy(self.handle) };
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::time::{Duration, Instant};
+
+    /// Loads a fake `.mp3` holding `body` (with `{URL}` replaced by a local
+    /// listener's URL) and reports whether mpv connected to the listener.
+    fn fetches(required: &[(&str, &str)], body: &str) -> bool {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let url = format!("http://{}/song.mp3", listener.local_addr().unwrap());
+        let dir = std::env::temp_dir().join(format!("tunemesh-mpv-test-{}-{}", std::process::id(), fastrand::u64(..)));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("Song [abc].mp3");
+        std::fs::write(&file, body.replace("{URL}", &url)).unwrap();
+
+        let base: Vec<_> = BASE_OPTIONS.iter().copied().chain([("ao", "null"), ("audio-fallback-to-null", "yes")]).collect();
+        let mpv = Mpv::create(&base, required).unwrap();
+        mpv.command(&["loadfile", file.to_str().unwrap()]).unwrap();
+        let start = Instant::now();
+        let mut connected = false;
+        while start.elapsed() < Duration::from_secs(4) {
+            if listener.accept().is_ok() {
+                connected = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        mpv.quit();
+        let _ = std::fs::remove_dir_all(&dir);
+        connected
+    }
+
+    const M3U: &str = "#EXTM3U\n#EXTINF:1,Song\n{URL}\n";
+    const HLS: &str = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10\n#EXTINF:10.0,\n{URL}\n#EXT-X-ENDLIST\n";
+
+    #[test]
+    fn a_playlist_disguised_as_a_song_fetches_nothing() {
+        // Control: stock mpv does follow the URL, so the probe works.
+        assert!(fetches(&[], M3U), "the unhardened control did not fetch; the test proves nothing");
+        assert!(!fetches(LOCAL_ONLY, M3U));
+        assert!(!fetches(LOCAL_ONLY, HLS));
     }
 }

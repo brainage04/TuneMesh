@@ -1,19 +1,23 @@
 //! Downloads: write request files for the worker and show their status.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
-use gtk::glib;
 use gtk::prelude::*;
+use gtk::{gdk, glib};
 use tunemesh_core::request::{self, Request, RequestState, Status};
 
-use crate::app::{App, Page};
+use crate::app::{App, Page, Route};
 use crate::config;
+use crate::downloader;
 use crate::ui::widgets::{self, label, plural, section_title};
 
 thread_local! {
     /// The request list of the Downloads page currently shown, if any.
     static LIST: RefCell<Weak<ListState>> = const { RefCell::new(Weak::new()) };
+    /// Downloader status lines on screen (Downloads page, Settings).
+    static STATUS: RefCell<Vec<(Weak<App>, glib::WeakRef<gtk::Label>)>> = const { RefCell::new(Vec::new()) };
+    static STATUS_TIMER: Cell<bool> = const { Cell::new(false) };
 }
 
 struct ListState {
@@ -27,7 +31,112 @@ pub fn refresh_if_shown() {
     if let Some(state) = LIST.with(|l| l.borrow().upgrade()) {
         state.render();
     }
+    refresh_status();
 }
+
+// ---- who downloads ---------------------------------------------------------
+
+fn apply_status(app: &App, l: &gtk::Label) {
+    let (text, error) = downloader::summary(&app.store.root(), &app.downloader.state());
+    l.set_text(&text);
+    if error { l.add_css_class("tm-error") } else { l.remove_css_class("tm-error") }
+}
+
+/// A line saying which device downloads and how this device's downloader is
+/// doing; it updates itself while shown.
+pub fn status_label(app: &Rc<App>) -> gtk::Label {
+    let l = gtk::Label::builder().xalign(0.0).wrap(true).css_classes(["dim", "tm-downloader-status"]).build();
+    apply_status(app, &l);
+    STATUS.with(|s| s.borrow_mut().push((Rc::downgrade(app), l.downgrade())));
+    // Heartbeats age and restarts count down without any file changing.
+    if !STATUS_TIMER.with(|t| t.replace(true)) {
+        glib::timeout_add_seconds_local(5, || {
+            refresh_status();
+            let alive = STATUS.with(|s| !s.borrow().is_empty());
+            if !alive {
+                STATUS_TIMER.with(|t| t.set(false));
+            }
+            glib::ControlFlow::from(alive)
+        });
+    }
+    l
+}
+
+/// Updates every downloader status line on screen.
+pub fn refresh_status() {
+    let live: Vec<(Rc<App>, gtk::Label)> = STATUS.with(|s| {
+        let mut v = s.borrow_mut();
+        v.retain(|(a, l)| a.strong_count() > 0 && l.upgrade().is_some_and(|l| l.root().is_some()));
+        v.iter().filter_map(|(a, l)| Some((a.upgrade()?, l.upgrade()?))).collect()
+    });
+    for (app, l) in live {
+        apply_status(&app, &l);
+    }
+}
+
+// ---- pasted input ------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// A playlist: saved as a TuneMesh playlist by default.
+    Playlist,
+    /// An album: it shows up as an album anyway.
+    Album,
+    /// One track, or search text.
+    Single,
+}
+
+fn query_param<'a>(url: &'a str, name: &str) -> Option<&'a str> {
+    let query = url.split_once('?')?.1.split('#').next()?;
+    query.split('&').find_map(|kv| kv.strip_prefix(name)?.strip_prefix('='))
+}
+
+/// What a pasted line is (Spotify and YouTube / YouTube Music URLs; other
+/// input counts as a single item).
+pub fn classify(line: &str) -> Kind {
+    let lower = line.trim().to_ascii_lowercase();
+    let Some(rest) = lower.strip_prefix("https://").or_else(|| lower.strip_prefix("http://")) else { return Kind::Single };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.trim_start_matches("www.").trim_start_matches("m.");
+    match host {
+        "open.spotify.com" => {
+            // `/intl-de/playlist/…` and `/playlist/…`
+            let mut parts = path.split(['/', '?']).filter(|p| !p.is_empty());
+            let first = parts.next().unwrap_or("");
+            let kind = if first.starts_with("intl-") { parts.next().unwrap_or("") } else { first };
+            match kind {
+                "playlist" => Kind::Playlist,
+                "album" => Kind::Album,
+                _ => Kind::Single,
+            }
+        }
+        "youtube.com" | "music.youtube.com" => {
+            if path.starts_with("browse/mpreb") {
+                return Kind::Album;
+            }
+            match query_param(line.trim(), "list") {
+                // YouTube Music albums are playlists with this prefix.
+                Some(id) if id.starts_with("OLAK5uy_") => Kind::Album,
+                Some(id) if !id.is_empty() => Kind::Playlist,
+                _ => Kind::Single,
+            }
+        }
+        _ => Kind::Single,
+    }
+}
+
+/// The non-empty, trimmed lines of a paste, without duplicates.
+pub fn input_lines(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        if !out.iter().any(|o| o == l) {
+            out.push(l.to_owned());
+        }
+    }
+    out
+}
+
+// ---- request list ----------------------------------------------------------------
 
 fn fmt_time(rfc3339: &str) -> String {
     glib::DateTime::from_iso8601(rfc3339, None)
@@ -65,12 +174,58 @@ impl ListState {
         }
         rows.sort_by(|a, b| request::order_key(&b.id).cmp(&request::order_key(&a.id)));
         if rows.is_empty() {
-            self.container.append(&widgets::empty("No downloads yet. Paste a link or type a song above."));
+            self.container.append(&widgets::empty("No downloads yet. Paste links or type a song above."));
             return;
         }
         for row in rows {
             self.container.append(&request_row(&app, row));
         }
+    }
+}
+
+/// "3 of 12 songs" once the worker knows how many items a request has.
+fn count_text(s: &Status) -> Option<String> {
+    let total = s.items_total.filter(|t| *t > 1)?;
+    Some(format!("{} of {total} songs", s.items_done.unwrap_or(0).min(total)))
+}
+
+/// Overall progress: finished items plus the current item's progress.
+fn fraction(s: &Status) -> Option<f64> {
+    match (s.items_total.filter(|t| *t > 1), s.progress) {
+        (Some(total), p) => Some(((s.items_done.unwrap_or(0) as f64 + p.unwrap_or(0.0)) / total as f64).clamp(0.0, 1.0)),
+        (None, p) => p,
+    }
+}
+
+fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
+    // The worker gives a request its status when it scans the queue.
+    let Some(s) = &row.status else { return ("Waiting".to_owned(), "waiting") };
+    if !s.state.is_final() && !pending {
+        return ("Cancelling…".to_owned(), "waiting");
+    }
+    let failed = s.failures.len();
+    match s.state {
+        RequestState::Queued => ("Queued".to_owned(), "queued"),
+        RequestState::Downloading => {
+            let mut t = match (count_text(s), s.progress) {
+                (Some(c), _) => format!("Downloading {c}"),
+                (None, Some(p)) => format!("Downloading {:.0}%", p * 100.0),
+                (None, None) => "Downloading".to_owned(),
+            };
+            if failed > 0 {
+                t.push_str(&format!(" • {failed} failed"));
+            }
+            (t, "downloading")
+        }
+        RequestState::Done => {
+            let mut t = format!("Done • {}", plural(s.tracks.len(), "song", "songs"));
+            if failed > 0 {
+                t.push_str(&format!(" • {failed} failed"));
+            }
+            (t, if failed > 0 { "partial" } else { "done" })
+        }
+        RequestState::Failed => ("Failed".to_owned(), "failed"),
+        RequestState::Cancelled => ("Cancelled".to_owned(), "cancelled"),
     }
 }
 
@@ -83,23 +238,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         .or_else(|| row.status.as_ref().map(|s| s.input.clone()))
         .unwrap_or_default();
     let title = row.status.as_ref().and_then(|s| s.title.clone()).unwrap_or_else(|| input.clone());
-    let (state_text, state_class) = match &row.status {
-        None => ("Waiting for the downloader".to_owned(), "waiting"),
-        Some(s) if !s.state.is_final() && !pending => ("Cancelling…".to_owned(), "waiting"),
-        Some(s) => match s.state {
-            RequestState::Queued => ("Queued".to_owned(), "queued"),
-            RequestState::Downloading => (
-                match s.progress {
-                    Some(p) => format!("Downloading {:.0}%", p * 100.0),
-                    None => "Downloading".to_owned(),
-                },
-                "downloading",
-            ),
-            RequestState::Done => (format!("Done • {}", plural(s.tracks.len(), "song", "songs")), "done"),
-            RequestState::Failed => ("Failed".to_owned(), "failed"),
-            RequestState::Cancelled => ("Cancelled".to_owned(), "cancelled"),
-        },
-    };
+    let (state_text, state_class) = state_text(&row, pending);
 
     let b = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(6).css_classes(["tm-request-row"]).build();
     let top = gtk::Box::builder().spacing(12).build();
@@ -117,6 +256,8 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         }
         if let Some(p) = &r.playlist {
             sub.push(format!("→ {p}"));
+        } else if r.playlist_from_source {
+            sub.push("saved as a playlist".to_owned());
         }
     }
     let when = row
@@ -155,7 +296,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         let (a, id) = (app.clone(), row.id.clone());
         remove.connect_clicked(move |_| {
             let _ = request::cancel(&a.store.root(), &id);
-            if let Err(e) = std::fs::remove_file(request::status_path(&a.store.root(), &id)) {
+            if let Err(e) = request::remove_status(&a.store.root(), &id) {
                 a.error("Could not remove", e);
             }
             refresh_if_shown();
@@ -178,20 +319,46 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     if let Some(s) = &row.status {
         if s.state == RequestState::Downloading {
             let bar = gtk::ProgressBar::builder().css_classes(["tm-progress"]).build();
-            match s.progress {
+            match fraction(s) {
                 Some(p) => bar.set_fraction(p),
                 None => bar.pulse(),
             }
             b.append(&bar);
         }
-        if let Some(m) = &s.message {
+        // The final message repeats the warnings, which are listed below.
+        if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
             let l = gtk::Label::builder().label(m).xalign(0.0).wrap(true).selectable(true).css_classes(["tm-small"]).build();
             l.add_css_class(if s.state == RequestState::Failed { "tm-error" } else { "dim" });
             b.append(&l);
         }
+        for w in &s.warnings {
+            let l = gtk::Label::builder().label(w).xalign(0.0).wrap(true).selectable(true).css_classes(["tm-small", "tm-warning"]).build();
+            b.append(&l);
+        }
+        if !s.failures.is_empty() {
+            let list = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(4).margin_start(18).build();
+            for f in &s.failures {
+                let l = gtk::Label::builder()
+                    .label(format!("{}: {}", f.item, f.error))
+                    .xalign(0.0)
+                    .wrap(true)
+                    .selectable(true)
+                    .css_classes(["tm-small", "dim"])
+                    .build();
+                list.append(&l);
+            }
+            let exp = gtk::Expander::builder()
+                .label(format!("{} could not be downloaded", plural(s.failures.len(), "song", "songs")))
+                .child(&list)
+                .css_classes(["tm-small"])
+                .build();
+            b.append(&exp);
+        }
     }
     b.upcast()
 }
+
+// ---- the page -------------------------------------------------------------------
 
 pub fn page(app: &Rc<App>) -> Page {
     let b = gtk::Box::builder()
@@ -207,18 +374,44 @@ pub fn page(app: &Rc<App>) -> Page {
     let card = gtk::Box::builder().orientation(gtk::Orientation::Vertical).spacing(12).css_classes(["tm-card"]).build();
     card.append(&label("Add music", &["heading"]));
     let hint = gtk::Label::builder()
-        .label("Paste a YouTube, YouTube Music, SoundCloud, Bandcamp or Spotify link, or type what to search for. The download worker fetches it and the song syncs to all your devices.")
+        .label("Paste YouTube, YouTube Music, SoundCloud, Bandcamp or Spotify links (songs, albums or playlists), one per line, or type what to search for. The downloader fetches them and the songs sync to all your devices.")
         .xalign(0.0)
         .wrap(true)
         .css_classes(["dim"])
         .build();
     card.append(&hint);
-    let input_row = gtk::Box::builder().spacing(12).build();
-    let entry = gtk::Entry::builder().placeholder_text("Link or search text").hexpand(true).build();
-    let go = gtk::Button::builder().label("Download").css_classes(["tm-green"]).sensitive(false).build();
-    input_row.append(&entry);
-    input_row.append(&go);
-    card.append(&input_row);
+    let status = status_label(app);
+    card.append(&status);
+
+    let view = gtk::TextView::builder()
+        .wrap_mode(gtk::WrapMode::WordChar)
+        .accepts_tab(false)
+        .top_margin(8)
+        .bottom_margin(8)
+        .left_margin(10)
+        .right_margin(10)
+        .css_classes(["tm-input"])
+        .build();
+    let placeholder = gtk::Label::builder()
+        .label("Links or search text, one per line (Ctrl+Enter to download)")
+        .xalign(0.0)
+        .yalign(0.0)
+        .margin_top(8)
+        .margin_start(12)
+        .can_target(false)
+        .css_classes(["dim"])
+        .build();
+    let overlay = gtk::Overlay::builder().child(&view).build();
+    overlay.add_overlay(&placeholder);
+    let input_scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .min_content_height(64)
+        .max_content_height(180)
+        .propagate_natural_height(true)
+        .child(&overlay)
+        .css_classes(["tm-input-frame"])
+        .build();
+    card.append(&input_scroll);
 
     let options = gtk::Box::builder().spacing(12).build();
     options.append(&label("Add to playlist", &["dim"]));
@@ -227,15 +420,30 @@ pub fn page(app: &Rc<App>) -> Page {
     choices.extend(names);
     let refs: Vec<&str> = choices.iter().map(String::as_str).collect();
     let dropdown = gtk::DropDown::from_strings(&refs);
+    dropdown.set_valign(gtk::Align::Center);
     options.append(&dropdown);
     let spacer = gtk::Box::builder().width_request(24).build();
     options.append(&spacer);
     let switch = gtk::Switch::builder().valign(gtk::Align::Center).build();
     options.append(&switch);
-    options.append(&label("Also create a playlist from this link", &[]));
+    options.append(&label("Save playlists and albums as TuneMesh playlists", &[]));
+    let fill = gtk::Box::builder().hexpand(true).build();
+    options.append(&fill);
+    let go = gtk::Button::builder().label("Download").css_classes(["tm-green"]).sensitive(false).build();
+    options.append(&go);
     card.append(&options);
     b.append(&card);
 
+    // The switch follows the input (on when a playlist link is pasted) until
+    // the user flips it.
+    let user_set = Rc::new(Cell::new(false));
+    let auto = Rc::new(Cell::new(false));
+    let (u, au) = (user_set.clone(), auto.clone());
+    switch.connect_active_notify(move |_| {
+        if !au.get() {
+            u.set(true);
+        }
+    });
     let s = switch.clone();
     dropdown.connect_selected_notify(move |d| {
         let none = d.selected() == 0;
@@ -244,33 +452,78 @@ pub fn page(app: &Rc<App>) -> Page {
             s.set_active(false);
         }
     });
-    let g = go.clone();
-    entry.connect_changed(move |e| g.set_sensitive(!e.text().trim().is_empty()));
+    let (g, s, ph, dd) = (go.clone(), switch.clone(), placeholder.clone(), dropdown.clone());
+    view.buffer().connect_changed(move |buf| {
+        let text = buf.text(&buf.start_iter(), &buf.end_iter(), false);
+        let lines = input_lines(&text);
+        ph.set_visible(text.is_empty());
+        g.set_sensitive(!lines.is_empty());
+        g.set_label(&match lines.len() {
+            0 | 1 => "Download".to_owned(),
+            n => format!("Download {n}"),
+        });
+        if text.trim().is_empty() {
+            user_set.set(false);
+        }
+        if !user_set.get() && dd.selected() == 0 {
+            auto.set(true);
+            s.set_active(lines.iter().any(|l| classify(l) == Kind::Playlist));
+            auto.set(false);
+        }
+    });
 
     let submit = {
-        let (a, entry, dropdown, switch, choices) = (app.clone(), entry.clone(), dropdown.clone(), switch.clone(), choices.clone());
+        let (a, view, dropdown, switch, choices) = (app.clone(), view.clone(), dropdown.clone(), switch.clone(), choices.clone());
         move || {
-            let text = entry.text().trim().to_owned();
-            if text.is_empty() {
+            let buf = view.buffer();
+            let lines = input_lines(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
+            if lines.is_empty() {
                 return;
             }
             let sel = dropdown.selected() as usize;
             let playlist = (sel > 0).then(|| choices[sel].clone());
-            let req = Request::new(&text, playlist, switch.is_active(), &config::device_name());
-            match req.write(&a.store.root()) {
-                Ok(()) => {
-                    entry.set_text("");
-                    a.toast("Download requested");
-                    refresh_if_shown();
+            let as_playlists = switch.is_active() && playlist.is_none();
+            let device = config::device_name();
+            let root = a.store.root();
+            let mut written = 0;
+            let mut failed: Vec<String> = Vec::new();
+            for line in &lines {
+                let from_source = as_playlists && classify(line) != Kind::Single;
+                let req = Request::new(line, playlist.clone(), from_source, &device);
+                match req.write(&root) {
+                    Ok(()) => written += 1,
+                    Err(e) => {
+                        eprintln!("tunemesh: writing the request for {line:?}: {e}");
+                        failed.push(line.clone());
+                    }
                 }
-                Err(e) => a.error("Could not write the request", e),
+                // Ids order requests by their millisecond prefix: keep the
+                // pasted order.
+                std::thread::sleep(std::time::Duration::from_millis(2));
             }
+            if failed.is_empty() {
+                buf.set_text("");
+                a.toast(&format!("Requested {}", plural(written, "download", "downloads")));
+            } else {
+                // Keep what failed in the box so it can be retried.
+                buf.set_text(&failed.join("\n"));
+                a.toast(&format!("Could not write {} (see the log)", plural(failed.len(), "request", "requests")));
+            }
+            refresh_if_shown();
         }
     };
     let submit = Rc::new(submit);
     let s2 = submit.clone();
     go.connect_clicked(move |_| s2());
-    entry.connect_activate(move |_| submit());
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(move |_, key, _, mods| {
+        if matches!(key, gdk::Key::Return | gdk::Key::KP_Enter) && mods.contains(gdk::ModifierType::CONTROL_MASK) {
+            submit();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    view.add_controller(keys);
 
     let head = gtk::Box::builder().spacing(12).build();
     let title = section_title("Requests");
@@ -295,5 +548,39 @@ pub fn page(app: &Rc<App>) -> Page {
     unsafe { container.set_data("tm-list-state", state) };
 
     let scroller = gtk::ScrolledWindow::builder().hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).child(&b).build();
+    if app.route() == Route::Downloads {
+        glib::idle_add_local_once(move || {
+            view.grab_focus();
+        });
+    }
     Page { widget: scroller.clone().upcast(), scroller: Some(scroller) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_links() {
+        for (url, kind) in [
+            ("https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M", Kind::Playlist),
+            ("https://open.spotify.com/intl-de/playlist/37i9dQZF1DXcBWIGoYBM5M?si=x", Kind::Playlist),
+            ("https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy", Kind::Album),
+            ("https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", Kind::Single),
+            ("https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG", Kind::Playlist),
+            ("https://www.youtube.com/watch?v=dQw4w9WgXcQ&list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG", Kind::Playlist),
+            ("https://music.youtube.com/playlist?list=OLAK5uy_kXN0a2yT2vbtFF1dLJTn4wzVzNXZdUDXg", Kind::Album),
+            ("https://music.youtube.com/browse/MPREb_abc", Kind::Album),
+            ("https://music.youtube.com/watch?v=dQw4w9WgXcQ", Kind::Single),
+            ("https://youtu.be/dQw4w9WgXcQ", Kind::Single),
+            ("some artist some song", Kind::Single),
+        ] {
+            assert_eq!(classify(url), kind, "{url}");
+        }
+    }
+
+    #[test]
+    fn splits_pasted_lines() {
+        assert_eq!(input_lines("  a \n\n b\na\r\n  "), vec!["a", "b"]);
+    }
 }

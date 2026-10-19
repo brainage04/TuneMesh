@@ -9,12 +9,36 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub library_path: PathBuf,
+    /// "This device downloads songs": run `tunemesh-worker` as a child.
+    #[serde(default)]
+    pub downloader: bool,
+    /// Whether the setup assistant was finished or skipped. A config file
+    /// written before the assistant existed counts as set up.
+    #[serde(default = "yes")]
+    pub setup_done: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Self { library_path: glib::home_dir().join("Music").join("TuneMesh") }
+        Self { library_path: default_library(), downloader: false, setup_done: false }
     }
+}
+
+pub fn default_library() -> PathBuf {
+    real_home().join("Music").join("TuneMesh")
+}
+
+/// The user's home folder. Snap points `$HOME` at a per-snap folder and
+/// keeps the real one in `$SNAP_REAL_HOME`.
+pub fn real_home() -> PathBuf {
+    std::env::var_os("SNAP_REAL_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(glib::home_dir)
 }
 
 pub fn config_file() -> PathBuf {
@@ -34,11 +58,16 @@ pub fn cache_dir() -> PathBuf {
     glib::user_cache_dir().join("tunemesh")
 }
 
-/// Expands a leading `~/`.
+/// Where the built-in downloader assembles downloads (contract: created 0700).
+pub fn worker_dir() -> PathBuf {
+    cache_dir().join("worker")
+}
+
+/// Expands a leading `~/` to the real home folder.
 pub fn expand_home(path: &str) -> PathBuf {
     match path.strip_prefix("~/") {
-        Some(rest) => glib::home_dir().join(rest),
-        None if path == "~" => glib::home_dir(),
+        Some(rest) => real_home().join(rest),
+        None if path == "~" => real_home(),
         None => PathBuf::from(path),
     }
 }
@@ -66,7 +95,28 @@ impl Config {
     }
 }
 
-/// Device name shown as `requestedBy`.
+/// This device's name: shown as `requestedBy`, and the name the worker
+/// writes into `.tunemesh/worker.json` (both use the host name).
 pub fn device_name() -> String {
     glib::host_name().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn old_config_counts_as_set_up() {
+        let c: Config = toml::from_str("library_path = \"/srv/music\"").unwrap();
+        assert!(c.setup_done);
+        assert!(!c.downloader);
+        assert!(!Config::default().setup_done);
+    }
+
+    #[test]
+    fn new_keys_round_trip() {
+        let c = Config { library_path: "/srv/music".into(), downloader: true, setup_done: true };
+        let back: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
+        assert!(back.downloader && back.setup_done);
+    }
 }
