@@ -76,7 +76,11 @@ packages=$(
     find "$appdir/usr/bin" "$appdir/usr/lib" "$appdir/usr/share/glib-2.0" -type f \
         ! -name 'tunemesh*' ! -name '*.cache' ! -name '*.compiled' -printf '%f\n' |
         sort -u | while IFS= read -r name; do
-            dpkg -S "*/$name" 2>/dev/null | sed -n 's/^\([^:,]*\)[:,].*/\1/p'
+            # "pkg[:arch][, pkg2[:arch]]: /path", keeping only the system
+            # locations linuxdeploy copies from: the runner has unrelated
+            # copies elsewhere (/opt/google/chrome, ...).
+            dpkg -S "*/$name" 2>/dev/null |
+                sed -n 's#^\([^ :,]*\)\(:[a-z0-9]*\)\{0,1\}\(, [^:]*\(:[a-z0-9]*\)\{0,1\}\)*: /\(usr/\)\{0,1\}\(lib\|bin\|share/glib-2.0\)/.*#\1#p'
         done
     echo adwaita-icon-theme
 )

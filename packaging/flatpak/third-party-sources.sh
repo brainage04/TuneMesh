@@ -13,7 +13,8 @@ cat <<'EOF'
 
 These modules are built from the sources below, unmodified, with the options
 in the manifest (`packaging/flatpak/io.github.brainage04.TuneMesh.yml` in the
-source tarball). Their licence files are in `share/licenses/<module>/`.
+source tarball). Their licence files are in
+`share/licenses/io.github.brainage04.TuneMesh/<module>/`.
 
 - libass: ISC.
 - libplacebo: LGPL-2.1-or-later (built with its git submodules at that commit).

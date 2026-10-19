@@ -44,8 +44,9 @@ all_debian_copyrights() {
 
 case $format in
     deb)
-        need usr/share/doc/tunemesh/copyright usr/share/doc/tunemesh/THIRD-PARTY-RUST.txt
-        rust=usr/share/doc/tunemesh/THIRD-PARTY-RUST.txt
+        need usr/share/doc/tunemesh/copyright
+        contains usr/share/doc/tunemesh/copyright '^MIT License'
+        rust=usr/share/doc/tunemesh/copyright
         ;;
     rpm | arch)
         need usr/share/licenses/tunemesh/LICENSE usr/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
@@ -65,15 +66,17 @@ case $format in
         rust=$lic/THIRD-PARTY-RUST.txt
         ;;
     flatpak)
+        # flatpak-builder records each module's licence files in
+        # share/licenses/<app id>/<module>/.
         lic=share/licenses/io.github.brainage04.TuneMesh
-        need $lic/LICENSE $lic/THIRD-PARTY-RUST.txt $lic/THIRD-PARTY-SOURCES.md \
-            share/licenses/libass/COPYING share/licenses/libplacebo/LICENSE \
-            share/licenses/mpv/LICENSE.GPL share/licenses/mpv/Copyright \
-            share/licenses/ffmpeg/LICENSE.md share/licenses/ffmpeg/COPYING.LGPLv2.1
+        need $lic/THIRD-PARTY-SOURCES.md $lic/tunemesh/LICENSE $lic/tunemesh/THIRD-PARTY-RUST.txt \
+            $lic/libass/COPYING $lic/libplacebo/LICENSE \
+            $lic/mpv/LICENSE.GPL $lic/mpv/LICENSE.LGPL $lic/mpv/Copyright \
+            $lic/ffmpeg-cli/LICENSE.md $lic/ffmpeg-cli/COPYING.LGPLv2.1
         for module in libass libplacebo mpv ffmpeg-cli; do
             contains $lic/THIRD-PARTY-SOURCES.md "^### $module\$"
         done
-        rust=$lic/THIRD-PARTY-RUST.txt
+        rust=$lic/tunemesh/THIRD-PARTY-RUST.txt
         ;;
     *)
         echo "check-licences: unknown format $format" >&2

@@ -40,22 +40,21 @@ strip --strip-unneeded "$root/usr/bin/tunemesh" "$root/usr/bin/tunemesh-worker"
 tarball=$out/tunemesh-$version-linux-$(uname -m).tar.gz
 tar -C "$root" --owner=0 --group=0 --numeric-owner -czf "$tarball" usr
 
-# Debian keeps licences in /usr/share/doc/<package>/: copyright for TuneMesh
-# itself, plus the licences of the Rust crates linked into the binaries.
+# Debian keeps licences in /usr/share/doc/<package>/copyright, the one file
+# there that minimised systems (Docker images, cloud images) still install:
+# TuneMesh's licence followed by those of the Rust crates linked into the
+# binaries.
 doc=$root/usr/share/doc/tunemesh
 mkdir -p "$doc"
 {
-    echo "Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/"
-    echo "Upstream-Name: TuneMesh"
+    echo "TuneMesh"
     echo "Source: https://github.com/brainage04/TuneMesh"
-    echo "Comment: The binaries statically link third-party Rust crates; their"
-    echo " licences are in /usr/share/doc/tunemesh/THIRD-PARTY-RUST.txt."
     echo
-    echo "Files: *"
-    echo "License: MIT"
-    sed 's/^$/./; s/^/ /' "$root/usr/share/licenses/tunemesh/LICENSE"
+    cat "$root/usr/share/licenses/tunemesh/LICENSE"
+    echo
+    echo
+    cat "$root/usr/share/licenses/tunemesh/THIRD-PARTY-RUST.txt"
 } >"$doc/copyright"
-mv "$root/usr/share/licenses/tunemesh/THIRD-PARTY-RUST.txt" "$doc/"
 rm -r "$root/usr/share/licenses"
 
 # Library dependencies with the minimum versions the binaries link against.
