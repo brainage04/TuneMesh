@@ -6,7 +6,11 @@
 #   packaging/appimage/build-appimage.sh --deps dist    # --deps: apt build deps (sudo)
 #
 # The AppImage needs glibc 2.39 or newer on the host (Ubuntu 24.04, Debian 13,
-# Fedora 40 and later). TUNEMESH_VERSION overrides the version.
+# Fedora 40 and later) and, like every AppImage, the host's graphics, font and
+# sound libraries (Mesa/libGL/EGL, X11/xcb, Wayland, fontconfig, freetype,
+# HarfBuzz, FriBidi, ALSA, PipeWire), which any desktop installation has.
+# JACK is bundled, since desktops often lack it. TUNEMESH_VERSION overrides
+# the version.
 set -euo pipefail
 # shellcheck source=packaging/linux/common.sh
 . "$(dirname "$0")/../linux/common.sh"
@@ -61,5 +65,6 @@ linuxdeploy --appdir "$appdir" --plugin gtk \
     --desktop-file "$appdir/usr/share/applications/io.github.brainage04.TuneMesh.desktop" \
     --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg" \
     --custom-apprun "$repo/packaging/appimage/AppRun" \
+    --library "$(/sbin/ldconfig -p | awk '/libjack\.so\.0 / { print $NF; exit }')" \
     --output appimage
 ls -l "$out"

@@ -84,14 +84,15 @@ apps:
 
 parts:
   tunemesh:
-    plugin: dump
-    source: packaging/snap/tunemesh-linux.tar.gz
-    source-type: tar
+    # Unpacked by hand: snapcraft's tar source would strip the single top-level
+    # usr/ directory.
+    plugin: nil
     stage-packages:
       - libmpv2
       - ffmpeg
     override-build: |
       craftctl default
+      tar -xzf "$CRAFT_PROJECT_DIR/packaging/snap/tunemesh-linux.tar.gz" -C "$CRAFT_PART_INSTALL"
       craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$CRAFT_PROJECT_DIR/linux/Cargo.toml")"
       sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
         "$CRAFT_PART_INSTALL/usr/share/applications/io.github.brainage04.TuneMesh.desktop"
