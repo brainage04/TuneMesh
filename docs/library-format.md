@@ -33,9 +33,10 @@ Symbolic links: any device can put a symlink into the shared folder, so
 implementations never follow one below `<root>`. Playlists, `.tunemesh/` and
 everything in it, and the directories the worker creates or writes into must
 be real directories and regular files; a symlink in their place is refused
-(read as missing or invalid, never written through). Desktop and worker open
-these paths with `O_NOFOLLOW` relative to the root (`tunemesh_core::fsx`).
-Android shared storage cannot hold symlinks.
+(read as missing or invalid, never written through). Symlinked audio files and
+directories are not part of the library. Desktop and worker open these paths
+with `O_NOFOLLOW` relative to the root (`tunemesh_core::fsx`). Android shared
+storage cannot hold symlinks.
 
 ## Audio files
 

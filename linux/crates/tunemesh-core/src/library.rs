@@ -13,8 +13,9 @@ use serde::{Deserialize, Serialize};
 use crate::search::{Query, fold};
 use crate::{PLAYLISTS_DIR, TUNEMESH_DIR};
 
-pub const AUDIO_EXTENSIONS: [&str; 10] =
-    ["opus", "ogg", "oga", "m4a", "mp4", "aac", "mp3", "flac", "wav", "webm"];
+pub const AUDIO_EXTENSIONS: [&str; 10] = [
+    "opus", "ogg", "oga", "m4a", "mp4", "aac", "mp3", "flac", "wav", "webm",
+];
 const COVER_FILES: [&str; 4] = ["cover.jpg", "cover.png", "folder.jpg", "folder.png"];
 pub const UNKNOWN_ALBUM: &str = "Unknown Album";
 pub const UNKNOWN_ARTIST: &str = "Unknown Artist";
@@ -39,7 +40,9 @@ fn is_ignored_name(name: &str) -> bool {
 /// Whether the root-relative path (with `/` separators) names a library track.
 pub fn is_track_path(rel: &str) -> bool {
     let mut parts = rel.split('/').peekable();
-    let Some(first) = parts.peek() else { return false };
+    let Some(first) = parts.peek() else {
+        return false;
+    };
     if *first == PLAYLISTS_DIR || *first == TUNEMESH_DIR {
         return false;
     }
@@ -128,8 +131,16 @@ pub fn source_id_from_file_name(name: &str) -> Option<&str> {
 pub fn dir_fallbacks(rel: &str) -> (String, String) {
     let parts: Vec<&str> = rel.split('/').collect();
     let n = parts.len();
-    let album = if n >= 2 { parts[n - 2].to_owned() } else { UNKNOWN_ALBUM.to_owned() };
-    let artist = if n >= 3 { parts[n - 3].to_owned() } else { UNKNOWN_ARTIST.to_owned() };
+    let album = if n >= 2 {
+        parts[n - 2].to_owned()
+    } else {
+        UNKNOWN_ALBUM.to_owned()
+    };
+    let artist = if n >= 3 {
+        parts[n - 3].to_owned()
+    } else {
+        UNKNOWN_ARTIST.to_owned()
+    };
     (album, artist)
 }
 
@@ -148,7 +159,9 @@ pub struct TagInfo {
 }
 
 fn non_empty(s: Option<&str>) -> Option<String> {
-    s.map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+    s.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
 }
 
 fn parse_year(s: &str) -> Option<u32> {
@@ -165,9 +178,13 @@ fn tag_info(tag: &Tag) -> TagInfo {
             }
         }
     }
-    let year = [ItemKey::RecordingDate, ItemKey::Year, ItemKey::OriginalReleaseDate]
-        .iter()
-        .find_map(|k| tag.get_string(*k).and_then(parse_year));
+    let year = [
+        ItemKey::RecordingDate,
+        ItemKey::Year,
+        ItemKey::OriginalReleaseDate,
+    ]
+    .iter()
+    .find_map(|k| tag.get_string(*k).and_then(parse_year));
     TagInfo {
         title: non_empty(tag.title().as_deref()),
         artists,
@@ -218,7 +235,13 @@ pub fn read_embedded_cover(path: &Path) -> Option<Vec<u8>> {
 }
 
 /// Builds a track from its tags plus the contract's fallbacks.
-pub fn make_track(rel: &str, info: TagInfo, dir_cover: Option<&str>, mtime: i64, size: u64) -> Track {
+pub fn make_track(
+    rel: &str,
+    info: TagInfo,
+    dir_cover: Option<&str>,
+    mtime: i64,
+    size: u64,
+) -> Track {
     let file_name = rel.rsplit('/').next().unwrap_or(rel);
     let (fallback_album, fallback_artist) = dir_fallbacks(rel);
     let (artist, first_artist) = if info.artists.is_empty() {
@@ -235,7 +258,9 @@ pub fn make_track(rel: &str, info: TagInfo, dir_cover: Option<&str>, mtime: i64,
     };
     Track {
         path: rel.to_owned(),
-        title: info.title.unwrap_or_else(|| title_from_file_name(file_name)),
+        title: info
+            .title
+            .unwrap_or_else(|| title_from_file_name(file_name)),
         artist,
         first_artist,
         album: info.album.unwrap_or(fallback_album),
@@ -257,7 +282,9 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
     let mut tracks = Vec::new();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, rel_dir)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         let mut audio = Vec::new();
         let mut dir_cover: Option<(usize, String)> = None;
         for entry in entries.flatten() {
@@ -266,8 +293,14 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
             if is_ignored_name(name) {
                 continue;
             }
-            let rel = if rel_dir.is_empty() { name.to_owned() } else { format!("{rel_dir}/{name}") };
-            let Ok(file_type) = entry.file_type() else { continue };
+            let rel = if rel_dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{rel_dir}/{name}")
+            };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             if file_type.is_dir() {
                 if rel_dir.is_empty() && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR) {
                     continue;
@@ -275,11 +308,13 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
                 stack.push((entry.path(), rel));
                 continue;
             }
-            // Regular files and symlinks to regular files.
-            let Ok(meta) = fs::metadata(entry.path()) else { continue };
-            if !meta.is_file() {
+            // Symlinks are never followed (docs/library-format.md), so only
+            // regular files count: a synced link cannot make the app read or
+            // play a file outside the library.
+            if !file_type.is_file() {
                 continue;
             }
+            let Ok(meta) = entry.metadata() else { continue };
             let lower = name.to_ascii_lowercase();
             if let Some(rank) = COVER_FILES.iter().position(|c| *c == lower) {
                 if dir_cover.as_ref().is_none_or(|(r, _)| rank < *r) {
@@ -302,7 +337,9 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
                 Some(old) if old.mtime == mtime && old.size == size => {
                     let mut t = old.clone();
                     if t.cover != CoverSource::Embedded {
-                        t.cover = dir_cover.clone().map_or(CoverSource::None, CoverSource::File);
+                        t.cover = dir_cover
+                            .clone()
+                            .map_or(CoverSource::None, CoverSource::File);
                     }
                     t
                 }
@@ -321,19 +358,28 @@ pub fn source_id_index(root: &Path) -> HashMap<String, String> {
     let mut index: HashMap<String, String> = HashMap::new();
     let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
     while let Some((dir, rel_dir)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else { continue };
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let name = entry.file_name();
             let Some(name) = name.to_str() else { continue };
             if is_ignored_name(name) {
                 continue;
             }
-            let rel = if rel_dir.is_empty() { name.to_owned() } else { format!("{rel_dir}/{name}") };
+            let rel = if rel_dir.is_empty() {
+                name.to_owned()
+            } else {
+                format!("{rel_dir}/{name}")
+            };
             match entry.file_type() {
-                Ok(t) if t.is_dir()
-                    && !(rel_dir.is_empty() && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) => {
-                        stack.push((entry.path(), rel));
-                    }
+                Ok(t)
+                    if t.is_dir()
+                        && !(rel_dir.is_empty()
+                            && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) =>
+                {
+                    stack.push((entry.path(), rel));
+                }
                 Ok(t) if t.is_file() && has_audio_extension(name) => {
                     if let Some(id) = source_id_from_file_name(name) {
                         match index.get_mut(id) {
@@ -406,7 +452,11 @@ pub struct SearchResults {
 
 impl Library {
     pub fn new(tracks: Vec<Track>) -> Self {
-        let by_path = tracks.iter().enumerate().map(|(i, t)| (t.path.clone(), i)).collect();
+        let by_path = tracks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (t.path.clone(), i))
+            .collect();
 
         let mut albums: Vec<Album> = Vec::new();
         let mut album_by_key: HashMap<String, usize> = HashMap::new();
@@ -433,12 +483,18 @@ impl Library {
         for a in &mut albums {
             a.tracks.sort_by(|&x, &y| {
                 let (x, y) = (&tracks[x], &tracks[y]);
-                (x.disc_number.unwrap_or(1), x.track_number.unwrap_or(u32::MAX), &x.title, &x.path).cmp(&(
-                    y.disc_number.unwrap_or(1),
-                    y.track_number.unwrap_or(u32::MAX),
-                    &y.title,
-                    &y.path,
-                ))
+                (
+                    x.disc_number.unwrap_or(1),
+                    x.track_number.unwrap_or(u32::MAX),
+                    &x.title,
+                    &x.path,
+                )
+                    .cmp(&(
+                        y.disc_number.unwrap_or(1),
+                        y.track_number.unwrap_or(u32::MAX),
+                        &y.title,
+                        &y.path,
+                    ))
             });
         }
 
@@ -467,11 +523,19 @@ impl Library {
                 }
             }
             seen.sort_by(|&x, &y| {
-                albums[y].year.cmp(&albums[x].year).then_with(|| albums[x].name.cmp(&albums[y].name))
+                albums[y]
+                    .year
+                    .cmp(&albums[x].year)
+                    .then_with(|| albums[x].name.cmp(&albums[y].name))
             });
             artist.albums = seen;
             // Artist track order: by album (as above), then album order.
-            let order: HashMap<usize, usize> = artist.albums.iter().enumerate().map(|(p, &a)| (a, p)).collect();
+            let order: HashMap<usize, usize> = artist
+                .albums
+                .iter()
+                .enumerate()
+                .map(|(p, &a)| (a, p))
+                .collect();
             let album_pos = |ti: usize| {
                 let t = &tracks[ti];
                 let ai = album_by_key[&album_key(t.listed_artist(), &t.album)];
@@ -481,7 +545,11 @@ impl Library {
             artist.tracks.sort_by_key(|&ti| album_pos(ti));
         }
         artists.sort_by_key(|a| fold(&a.name));
-        let artist_by_name = artists.iter().enumerate().map(|(i, a)| (a.name.clone(), i)).collect();
+        let artist_by_name = artists
+            .iter()
+            .enumerate()
+            .map(|(i, a)| (a.name.clone(), i))
+            .collect();
 
         let track_folded = tracks
             .iter()
@@ -489,7 +557,16 @@ impl Library {
             .collect();
         let title_folded = tracks.iter().map(|t| fold(&t.title)).collect();
 
-        Self { tracks, albums, artists, by_path, album_by_key, artist_by_name, track_folded, title_folded }
+        Self {
+            tracks,
+            albums,
+            artists,
+            by_path,
+            album_by_key,
+            artist_by_name,
+            track_folded,
+            title_folded,
+        }
     }
 
     pub fn track_index(&self, path: &str) -> Option<usize> {
@@ -528,18 +605,29 @@ impl Library {
 
     pub fn search(&self, query: &Query) -> SearchResults {
         if query.is_empty() {
-            return SearchResults { tracks: vec![], albums: vec![], artists: vec![] };
+            return SearchResults {
+                tracks: vec![],
+                albums: vec![],
+                artists: vec![],
+            };
         }
-        let mut tracks: Vec<usize> =
-            (0..self.tracks.len()).filter(|&i| query.matches(&self.track_folded[i])).collect();
+        let mut tracks: Vec<usize> = (0..self.tracks.len())
+            .filter(|&i| query.matches(&self.track_folded[i]))
+            .collect();
         tracks.sort_by_key(|&i| query.rank(&self.title_folded[i]));
-        let mut albums: Vec<usize> =
-            (0..self.albums.len()).filter(|&i| query.matches(&self.albums[i].folded)).collect();
+        let mut albums: Vec<usize> = (0..self.albums.len())
+            .filter(|&i| query.matches(&self.albums[i].folded))
+            .collect();
         albums.sort_by_key(|&i| query.rank(&fold(&self.albums[i].name)));
-        let mut artists: Vec<usize> =
-            (0..self.artists.len()).filter(|&i| query.matches(&self.artists[i].folded)).collect();
+        let mut artists: Vec<usize> = (0..self.artists.len())
+            .filter(|&i| query.matches(&self.artists[i].folded))
+            .collect();
         artists.sort_by_key(|&i| query.rank(&self.artists[i].folded));
-        SearchResults { tracks, albums, artists }
+        SearchResults {
+            tracks,
+            albums,
+            artists,
+        }
     }
 }
 
@@ -549,7 +637,10 @@ mod tests {
 
     #[test]
     fn title_fallback_strips_extension_and_id() {
-        assert_eq!(title_from_file_name("Me at the zoo [jNQXAC9IVRw].opus"), "Me at the zoo");
+        assert_eq!(
+            title_from_file_name("Me at the zoo [jNQXAC9IVRw].opus"),
+            "Me at the zoo"
+        );
         assert_eq!(title_from_file_name("Song.mp3"), "Song");
         assert_eq!(title_from_file_name("A [live] B.flac"), "A [live] B");
         assert_eq!(title_from_file_name("[only].mp3"), "[only]");
@@ -568,16 +659,37 @@ mod tests {
 
     #[test]
     fn directory_fallbacks() {
-        assert_eq!(dir_fallbacks("a.mp3"), (UNKNOWN_ALBUM.into(), UNKNOWN_ARTIST.into()));
-        assert_eq!(dir_fallbacks("Album/a.mp3"), ("Album".into(), UNKNOWN_ARTIST.into()));
-        assert_eq!(dir_fallbacks("Artist/Album/a.mp3"), ("Album".into(), "Artist".into()));
-        assert_eq!(dir_fallbacks("x/Artist/Album/a.mp3"), ("Album".into(), "Artist".into()));
+        assert_eq!(
+            dir_fallbacks("a.mp3"),
+            (UNKNOWN_ALBUM.into(), UNKNOWN_ARTIST.into())
+        );
+        assert_eq!(
+            dir_fallbacks("Album/a.mp3"),
+            ("Album".into(), UNKNOWN_ARTIST.into())
+        );
+        assert_eq!(
+            dir_fallbacks("Artist/Album/a.mp3"),
+            ("Album".into(), "Artist".into())
+        );
+        assert_eq!(
+            dir_fallbacks("x/Artist/Album/a.mp3"),
+            ("Album".into(), "Artist".into())
+        );
     }
 
     #[test]
     fn make_track_uses_tags_then_fallbacks() {
-        let t = make_track("Art/Alb/Song [id1].opus", TagInfo::default(), Some("Art/Alb/cover.jpg"), 5, 9);
-        assert_eq!((t.title.as_str(), t.artist.as_str(), t.album.as_str()), ("Song", "Art", "Alb"));
+        let t = make_track(
+            "Art/Alb/Song [id1].opus",
+            TagInfo::default(),
+            Some("Art/Alb/cover.jpg"),
+            5,
+            9,
+        );
+        assert_eq!(
+            (t.title.as_str(), t.artist.as_str(), t.album.as_str()),
+            ("Song", "Art", "Alb")
+        );
         assert_eq!(t.cover, CoverSource::File("Art/Alb/cover.jpg".into()));
         assert_eq!(t.listed_artist(), "Art");
 
@@ -589,7 +701,10 @@ mod tests {
             ..Default::default()
         };
         let t = make_track("x.mp3", info, None, 0, 0);
-        assert_eq!((t.title.as_str(), t.artist.as_str(), t.album.as_str()), ("Real", "A1, A2", "Rec"));
+        assert_eq!(
+            (t.title.as_str(), t.artist.as_str(), t.album.as_str()),
+            ("Real", "A1, A2", "Rec")
+        );
         assert_eq!(t.listed_artist(), "A1");
         assert_eq!(t.cover, CoverSource::Embedded);
     }
@@ -626,7 +741,10 @@ mod tests {
         let tracks = scan(root, &HashMap::new());
         let paths: Vec<_> = tracks.iter().map(|t| t.path.as_str()).collect();
         assert_eq!(paths, vec!["Art/Alb/one.mp3", "root.flac"]);
-        assert_eq!(tracks[0].cover, CoverSource::File("Art/Alb/cover.jpg".into()));
+        assert_eq!(
+            tracks[0].cover,
+            CoverSource::File("Art/Alb/cover.jpg".into())
+        );
         assert_eq!(tracks[1].album, UNKNOWN_ALBUM);
         assert_eq!(tracks[1].artist, UNKNOWN_ARTIST);
 
@@ -637,6 +755,27 @@ mod tests {
         let index = source_id_index(root);
         assert_eq!(index.len(), 1);
         assert_eq!(index["vid42"], "Art/Alb/a [vid42].opus");
+    }
+
+    #[test]
+    fn scan_ignores_symlinks() {
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.mp3"), b"x").unwrap();
+        fs::create_dir(outside.path().join("Dir")).unwrap();
+        fs::write(outside.path().join("Dir/song.mp3"), b"x").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Art/Alb")).unwrap();
+        fs::write(root.join("Art/Alb/real.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.mp3"),
+            root.join("Art/Alb/link.mp3"),
+        )
+        .unwrap();
+        std::os::unix::fs::symlink(outside.path().join("Dir"), root.join("Linked")).unwrap();
+        let tracks = scan(root, &HashMap::new());
+        let paths: Vec<_> = tracks.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, vec!["Art/Alb/real.mp3"]);
     }
 
     #[test]
@@ -659,7 +798,11 @@ mod tests {
         ]);
         assert_eq!(lib.albums.len(), 2);
         let comp = &lib.albums[lib.album_index(&album_key("VA", "Comp")).unwrap()];
-        let titles: Vec<_> = comp.tracks.iter().map(|&i| lib.tracks[i].title.as_str()).collect();
+        let titles: Vec<_> = comp
+            .tracks
+            .iter()
+            .map(|&i| lib.tracks[i].title.as_str())
+            .collect();
         assert_eq!(titles, vec!["T1", "T2"]);
         let names: Vec<_> = lib.artists.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, vec!["VA", "Z"]);
