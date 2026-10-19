@@ -17,11 +17,13 @@ use crate::job::{Job, SourceResult};
 use crate::{log, netguard};
 
 /// `<Artist>/<Album or Singles>/<Title> [<id>].<ext>` from YouTube Music
-/// fields with uploader/title fallbacks. Fields are capped in bytes so the
-/// `[<id>]` suffix always survives; the worker sanitises names again when it
-/// moves the file into the library.
+/// fields with uploader/title fallbacks. Fields are capped in bytes so that
+/// even after `--windows-filenames` turns ASCII characters into 3-byte
+/// full-width ones a name stays below 255 bytes and the `[<id>]` suffix
+/// survives whole; the worker shortens names to the contract's 120 bytes
+/// (keeping the suffix) when it moves the file into the library.
 const OUTPUT_TEMPLATE: &str =
-    "%(artists.0,artist,creator,uploader,channel).80B/%(album|Singles).80B/%(track,title).80B [%(id)s].%(ext)s";
+    "%(artists.0,artist,creator,uploader,channel).80B/%(album|Singles).80B/%(track,title).70B [%(id)s].%(ext)s";
 
 /// Crops the thumbnail to a centred square while converting it to JPEG.
 const SQUARE_THUMBNAIL: &str =
@@ -215,8 +217,6 @@ pub fn fetch(job: &mut Job, target: &Target, index: usize, total: usize) -> Fetc
         "--postprocessor-args",
         SQUARE_THUMBNAIL,
         "--windows-filenames",
-        "--trim-filenames",
-        "110",
         "--no-mtime",
         "--no-part",
         // Printed before the match filter runs, so a skip can be explained.
