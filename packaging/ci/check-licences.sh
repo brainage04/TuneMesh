@@ -62,7 +62,11 @@ case $format in
         all_debian_copyrights
         contains $lic/THIRD-PARTY-SOURCES.md '^### mpv '
         contains $lic/THIRD-PARTY-SOURCES.md '^### ffmpeg '
-        contains $lic/THIRD-PARTY-SOURCES.md 'pool/[^ ]*/ffmpeg_[^ ]*\.orig\.tar'
+        contains $lic/THIRD-PARTY-SOURCES.md 'http://archive\.ubuntu\.com/ubuntu/pool/[^ ]*/ffmpeg_[^ ]*\.orig\.tar'
+        if grep -q 'mirror+file' "$root/$lic/THIRD-PARTY-SOURCES.md"; then
+            echo "MISSING $lic/THIRD-PARTY-SOURCES.md names a build machine's mirror" >&2
+            missing=1
+        fi
         rust=$lic/THIRD-PARTY-RUST.txt
         ;;
     flatpak)
