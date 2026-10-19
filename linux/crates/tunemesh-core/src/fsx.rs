@@ -255,7 +255,7 @@ impl Dir {
     /// `AlreadyExists` when `name` exists.
     pub fn move_in(&self, from: &Path, name: &str) -> io::Result<()> {
         let name = component(name)?;
-        match rename_noreplace(&rustix::fs::CWD, from.as_os_str(), &self.fd, name.as_ref()) {
+        match rename_noreplace(rustix::fs::CWD, from.as_os_str(), &self.fd, name.as_ref()) {
             Ok(()) => return Ok(()),
             Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {}
             Err(e) => return Err(e),

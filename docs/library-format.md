@@ -10,7 +10,7 @@ implementations disagree, this file decides.
 | --- | --- |
 | Syncthing folder ID | `tunemesh` |
 | Label | `TuneMesh` |
-| Linux hosts | `/home/thomas/Music/TuneMesh` |
+| Linux | `~/Music/TuneMesh` |
 | Android | `/storage/emulated/0/Music/TuneMesh` |
 
 Both apps let the user change the path; these are the defaults. On Android the
@@ -25,8 +25,17 @@ turns into conflict copies of request and status files.
   Playlists/<Name>.m3u8                           playlists, including Liked Songs
   .tunemesh/requests/<id>.json                    download requests (clients write)
   .tunemesh/status/<id>.json                      download status (worker writes)
+  .tunemesh/worker.json                           which device downloads (worker writes)
   .stignore                                       per device, never synced
 ```
+
+Symbolic links: any device can put a symlink into the shared folder, so
+implementations never follow one below `<root>`. Playlists, `.tunemesh/` and
+everything in it, and the directories the worker creates or writes into must
+be real directories and regular files; a symlink in their place is refused
+(read as missing or invalid, never written through). Desktop and worker open
+these paths with `O_NOFOLLOW` relative to the root (`tunemesh_core::fsx`).
+Android shared storage cannot hold symlinks.
 
 ## Audio files
 
@@ -94,7 +103,7 @@ A client asks for a download by creating
   "input": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
   "playlist": null,
   "playlistFromSource": false,
-  "requestedBy": "thomass-s21",
+  "requestedBy": "pixel-8",
   "requestedAt": "2026-10-06T05:01:37Z"
 }
 ```
@@ -128,44 +137,111 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
   "progress": 0.42,
   "message": null,
   "tracks": ["jawed/Singles/Me at the zoo [jNQXAC9IVRw].opus"],
+  "itemsDone": 0,
+  "itemsTotal": 1,
   "updatedAt": "2026-10-06T05:01:52Z"
 }
 ```
 
-- `state`: `queued` → `downloading` → `done` | `failed` | `cancelled`.
+- `state`: `queued` → `downloading` → `done` | `failed` | `cancelled`. A
+  worker that stops mid-request (shutdown, or another device took over)
+  sets `queued` again and keeps the request file; the next worker resumes it.
 - `title`: resolved title of the item or source playlist, once known.
 - `progress`: 0–1 for the whole request, or null.
 - `message`: human-readable error or note (for example "2 of 30 tracks
   unavailable").
 - `tracks`: library-relative paths of the tracks this request produced or
   matched, in source order.
+- `itemsDone`, `itemsTotal` (optional integers): items of the request
+  finished so far (downloaded, already present or failed) and items it
+  covers, once the source is listed. Absent until known.
+- `failures` (optional, default empty): items that could not be downloaded,
+  as `[{"item": "Artist - Title", "error": "..."}]`, at most 200 entries
+  (`itemsDone` and `message` still count all of them).
+- `warnings` (optional, default empty): strings the user should see although
+  the request went on, for example "Imported the first 100 tracks: ..." when
+  a source was cut short. Final `message`s repeat them.
 - After writing a final state the worker deletes the request file.
 - Clients show a request with no status file yet as "Waiting for the
   downloader". Clients may delete status files in a final state ("Clear").
 
+## One downloader per library
+
+Any number of devices may run the worker; one downloads at a time. The
+active worker writes `.tunemesh/worker.json` (atomically) when it starts
+downloading and every 60 seconds after that:
+
+```json
+{
+  "version": 1,
+  "device": "desktop",
+  "instance": "5f0c1d2e3a4b6c7d",
+  "pid": 41234,
+  "workerVersion": "0.1.0",
+  "heartbeatAt": "2026-10-06T05:01:52Z"
+}
+```
+
+- `device`: device name (the host name unless `--device` says otherwise),
+  for display. `instance`: random per worker process. `pid`: its process id
+  on `device`. `workerVersion`: the worker's version.
+- A heartbeat is fresh when `heartbeatAt` is less than 3 minutes from now (in
+  either direction; device clocks must be roughly in sync).
+- A worker does not process requests while the file holds a fresh heartbeat
+  of another worker. It keeps running and takes over once that heartbeat is
+  stale, or at once when the other worker is on the same device and its
+  process no longer exists.
+- An active worker that finds another worker's fresh heartbeat in the file
+  (two started at once and Syncthing kept the other write) hands its current
+  request back (`queued`) and stops downloading.
+- On a clean exit the worker deletes the file if it still holds its own
+  heartbeat.
+- Clients show "Downloads are handled by <device>" while the heartbeat is
+  fresh, otherwise "No device is downloading right now".
+
 ## Worker behaviour
 
-The worker runs on exactly one host (thomas-server). It:
+The worker (`tunemesh-worker`) runs on any Linux device that holds the
+library, as a service or as a child process of the desktop app. It:
 
-1. Processes requests oldest first, one at a time.
-2. Downloads into a work directory outside `<root>` and moves finished files
-   into place, so Syncthing never sees partial files.
+1. Processes requests oldest first, one at a time, looking at the oldest 500
+   request files only (`--max-pending`).
+2. Downloads into a private work directory outside `<root>` (owned by the
+   worker's user, mode 0700, refused otherwise) and moves finished files
+   into place, so Syncthing never sees partial files. A file is moved only
+   from inside the request's own scratch directory, and only while the
+   library's filesystem keeps 2 GiB free (`--min-free-space`).
 3. Uses `yt-dlp` for URLs other than Spotify, keeping the source audio stream
    without re-encoding, embedding metadata and a square-cropped cover, and
    naming files `<Artist>/<Album>/<Title> [<id>].<ext>` (`Singles` when there
-   is no album).
-4. Uses `spotdl` for `open.spotify.com` URLs (Spotify is used for metadata only;
-   audio comes from YouTube).
+   is no album). YouTube and YouTube Music playlists are downloaded whole;
+   items that fail are skipped and listed in `failures`.
+4. For `open.spotify.com` track, album and playlist URLs, reads the track list
+   from Spotify's public web pages without any account, then finds each track
+   on YouTube Music (title and artists; the duration must match within 10 %
+   or 10 s), falling back to YouTube search. Files are named with the Spotify
+   track id (`<Title> [<Spotify id>].<ext>`) and tagged with Spotify's title,
+   artists, album and track number. When only part of a Spotify list could be
+   read, `warnings` says so; a list is never cut silently.
 5. Treats non-URL input as a search: the first YouTube Music song result, then
    the first YouTube result.
 6. Skips a download when a file with the same `[<id>]` already exists and
    reports the existing path in `tracks`.
 7. On start, resumes requests whose status is `queued` or `downloading`.
-8. Refuses (state `failed`) URLs that are not http(s) or whose host is or
-   resolves to a loopback, private, link-local, CGNAT/Tailscale
-   (`100.64.0.0/10`) or IPv6 unique-local address, and skips playlist entries
-   that do: a request must never make the worker reach its own host or the
-   tailnet.
+8. Limits each request: at most 5000 items (`--max-items`; the rest is
+   reported in `warnings`), files up to 500 MiB (`--max-file-size`), tracks
+   up to 4 hours and no live streams (`--max-duration`), 30 minutes per
+   yt-dlp run (`--child-timeout`).
+9. Refuses (state `failed`, or a `failures` entry for a playlist item) URLs
+   that are not http(s) or whose host is or resolves to a loopback, private,
+   link-local, CGNAT/Tailscale (`100.64.0.0/10`), IPv6 unique-local or other
+   non-public address, or to one of the host's own interface addresses. All
+   network traffic of yt-dlp, its ffmpeg and the worker itself goes through
+   the worker's filtering proxy, which applies this check to every
+   connection, redirects included, and connects only to the address it
+   checked. This does not cover the host's public IPv4 address behind NAT
+   (reachable through the router's hairpin NAT) or services that other hosts
+   on the internet can reach anyway; the NixOS module adds a firewall layer.
 
 ## Local state
 
@@ -175,8 +251,7 @@ and never stored in `<root>`.
 ## `.stignore`
 
 Each device keeps this in `<root>/.stignore` (Syncthing does not sync it; the
-NixOS configuration writes it on Linux hosts and the Android app writes it when
-missing):
+desktop app and the Android app write it when missing):
 
 ```text
 // TuneMesh
