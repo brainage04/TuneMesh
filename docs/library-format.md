@@ -46,8 +46,8 @@ storage cannot hold symlinks.
   directories (leading `.`), Syncthing conflict copies (name contains
   `.sync-conflict-`), and any file or directory whose name contains a line
   break (LF or CR; such a path cannot be written as a playlist line), with
-  everything below such a directory. Readers may stop descending at some
-  depth; the Linux apps read 64 directory levels below `<root>`.
+  everything below such a directory. Readers scan at most 64 directory
+  levels below `<root>` (see "Limits").
 - A track's identity is its path relative to `<root>`, with `/` separators.
 - Metadata comes from embedded tags. Fallbacks when a tag is missing:
   title = file name without extension and without a trailing ` [<id>]`;
@@ -307,6 +307,48 @@ library, as a service or as a child process of the desktop app. It:
     such as `-filter_script` or `-progress`), so a download that is really
     a playlist or script referring to other files (HLS, ffconcat, DASH)
     fails instead of copying local files into the library.
+
+## Limits
+
+Every file in `<root>` can come from any device that shares the folder, so
+every reader bounds what it reads, keeps and shows. These are the limits of
+all implementations (Rust: `tunemesh_core::limits`; Android: `Limits`).
+Real libraries stay far below them. Sizes are bytes of UTF-8; text is cut
+at a character boundary.
+
+| Input | Limit | Past the limit |
+| --- | --- | --- |
+| A request, status or `worker.json` file | 1 MiB | Not read: a request is reported as an invalid request file, a status file is skipped, `worker.json` counts as absent |
+| `<root>/.stignore` | 1 MiB | Left unchanged (not read or rewritten) |
+| Request `input` | 8 KiB | The worker fails the request ("too long") |
+| Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
+| Status files clients read | the newest 200 by id | Older ones are counted but not read or shown |
+| Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |
+| Status `message` | 4 KiB | Cut |
+| Status `warnings` | 50 entries | The rest is dropped |
+| Status `failures` | 200 entries | The rest is dropped (`itemsDone` and `message` still count all) |
+| Status `tracks` | 10,000 paths | The rest is dropped |
+| A playlist file | 32 MiB, 250,000 entries, lines of 32 KiB (without the line ending) | Too large: listed as too large, not opened for playing or editing, never rewritten or truncated (see "Playlists") |
+| Playlists listed | 1,000 (by name, case-insensitively) | The others are not listed |
+| An `#EXTINF` label | 1 KiB | Cut when read and when written |
+| A tag text field (title, artist, album, album artist) | 1 KiB | Cut |
+| Artists in one tag | 32 | The rest is dropped |
+| A single tag item (a picture or text frame) | 16 MiB | Not read; the track keeps its other tags and its fallbacks |
+| An embedded or folder cover | 16 MiB, and 5,000 pixels per side as stated in the image header (JPEG, PNG, WebP or GIF) | Not shown: the placeholder is drawn. A cover whose size cannot be read from its header is not shown either |
+| Folder depth below `<root>` | 64 levels | Deeper folders are not scanned |
+| Entries read from one folder | 100,000 | The rest of that folder is not scanned |
+| Audio files in the library | 250,000 | Files past the limit (in scan order) are left out |
+| Tracks in one album or by one artist | no limit | Grouping and sorting are O(n log n), so a 40,000-track album costs tens of milliseconds |
+
+Display limits (what a UI shows of text it read):
+
+| Text | Shown |
+| --- | --- |
+| A single-line text (titles, names, labels, paths) | at most 300 characters, one line |
+| A message or warning | at most 2,000 characters and 20 lines |
+| A list read from a synced file (warnings, failures, tracks of a status, status files) | the first 200 rows, then "and N more" |
+
+Cut text ends in `…`.
 
 ## Local state
 
