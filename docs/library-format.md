@@ -129,6 +129,28 @@ A client asks for a download by creating
 A client cancels a request by deleting its request file. The worker treats a
 missing request file as cancellation between tracks.
 
+### YouTube links
+
+Clients and the worker classify a YouTube or YouTube Music link the same
+way (clients use it to preselect `playlistFromSource`, the worker to decide
+what to download):
+
+1. The host, lowercased, with one leading `www.` and then one leading `m.`
+   removed, is `youtube.com`, `music.youtube.com` or `youtu.be`. Other
+   hosts are not YouTube links.
+2. The list is the value of the first `list=` parameter in the query
+   (before any `#`), case-sensitive and not percent-decoded.
+3. `OLAK5uy_...`: an album. `RDCLAK5uy_...`: a playlist (YouTube Music's
+   editorial playlists). Any other `RD...`: a single video (an
+   auto-generated mix). Any other non-empty value: a playlist. No `list=` or
+   an empty value: a single video.
+
+For an album or playlist the worker downloads the whole list from
+`https://www.youtube.com/playlist?list=<list>` (`music.youtube.com` for
+YouTube Music links), even when the link also names a video, and
+`playlistFromSource` names the playlist after it. A single video is
+downloaded alone.
+
 ## Download status
 
 Only the worker writes `.tunemesh/status/<id>.json` (atomically):
@@ -230,8 +252,9 @@ library, as a service or as a child process of the desktop app. It:
 3. Uses `yt-dlp` for URLs other than Spotify, keeping the source audio stream
    without re-encoding, embedding metadata and a square-cropped cover, and
    naming files `<Artist>/<Album>/<Title> [<id>].<ext>` (`Singles` when there
-   is no album). YouTube and YouTube Music playlists are downloaded whole;
-   items that fail are skipped and listed in `failures`.
+   is no album). YouTube and YouTube Music playlists and albums (see
+   "YouTube links") are downloaded whole; items that fail are skipped and
+   listed in `failures`.
 4. For `open.spotify.com` track, album and playlist URLs, reads the track list
    from Spotify's public web pages without any account, then finds each track
    on YouTube Music (title and artists; the duration must match within 10 %
@@ -251,11 +274,14 @@ library, as a service or as a child process of the desktop app. It:
 9. Refuses (state `failed`, or a `failures` entry for a playlist item) URLs
    that are not http(s) or whose host is or resolves to a loopback, private,
    link-local, CGNAT/Tailscale (`100.64.0.0/10`), IPv6 unique-local or other
-   non-public address, or to an address on one of the host's own networks
+   non-public address (IPv6: every block the IANA special-purpose registry
+   marks as not globally reachable, including local-use NAT64
+   `64:ff9b:1::/48`, `::/96` and Teredo), or to an address on one of the host's own networks
    (an interface address with its on-link prefix, a /64 for a /128 IPv6
    address, and every route without a gateway, so global IPv6 addresses of
-   LAN neighbours such as the router or a NAS are refused too; NAT64
-   addresses `64:ff9b::/96` count as the IPv4 address they embed). The
+   LAN neighbours such as the router or a NAS are refused too). Addresses
+   that reach an IPv4 address (IPv4-mapped, NAT64 `64:ff9b::/96`, SIIT
+   `::ffff:0:0:0/96`, 6to4 `2002::/16`) count as that IPv4 address. The
    message in the status file is the same for refused and unresolvable hosts
    and names no address; details go to the worker's local log only. All
    network traffic of yt-dlp, its ffmpeg and the worker itself goes through

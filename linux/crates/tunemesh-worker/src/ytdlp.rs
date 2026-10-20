@@ -423,10 +423,66 @@ fn download_all(job: &mut Job, items: &[Item], result: &mut SourceResult) {
     }
 }
 
+/// What a YouTube or YouTube Music link's `list=` parameter makes it
+/// (contract: "YouTube links").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum YouTubeList {
+    /// No list, an empty one, or an auto-generated mix (`RD...`): the one
+    /// video.
+    Single,
+    /// An album (`OLAK5uy_...`) or playlist: the whole list, as
+    /// `https://<host>/playlist?list=<id>`.
+    List(String),
+}
+
+/// Applies the contract's rule to `url`; `None` if it is not a YouTube or
+/// YouTube Music link.
+pub fn youtube_list(url: &str) -> Option<YouTubeList> {
+    let (scheme, rest) = url.split_once("://")?;
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "http" | "https") {
+        return None;
+    }
+    let rest = rest.split('#').next().unwrap_or(rest);
+    let authority = rest.split(['/', '?']).next()?;
+    let host = authority
+        .rsplit('@')
+        .next()?
+        .split(':')
+        .next()?
+        .to_ascii_lowercase();
+    let host = host.strip_prefix("www.").unwrap_or(&host);
+    let host = host.strip_prefix("m.").unwrap_or(host);
+    let playlist_host = match host {
+        "youtube.com" | "youtu.be" => "www.youtube.com",
+        "music.youtube.com" => "music.youtube.com",
+        _ => return None,
+    };
+    let list = rest
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|p| p.strip_prefix("list=")))
+        .unwrap_or("");
+    Some(
+        if list.is_empty() || (list.starts_with("RD") && !list.starts_with("RDCLAK5uy_")) {
+            YouTubeList::Single
+        } else {
+            YouTubeList::List(format!("https://{playlist_host}/playlist?list={list}"))
+        },
+    )
+}
+
 pub fn run_url(job: &mut Job, url: &str) -> SourceResult {
     if let Err(e) = netguard::check_url(url) {
         return SourceResult::fatal(e);
     }
+    // A video link inside a playlist or album downloads the whole list.
+    let playlist_url;
+    let url = match youtube_list(url) {
+        Some(YouTubeList::List(u)) => {
+            playlist_url = u;
+            playlist_url.as_str()
+        }
+        _ => url,
+    };
     let max = job.ctx.limits.max_items;
     // One more than allowed tells whether the source was cut.
     let mut listing = match list(job, url, None, Some(max + 1)) {
@@ -543,6 +599,61 @@ mod tests {
             l.items.iter().map(|i| i.url.as_str()).collect::<Vec<_>>(),
             vec!["https://y/a", "https://www.youtube.com/watch?v=b"]
         );
+    }
+
+    /// The contract's "YouTube links" rule.
+    #[test]
+    fn youtube_list_rule() {
+        use YouTubeList::*;
+        let list = |h: &str, id: &str| List(format!("https://{h}/playlist?list={id}"));
+        let w = "www.youtube.com";
+        let m = "music.youtube.com";
+        for (url, want) in [
+            (
+                "https://www.youtube.com/watch?v=x&list=PLabc",
+                Some(list(w, "PLabc")),
+            ),
+            ("https://youtu.be/x?list=PLabc&t=3", Some(list(w, "PLabc"))),
+            (
+                "https://m.youtube.com/watch?list=PLabc&v=x",
+                Some(list(w, "PLabc")),
+            ),
+            (
+                "HTTPS://WWW.M.YouTube.com/watch?v=x&list=PLabc",
+                Some(list(w, "PLabc")),
+            ),
+            (
+                "https://music.youtube.com/watch?v=x&list=OLAK5uy_abc",
+                Some(list(m, "OLAK5uy_abc")),
+            ),
+            (
+                "https://music.youtube.com/playlist?list=RDCLAK5uy_abc",
+                Some(list(m, "RDCLAK5uy_abc")),
+            ),
+            (
+                "https://www.youtube.com/watch?v=x&list=RDx&start_radio=1",
+                Some(Single),
+            ),
+            (
+                "https://music.youtube.com/watch?v=x&list=RDAMVMx",
+                Some(Single),
+            ),
+            ("https://www.youtube.com/watch?v=x&list=", Some(Single)),
+            ("https://www.youtube.com/watch?v=x#list=PLabc", Some(Single)),
+            (
+                "https://www.youtube.com/watch?v=x&list=PLa&list=PLb",
+                Some(list(w, "PLa")),
+            ),
+            (
+                "https://www.youtube.com/watch?v=x&list=pl%20x",
+                Some(list(w, "pl%20x")),
+            ),
+            ("https://www.youtube.com/watch?v=x", Some(Single)),
+            ("https://example.com/watch?v=x&list=PLabc", None),
+            ("https://notyoutube.com/watch?list=PLabc", None),
+        ] {
+            assert_eq!(youtube_list(url), want, "{url}");
+        }
     }
 
     #[test]
