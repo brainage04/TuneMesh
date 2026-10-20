@@ -69,8 +69,12 @@ if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
 fi
 if ! pactl info >/dev/null 2>&1; then
     command -v pulseaudio >/dev/null 2>&1 || fail "no sound server and no pulseaudio to start one"
-    pulseaudio -n --daemonize=no --exit-idle-time=-1 --log-target=stderr \
-        --load=module-null-sink --load=module-native-protocol-unix 2>"$work/pulse.log" &
+    # A private home: CI containers run as root with a HOME owned by another
+    # user, which pulseaudio refuses. Anonymous auth, so clients need no cookie.
+    mkdir -m 700 "$work/pulse-home"
+    HOME=$work/pulse-home pulseaudio -n --daemonize=no --exit-idle-time=-1 --log-target=stderr \
+        --load=module-null-sink --load='module-native-protocol-unix auth-anonymous=1' \
+        2>"$work/pulse.log" &
     pulse_pid=$!
     for _ in $(seq 20); do pactl info >/dev/null 2>&1 && break; sleep 0.5; done
     pactl info >/dev/null 2>&1 || { cat "$work/pulse.log" >&2; fail "pulseaudio did not start"; }
@@ -120,7 +124,7 @@ first=$(position)
 sleep 3
 second=$(position)
 echo "MPRIS position: ${first:-?} us, 3 s later ${second:-?} us"
-[ -n "$first" ] && [ -n "$second" ] || fail "no MPRIS position"
+if [ -z "$first" ] || [ -z "$second" ]; then fail "no MPRIS position"; fi
 [ $((second - first)) -ge 1000000 ] || fail "the position did not advance: libmpv is not playing"
 
 activate quit '[]' || true
