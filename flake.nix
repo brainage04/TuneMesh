@@ -424,6 +424,14 @@
                   "3fff::/20"
                   "5f00::/16"
                   "fec0::/10"
+                  # IPv4 ranges that are not globally reachable either: IETF
+                  # protocol assignments, documentation, benchmarking, reserved.
+                  "192.0.0.0/24"
+                  "192.0.2.0/24"
+                  "198.18.0.0/15"
+                  "198.51.100.0/24"
+                  "203.0.113.0/24"
+                  "240.0.0.0/4"
                 ];
                 # 127.0.0.1: yt-dlp reaches the worker's egress proxy there (the
                 # filter applies to loopback traffic as well). Like the resolver
