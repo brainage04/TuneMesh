@@ -7,6 +7,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
+use std::sync::Arc;
 use std::time::Duration;
 
 use gtk::glib;
@@ -39,6 +40,20 @@ struct Cache {
     tracks: Vec<Track>,
 }
 
+#[derive(Serialize)]
+struct CacheRef<'a> {
+    root: &'a Path,
+    tracks: &'a [Track],
+}
+
+/// What a library thread sends to the main loop.
+enum Built {
+    /// A new library to show (from the cache or a scan).
+    Library(Arc<Library>),
+    /// The scan is finished.
+    Done,
+}
+
 fn cache_file() -> PathBuf {
     config::cache_dir().join("library.json")
 }
@@ -48,7 +63,8 @@ type Listener = Rc<dyn Fn(StoreChange)>;
 pub struct Store {
     me: Weak<Store>,
     root: RefCell<PathBuf>,
-    lib: RefCell<Rc<Library>>,
+    /// Built and compared on library threads: the main loop only swaps it.
+    lib: RefCell<Arc<Library>>,
     /// Playlists other than Liked Songs, as summaries: a long playlist is
     /// only held entry by entry while its page is open.
     playlists: RefCell<Vec<Summary>>,
@@ -57,6 +73,10 @@ pub struct Store {
     /// Playlists over the contract's size limits (Liked Songs included):
     /// listed, never opened or rewritten.
     too_large: RefCell<HashSet<String>>,
+    /// Size and modification time of each playlist file as last read.
+    playlist_stamps: RefCell<HashMap<String, Stamp>>,
+    playlists_loading: Cell<bool>,
+    playlists_again: Cell<bool>,
     listeners: RefCell<Vec<Listener>>,
     watcher: RefCell<Option<RecommendedWatcher>>,
     scanning: Cell<bool>,
@@ -69,7 +89,7 @@ impl Store {
         let store = Rc::new_cyclic(|me| Self {
             me: me.clone(),
             root: RefCell::new(root),
-            lib: RefCell::new(Rc::new(Library::default())),
+            lib: RefCell::new(Arc::new(Library::default())),
             playlists: RefCell::new(Vec::new()),
             liked: RefCell::new(Playlist {
                 name: LIKED_SONGS.into(),
@@ -77,6 +97,9 @@ impl Store {
             }),
             liked_set: RefCell::new(HashSet::new()),
             too_large: RefCell::new(HashSet::new()),
+            playlist_stamps: RefCell::new(HashMap::new()),
+            playlists_loading: Cell::new(false),
+            playlists_again: Cell::new(false),
             listeners: RefCell::new(Vec::new()),
             watcher: RefCell::new(None),
             scanning: Cell::new(false),
@@ -99,13 +122,8 @@ impl Store {
         {
             eprintln!("tunemesh: cannot update {}/.stignore: {e}", root.display());
         }
-        let cached = fs::read(cache_file())
-            .ok()
-            .and_then(|b| serde_json::from_slice::<Cache>(&b).ok())
-            .filter(|c| c.root == root)
-            .map(|c| c.tracks)
-            .unwrap_or_default();
-        *self.lib.borrow_mut() = Rc::new(Library::new(cached));
+        // The scan thread shows the cached library first, then the scanned one.
+        *self.lib.borrow_mut() = Arc::new(Library::default());
         self.load_playlists();
         self.watch();
         self.rescan();
@@ -117,6 +135,13 @@ impl Store {
         self.rescan_again.set(false);
         *self.root.borrow_mut() = root;
         self.watcher.borrow_mut().take();
+        self.playlists.borrow_mut().clear();
+        self.too_large.borrow_mut().clear();
+        self.playlist_stamps.borrow_mut().clear();
+        self.set_liked(Playlist {
+            name: LIKED_SONGS.into(),
+            entries: Vec::new(),
+        });
         self.open();
         self.emit(StoreChange::Library);
         self.emit(StoreChange::Playlists);
@@ -139,12 +164,25 @@ impl Store {
         }
     }
 
-    pub fn library(&self) -> Rc<Library> {
+    pub fn library(&self) -> Arc<Library> {
         self.lib.borrow().clone()
     }
 
     pub fn is_scanning(&self) -> bool {
         self.scanning.get()
+    }
+
+    /// Tests: runs the main loop until the library and playlist threads
+    /// have reported.
+    #[cfg(test)]
+    fn settle(&self) {
+        let ctx = glib::MainContext::ref_thread_default();
+        let start = std::time::Instant::now();
+        while (self.scanning.get() || self.playlists_loading.get())
+            && start.elapsed() < Duration::from_secs(10)
+        {
+            ctx.iteration(true);
+        }
     }
 
     // ---- scanning and watching ----------------------------------------
@@ -157,41 +195,66 @@ impl Store {
         self.scanning.set(true);
         self.emit(StoreChange::Scanning);
         let root = self.root();
-        let previous: HashMap<String, Track> = self
-            .lib
-            .borrow()
-            .tracks
-            .iter()
-            .map(|t| (t.path.clone(), t.clone()))
-            .collect();
-        let generation = self.generation.get();
-        let (tx, rx) = async_channel::bounded::<Vec<Track>>(1);
+        let previous = self.library();
+        let (tx, rx) = async_channel::unbounded::<Built>();
         std::thread::Builder::new()
             .name("library-scan".into())
             .spawn(move || {
-                let tracks = library::scan(&root, &previous);
-                let cache = Cache { root, tracks };
-                if let Ok(json) = serde_json::to_vec(&cache) {
-                    let _ = tunemesh_core::atomic::write(&cache_file(), &json);
+                // Everything O(library) happens here, never on the main loop.
+                let mut previous = previous;
+                if previous.tracks.is_empty() {
+                    let cached = fs::read(cache_file())
+                        .ok()
+                        .and_then(|b| serde_json::from_slice::<Cache>(&b).ok())
+                        .filter(|c| c.root == root)
+                        .map(|c| c.tracks)
+                        .unwrap_or_default();
+                    if !cached.is_empty() {
+                        previous = Arc::new(Library::new(cached));
+                        let _ = tx.send_blocking(Built::Library(previous.clone()));
+                    }
                 }
-                let _ = tx.send_blocking(cache.tracks);
+                let by_path: HashMap<String, Track> = previous
+                    .tracks
+                    .iter()
+                    .map(|t| (t.path.clone(), t.clone()))
+                    .collect();
+                let tracks = library::scan(&root, &by_path);
+                drop(by_path);
+                if tracks != previous.tracks {
+                    let cache = CacheRef {
+                        root: &root,
+                        tracks: &tracks,
+                    };
+                    if let Ok(json) = serde_json::to_vec(&cache) {
+                        let _ = tunemesh_core::atomic::write(&cache_file(), &json);
+                    }
+                    let _ = tx.send_blocking(Built::Library(Arc::new(Library::new(tracks))));
+                }
+                let _ = tx.send_blocking(Built::Done);
             })
             .expect("spawn scan thread");
         let weak = self.me.clone();
+        let generation = self.generation.get();
         glib::spawn_future_local(async move {
-            let Ok(tracks) = rx.recv().await else { return };
-            let Some(store) = weak.upgrade() else { return };
-            if store.generation.get() != generation {
-                return;
-            }
-            store.scanning.set(false);
-            if tracks != store.lib.borrow().tracks {
-                *store.lib.borrow_mut() = Rc::new(Library::new(tracks));
-                store.emit(StoreChange::Library);
-            }
-            store.emit(StoreChange::Scanning);
-            if store.rescan_again.replace(false) {
-                store.rescan();
+            while let Ok(built) = rx.recv().await {
+                let Some(store) = weak.upgrade() else { return };
+                if store.generation.get() != generation {
+                    return;
+                }
+                match built {
+                    Built::Library(lib) => {
+                        *store.lib.borrow_mut() = lib;
+                        store.emit(StoreChange::Library);
+                    }
+                    Built::Done => {
+                        store.scanning.set(false);
+                        store.emit(StoreChange::Scanning);
+                        if store.rescan_again.replace(false) {
+                            store.rescan();
+                        }
+                    }
+                }
             }
         });
     }
@@ -265,66 +328,65 @@ impl Store {
 
     // ---- playlists ---------------------------------------------------
 
-    fn read_all_playlists(&self) -> (Vec<Summary>, Playlist, HashSet<String>) {
-        let root = self.root();
-        let mut too_large = HashSet::new();
-        let mut lists = Vec::new();
-        for name in playlist::list_names(&root) {
-            match Playlist::summary(&root, &name, SUMMARY_TRACKS) {
-                Ok(s) => lists.push(s),
-                Err(e) if playlist::is_too_large(&e) => {
-                    lists.push(Summary {
-                        name: name.clone(),
-                        count: 0,
-                        first_tracks: Vec::new(),
-                    });
-                    too_large.insert(name);
-                }
-                Err(e) => eprintln!("tunemesh: cannot read playlist {name:?}: {e}"),
-            }
-        }
-        let liked = match Playlist::read(&root, LIKED_SONGS) {
-            Ok(p) => p,
-            Err(e) => {
-                if playlist::is_too_large(&e) {
-                    too_large.insert(LIKED_SONGS.to_owned());
-                }
-                Playlist {
-                    name: LIKED_SONGS.into(),
-                    entries: Vec::new(),
-                }
-            }
-        };
-        (lists, liked, too_large)
-    }
-
     fn load_playlists(&self) {
-        let (lists, liked, too_large) = self.read_all_playlists();
-        *self.playlists.borrow_mut() = lists;
-        *self.too_large.borrow_mut() = too_large;
-        self.set_liked(liked);
+        self.reload_playlists();
     }
 
     fn set_liked(&self, liked: Playlist) {
-        *self.liked_set.borrow_mut() = liked
-            .entries
-            .iter()
-            .filter_map(|e| e.track().map(str::to_owned))
-            .collect();
+        *self.liked_set.borrow_mut() = liked_paths(&liked);
         *self.liked.borrow_mut() = liked;
     }
 
+    /// Re-reads the playlists on a thread: only files whose size or
+    /// modification time changed are read again, and nothing proportional to
+    /// a playlist's length runs on the main loop.
     fn reload_playlists(&self) {
-        let (lists, liked, too_large) = self.read_all_playlists();
-        // A summary does not show every change (a reorder further down), so
-        // any change below Playlists/ refreshes what shows playlists.
-        *self.playlists.borrow_mut() = lists;
-        *self.too_large.borrow_mut() = too_large;
-        self.emit(StoreChange::Playlists);
-        if liked != *self.liked.borrow() {
-            self.set_liked(liked);
-            self.emit(StoreChange::Liked);
+        if self.playlists_loading.replace(true) {
+            self.playlists_again.set(true);
+            return;
         }
+        let root = self.root();
+        let known = PlaylistsRead {
+            lists: self.playlists.borrow().clone(),
+            liked: None,
+            too_large: self.too_large.borrow().clone(),
+            stamps: self.playlist_stamps.borrow().clone(),
+        };
+        let (tx, rx) = async_channel::bounded::<PlaylistsRead>(1);
+        std::thread::Builder::new()
+            .name("playlists".into())
+            .spawn(move || {
+                let _ = tx.send_blocking(read_playlists(&root, known));
+            })
+            .expect("spawn playlist thread");
+        let weak = self.me.clone();
+        let generation = self.generation.get();
+        glib::spawn_future_local(async move {
+            let read = rx.recv().await;
+            let Some(store) = weak.upgrade() else { return };
+            store.playlists_loading.set(false);
+            if store.generation.get() != generation {
+                // The library folder changed meanwhile: read the new one.
+                store.reload_playlists();
+                return;
+            }
+            if let Ok(read) = read {
+                // A summary does not show every change (a reorder further
+                // down), so any change refreshes what shows playlists.
+                *store.playlists.borrow_mut() = read.lists;
+                *store.too_large.borrow_mut() = read.too_large;
+                *store.playlist_stamps.borrow_mut() = read.stamps;
+                store.emit(StoreChange::Playlists);
+                if let Some((liked, set)) = read.liked {
+                    *store.liked_set.borrow_mut() = set;
+                    *store.liked.borrow_mut() = liked;
+                    store.emit(StoreChange::Liked);
+                }
+            }
+            if store.playlists_again.replace(false) {
+                store.reload_playlists();
+            }
+        });
     }
 
     /// All playlists except Liked Songs, sorted by name.
@@ -511,18 +573,37 @@ impl Store {
     /// directories, then drops them from the in-memory library.
     pub fn delete_tracks(&self, paths: &[String]) -> io::Result<()> {
         let (gone, result) = delete_files(&self.root(), paths);
+        if gone.is_empty() {
+            return result;
+        }
         // Only tracks whose file is really gone leave the library; one that
-        // could not be deleted stays listed.
-        let remaining: Vec<Track> = self
-            .lib
-            .borrow()
-            .tracks
-            .iter()
-            .filter(|t| !gone.contains(&t.path))
-            .cloned()
-            .collect();
-        *self.lib.borrow_mut() = Rc::new(Library::new(remaining));
-        self.emit(StoreChange::Library);
+        // could not be deleted stays listed. The new library is built off
+        // the main loop.
+        let previous = self.library();
+        let (tx, rx) = async_channel::bounded::<Arc<Library>>(1);
+        std::thread::Builder::new()
+            .name("library-update".into())
+            .spawn(move || {
+                let gone: HashSet<String> = gone.into_iter().collect();
+                let remaining: Vec<Track> = previous
+                    .tracks
+                    .iter()
+                    .filter(|t| !gone.contains(&t.path))
+                    .cloned()
+                    .collect();
+                let _ = tx.send_blocking(Arc::new(Library::new(remaining)));
+            })
+            .expect("spawn library thread");
+        let weak = self.me.clone();
+        let generation = self.generation.get();
+        glib::spawn_future_local(async move {
+            let Ok(lib) = rx.recv().await else { return };
+            let Some(store) = weak.upgrade() else { return };
+            if store.generation.get() == generation {
+                *store.lib.borrow_mut() = lib;
+                store.emit(StoreChange::Library);
+            }
+        });
         result
     }
 }
@@ -569,6 +650,105 @@ fn delete_files(root: &Path, paths: &[String]) -> (Vec<String>, io::Result<()>) 
         }
     }
     (gone, result)
+}
+
+/// What identifies a version of a playlist file without reading it.
+type Stamp = (u64, std::time::SystemTime);
+
+fn stamp(root: &Path, name: &str) -> Option<Stamp> {
+    let meta = fs::symlink_metadata(playlist::playlist_path(root, name)).ok()?;
+    meta.is_file()
+        .then(|| meta.modified().ok().map(|m| (meta.len(), m)))?
+}
+
+fn liked_paths(liked: &Playlist) -> HashSet<String> {
+    liked
+        .entries
+        .iter()
+        .filter_map(|e| e.track().map(str::to_owned))
+        .collect()
+}
+
+/// The playlists as read by `read_playlists`.
+struct PlaylistsRead {
+    lists: Vec<Summary>,
+    /// Liked Songs and its track set, when it changed.
+    liked: Option<(Playlist, HashSet<String>)>,
+    too_large: HashSet<String>,
+    stamps: HashMap<String, Stamp>,
+}
+
+/// Reads the playlist summaries and Liked Songs below `root`, reusing what
+/// `known` holds for files that did not change. Runs off the main loop.
+fn read_playlists(root: &Path, known: PlaylistsRead) -> PlaylistsRead {
+    let mut out = PlaylistsRead {
+        lists: Vec::new(),
+        liked: None,
+        too_large: HashSet::new(),
+        stamps: HashMap::new(),
+    };
+    let unchanged =
+        |name: &str, now: Option<Stamp>| now.is_some() && known.stamps.get(name).copied() == now;
+    let summaries: HashMap<&str, &Summary> =
+        known.lists.iter().map(|s| (s.name.as_str(), s)).collect();
+    for name in playlist::list_names(root) {
+        let now = stamp(root, &name);
+        if unchanged(&name, now)
+            && let Some(s) = summaries.get(name.as_str())
+        {
+            if known.too_large.contains(&name) {
+                out.too_large.insert(name.clone());
+            }
+            out.lists.push((*s).clone());
+            out.stamps.insert(name, now.expect("checked"));
+            continue;
+        }
+        match Playlist::summary(root, &name, SUMMARY_TRACKS) {
+            Ok(s) => out.lists.push(s),
+            Err(e) if playlist::is_too_large(&e) => {
+                out.lists.push(Summary {
+                    name: name.clone(),
+                    count: 0,
+                    first_tracks: Vec::new(),
+                });
+                out.too_large.insert(name.clone());
+            }
+            Err(e) => {
+                eprintln!("tunemesh: cannot read playlist {name:?}: {e}");
+                continue;
+            }
+        }
+        if let Some(now) = now {
+            out.stamps.insert(name, now);
+        }
+    }
+    let now = stamp(root, LIKED_SONGS);
+    if unchanged(LIKED_SONGS, now) {
+        if known.too_large.contains(LIKED_SONGS) {
+            out.too_large.insert(LIKED_SONGS.to_owned());
+        }
+    } else {
+        let liked = match Playlist::read(root, LIKED_SONGS) {
+            Ok(p) => p,
+            Err(e) => {
+                if playlist::is_too_large(&e) {
+                    out.too_large.insert(LIKED_SONGS.to_owned());
+                } else if e.kind() != io::ErrorKind::NotFound {
+                    eprintln!("tunemesh: cannot read Liked Songs: {e}");
+                }
+                Playlist {
+                    name: LIKED_SONGS.into(),
+                    entries: Vec::new(),
+                }
+            }
+        };
+        let set = liked_paths(&liked);
+        out.liked = Some((liked, set));
+    }
+    if let Some(now) = now {
+        out.stamps.insert(LIKED_SONGS.to_owned(), now);
+    }
+    out
 }
 
 /// Tracks a playlist summary keeps for its cover.
@@ -648,8 +828,13 @@ fn watch_library(
 mod tests {
     use super::*;
 
-    /// Tests that create a `Store` own the default main context in turn.
-    static MAIN_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// Runs `f` with a main context of its own as the thread default, so
+    /// the futures a `Store` spawns never meet another test's thread.
+    fn on_own_context(f: impl FnOnce()) {
+        let ctx = glib::MainContext::new();
+        let _owner = ctx.acquire().expect("main context");
+        ctx.with_thread_default(f).expect("thread default");
+    }
 
     #[test]
     fn deleting_never_follows_a_symlinked_folder() {
@@ -685,39 +870,40 @@ mod tests {
 
     #[test]
     fn opening_a_library_adds_missing_stignore_rules() {
-        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = glib::MainContext::default();
-        let _owner = ctx.acquire().expect("main context");
-        let base =
-            std::env::temp_dir().join(format!("tunemesh-stignore-test-{}", std::process::id()));
-        let (lib, other) = (base.join("lib"), base.join("other"));
-        fs::create_dir_all(&lib).unwrap();
-        fs::create_dir_all(&other).unwrap();
-        fs::write(lib.join(".stignore"), "// mine\n*.tmp\n").unwrap();
-        let store = Store::new(lib.clone());
-        let text = fs::read_to_string(lib.join(".stignore")).unwrap();
-        assert!(
-            text.starts_with("// mine\n*.tmp\n"),
-            "user rules kept: {text:?}"
-        );
-        assert!(
-            text.lines().any(|l| l.trim() == "(?d).~tunemesh-*"),
-            "{text:?}"
-        );
+        on_own_context(|| {
+            let base =
+                std::env::temp_dir().join(format!("tunemesh-stignore-test-{}", std::process::id()));
+            let (lib, other) = (base.join("lib"), base.join("other"));
+            fs::create_dir_all(&lib).unwrap();
+            fs::create_dir_all(&other).unwrap();
+            fs::write(lib.join(".stignore"), "// mine\n*.tmp\n").unwrap();
+            let store = Store::new(lib.clone());
+            store.settle();
+            let text = fs::read_to_string(lib.join(".stignore")).unwrap();
+            assert!(
+                text.starts_with("// mine\n*.tmp\n"),
+                "user rules kept: {text:?}"
+            );
+            assert!(
+                text.lines().any(|l| l.trim() == "(?d).~tunemesh-*"),
+                "{text:?}"
+            );
 
-        // A symlinked .stignore is neither followed nor replaced.
-        fs::write(other.join("target"), "keep\n").unwrap();
-        std::os::unix::fs::symlink(other.join("target"), other.join(".stignore")).unwrap();
-        store.set_root(other.clone());
-        assert_eq!(fs::read_to_string(other.join("target")).unwrap(), "keep\n");
-        assert!(
-            fs::symlink_metadata(other.join(".stignore"))
-                .unwrap()
-                .file_type()
-                .is_symlink()
-        );
-        drop(store);
-        fs::remove_dir_all(&base).unwrap();
+            // A symlinked .stignore is neither followed nor replaced.
+            fs::write(other.join("target"), "keep\n").unwrap();
+            std::os::unix::fs::symlink(other.join("target"), other.join(".stignore")).unwrap();
+            store.set_root(other.clone());
+            store.settle();
+            assert_eq!(fs::read_to_string(other.join("target")).unwrap(), "keep\n");
+            assert!(
+                fs::symlink_metadata(other.join(".stignore"))
+                    .unwrap()
+                    .file_type()
+                    .is_symlink()
+            );
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
     }
 
     /// This process's inotify file descriptors.
@@ -802,6 +988,7 @@ mod tests {
         fs::create_dir_all(base.join(PLAYLISTS_DIR)).unwrap();
         write_list(&base, lines);
         let store = Store::new(base.clone());
+        store.settle();
         let shown = Playlist::read(&base, "P").unwrap();
         let refs = shown
             .entries
@@ -832,94 +1019,126 @@ mod tests {
 
     #[test]
     fn removing_finds_an_entry_another_device_moved() {
-        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = glib::MainContext::default();
-        let _owner = ctx.acquire().expect("main context");
-        let (base, store, refs) = playlist_lib("rm", &["A", "B", "C"]);
-        // Another device moves C to the top; the user removes C as shown (position 2).
-        write_list(&base, &["C", "A", "B"]);
-        store.remove_from_playlist("P", &[refs[2].clone()]).unwrap();
-        assert_eq!(names(&base), ["A", "B"]);
+        on_own_context(|| {
+            let (base, store, refs) = playlist_lib("rm", &["A", "B", "C"]);
+            // Another device moves C to the top; the user removes C as shown (position 2).
+            write_list(&base, &["C", "A", "B"]);
+            store.remove_from_playlist("P", &[refs[2].clone()]).unwrap();
+            assert_eq!(names(&base), ["A", "B"]);
 
-        // An entry that is gone: nothing changes, the user is told.
-        write_list(&base, &["A", "B"]);
-        let e = store
-            .remove_from_playlist("P", &[(2, "C.opus".into())])
-            .unwrap_err();
-        assert!(e.to_string().contains("changed"), "{e}");
-        assert_eq!(names(&base), ["A", "B"]);
-        drop(store);
-        fs::remove_dir_all(&base).unwrap();
+            // An entry that is gone: nothing changes, the user is told.
+            write_list(&base, &["A", "B"]);
+            let e = store
+                .remove_from_playlist("P", &[(2, "C.opus".into())])
+                .unwrap_err();
+            assert!(e.to_string().contains("changed"), "{e}");
+            assert_eq!(names(&base), ["A", "B"]);
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
     }
 
     #[test]
     fn moving_finds_entries_after_another_device_removed_one() {
-        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = glib::MainContext::default();
-        let _owner = ctx.acquire().expect("main context");
-        let (base, store, refs) = playlist_lib("mv", &["A", "B", "C"]);
-        // Another device removes A; the user drags C (shown at 2) onto A (shown at 0).
-        write_list(&base, &["B", "C"]);
-        let e = store.move_in_playlist("P", &refs[2], &refs[0]).unwrap_err();
-        assert!(e.to_string().contains("changed"), "{e}");
-        assert_eq!(names(&base), ["B", "C"]);
-        // Dragging C onto B (shown at 1, now at 0) moves it there.
-        store.move_in_playlist("P", &refs[2], &refs[1]).unwrap();
-        assert_eq!(names(&base), ["C", "B"]);
-        drop(store);
-        fs::remove_dir_all(&base).unwrap();
+        on_own_context(|| {
+            let (base, store, refs) = playlist_lib("mv", &["A", "B", "C"]);
+            // Another device removes A; the user drags C (shown at 2) onto A (shown at 0).
+            write_list(&base, &["B", "C"]);
+            let e = store.move_in_playlist("P", &refs[2], &refs[0]).unwrap_err();
+            assert!(e.to_string().contains("changed"), "{e}");
+            assert_eq!(names(&base), ["B", "C"]);
+            // Dragging C onto B (shown at 1, now at 0) moves it there.
+            store.move_in_playlist("P", &refs[2], &refs[1]).unwrap();
+            assert_eq!(names(&base), ["C", "B"]);
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
     }
 
     #[test]
     fn too_large_playlists_are_listed_but_never_rewritten() {
-        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
-        let ctx = glib::MainContext::default();
-        let _owner = ctx.acquire().expect("main context");
-        let base = std::env::temp_dir().join(format!("tunemesh-big-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(base.join(PLAYLISTS_DIR)).unwrap();
-        let big = base.join(PLAYLISTS_DIR).join("Big.m3u8");
-        let text = format!(
-            "#EXTM3U\n{}",
-            "../missing.wav\n".repeat(playlist::MAX_ENTRIES + 1)
-        );
-        fs::write(&big, &text).unwrap();
-        fs::write(
-            base.join(PLAYLISTS_DIR).join("Small.m3u8"),
-            "#EXTM3U\n../a.opus\n",
-        )
-        .unwrap();
-        let store = Store::new(base.clone());
+        on_own_context(|| {
+            let base = std::env::temp_dir().join(format!("tunemesh-big-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            fs::create_dir_all(base.join(PLAYLISTS_DIR)).unwrap();
+            let big = base.join(PLAYLISTS_DIR).join("Big.m3u8");
+            let text = format!(
+                "#EXTM3U\n{}",
+                "../missing.wav\n".repeat(playlist::MAX_ENTRIES + 1)
+            );
+            fs::write(&big, &text).unwrap();
+            fs::write(
+                base.join(PLAYLISTS_DIR).join("Small.m3u8"),
+                "#EXTM3U\n../a.opus\n",
+            )
+            .unwrap();
+            let store = Store::new(base.clone());
+            store.settle();
 
-        assert!(store.is_too_large("Big"));
-        assert!(
-            store.playlists().iter().any(|p| p.name == "Big"),
-            "still listed"
-        );
-        assert_eq!(store.playlist_names(), ["Small"], "not offered as a target");
-        assert!(store.playlist("Big").is_none(), "never opened");
-        assert!(store.add_to_playlist("Big", &["a.opus".into()]).is_err());
-        assert!(
-            store
-                .remove_from_playlist("Big", &[(0, "missing.wav".into())])
-                .is_err()
-        );
-        assert!(
-            store
-                .move_in_playlist(
-                    "Big",
-                    &(0, "missing.wav".into()),
-                    &(1, "missing.wav".into())
-                )
-                .is_err()
-        );
-        assert!(store.rename_playlist("Big", "Other").is_err());
-        assert_eq!(
-            fs::read_to_string(&big).unwrap(),
-            text,
-            "the file is untouched"
-        );
-        drop(store);
-        fs::remove_dir_all(&base).unwrap();
+            assert!(store.is_too_large("Big"));
+            assert!(
+                store.playlists().iter().any(|p| p.name == "Big"),
+                "still listed"
+            );
+            assert_eq!(store.playlist_names(), ["Small"], "not offered as a target");
+            assert!(store.playlist("Big").is_none(), "never opened");
+            assert!(store.add_to_playlist("Big", &["a.opus".into()]).is_err());
+            assert!(
+                store
+                    .remove_from_playlist("Big", &[(0, "missing.wav".into())])
+                    .is_err()
+            );
+            assert!(
+                store
+                    .move_in_playlist(
+                        "Big",
+                        &(0, "missing.wav".into()),
+                        &(1, "missing.wav".into())
+                    )
+                    .is_err()
+            );
+            assert!(store.rename_playlist("Big", "Other").is_err());
+            assert_eq!(
+                fs::read_to_string(&big).unwrap(),
+                text,
+                "the file is untouched"
+            );
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    #[test]
+    fn playlist_reloads_read_only_changed_files() {
+        use std::os::unix::fs::PermissionsExt;
+        on_own_context(|| {
+            let base = std::env::temp_dir().join(format!("tunemesh-reload-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&base);
+            let dir = base.join(PLAYLISTS_DIR);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("Same.m3u8"), "#EXTM3U\n../a.opus\n").unwrap();
+            fs::write(dir.join("Edit.m3u8"), "#EXTM3U\n../a.opus\n").unwrap();
+            let store = Store::new(base.clone());
+            store.settle();
+            let count = |name: &str| {
+                store
+                    .playlists()
+                    .iter()
+                    .find(|p| p.name == name)
+                    .map(|p| p.count)
+            };
+            assert_eq!((count("Same"), count("Edit")), (Some(1), Some(1)));
+
+            // An unchanged file is not read again (it could not be now).
+            fs::set_permissions(dir.join("Same.m3u8"), fs::Permissions::from_mode(0o000)).unwrap();
+            fs::write(dir.join("Edit.m3u8"), "#EXTM3U\n../a.opus\n../b.opus\n").unwrap();
+            store.reload_playlists();
+            store.settle();
+            assert_eq!((count("Same"), count("Edit")), (Some(1), Some(2)));
+
+            fs::set_permissions(dir.join("Same.m3u8"), fs::Permissions::from_mode(0o644)).unwrap();
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
     }
 }

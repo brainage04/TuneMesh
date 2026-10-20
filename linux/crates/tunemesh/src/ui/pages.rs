@@ -1,6 +1,7 @@
 //! Page builders: home, search, library grids and detail pages.
 
 use std::rc::Rc;
+use std::sync::Arc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
@@ -148,7 +149,7 @@ fn not_found() -> Page {
 
 // ---- tiles --------------------------------------------------------------
 
-fn album_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile, subtitle_artist: bool) {
+fn album_tile(app: &Rc<App>, lib: &Arc<Library>, i: usize, tile: &Tile, subtitle_artist: bool) {
     let a = &lib.albums[i];
     let subtitle = if subtitle_artist {
         a.artist.clone()
@@ -176,7 +177,7 @@ fn album_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile, subtitle_
     );
 }
 
-fn artist_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile) {
+fn artist_tile(app: &Rc<App>, lib: &Arc<Library>, i: usize, tile: &Tile) {
     let ar = &lib.artists[i];
     let source = ar
         .albums
@@ -202,7 +203,7 @@ fn artist_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile) {
     );
 }
 
-fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Summary) -> gtk::Widget {
+fn playlist_tile(app: &Rc<App>, lib: &Arc<Library>, p: &Summary) -> gtk::Widget {
     let tile = Tile::new(false);
     let liked = p.name == LIKED_SONGS;
     let art = if liked {
@@ -445,7 +446,7 @@ fn grid_page(
     title: &str,
     count: usize,
     round: bool,
-    bind: impl Fn(&Rc<App>, &Rc<Library>, usize, &Tile) + 'static,
+    bind: impl Fn(&Rc<App>, &Arc<Library>, usize, &Tile) + 'static,
 ) -> Page {
     let lib = app.store.library();
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
