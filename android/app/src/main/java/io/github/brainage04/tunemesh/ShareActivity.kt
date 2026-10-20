@@ -74,9 +74,12 @@ class ShareActivity : ComponentActivity() {
     companion object {
         private val url = Regex("""https?://\S+""")
 
-        /** The first URL in the shared text, or the whole text as a search. */
+        /**
+         * The first URL in the shared text, or the whole text as a search. Read as a CharSequence: apps may share
+         * styled text (a Spanned), for which getStringExtra returns null.
+         */
         fun sharedInput(intent: Intent?): String {
-            val text = intent?.getStringExtra(Intent.EXTRA_TEXT).orEmpty().trim()
+            val text = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().trim()
             return url.find(text)?.value ?: text
         }
     }
