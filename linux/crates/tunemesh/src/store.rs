@@ -196,26 +196,15 @@ impl Store {
             return;
         }
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
-        // Reads (open/close-nowrite) are ignored: the app's own rescans and
-        // playlist reads would otherwise trigger the next rescan, forever.
-        let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            if let Ok(ev) = res
-                && !matches!(ev.kind, EventKind::Access(_))
-            {
-                let _ = tx.send_blocking(ev.paths);
-            }
-        });
-        let mut watcher = match watcher {
+        let watcher = match watch_library(&root, move |paths| {
+            let _ = tx.send_blocking(paths);
+        }) {
             Ok(w) => w,
             Err(e) => {
-                eprintln!("tunemesh: cannot watch the library: {e}");
+                eprintln!("tunemesh: cannot watch {}: {e}", root.display());
                 return;
             }
         };
-        if let Err(e) = watcher.watch(&root, RecursiveMode::Recursive) {
-            eprintln!("tunemesh: cannot watch {}: {e}", root.display());
-            return;
-        }
         *self.watcher.borrow_mut() = Some(watcher);
         let weak = self.me.clone();
         let generation = self.generation.get();
@@ -385,9 +374,13 @@ impl Store {
     }
 
     /// Applies `f` to a freshly read playlist and writes it back.
-    fn modify_playlist(&self, name: &str, f: impl FnOnce(&mut Playlist)) -> io::Result<()> {
+    fn modify_playlist(
+        &self,
+        name: &str,
+        f: impl FnOnce(&mut Playlist) -> io::Result<()>,
+    ) -> io::Result<()> {
         let mut p = Playlist::read(&self.root(), name)?;
-        f(&mut p);
+        f(&mut p)?;
         self.write_playlist(&p)?;
         if name == LIKED_SONGS {
             self.set_liked(p);
@@ -438,15 +431,29 @@ impl Store {
         if name == LIKED_SONGS {
             return self.set_liked_paths(paths, true);
         }
-        self.modify_playlist(name, |p| p.append(paths.iter().map(String::as_str)))
+        self.modify_playlist(name, |p| {
+            p.append(paths.iter().map(String::as_str));
+            Ok(())
+        })
     }
 
-    pub fn remove_from_playlist(&self, name: &str, positions: &[usize]) -> io::Result<()> {
-        self.modify_playlist(name, |p| p.remove_positions(positions))
+    /// Removes the entries the user saw at these positions. The file is read
+    /// again first, so entries another device moved are found by their path.
+    pub fn remove_from_playlist(&self, name: &str, refs: &[EntryRef]) -> io::Result<()> {
+        self.modify_playlist(name, |p| {
+            let positions = locate(p, refs)?;
+            p.remove_positions(&positions);
+            Ok(())
+        })
     }
 
-    pub fn move_in_playlist(&self, name: &str, from: usize, to: usize) -> io::Result<()> {
-        self.modify_playlist(name, |p| p.move_entry(from, to))
+    /// Moves the entry the user dragged to where the drop target is now.
+    pub fn move_in_playlist(&self, name: &str, from: &EntryRef, to: &EntryRef) -> io::Result<()> {
+        self.modify_playlist(name, |p| {
+            let found = locate(p, &[from.clone(), to.clone()])?;
+            p.move_entry(found[0], found[1]);
+            Ok(())
+        })
     }
 
     // ---- tracks ------------------------------------------------------
@@ -508,9 +515,69 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
     result
 }
 
+/// A playlist entry as shown: its position and its identity (the track path,
+/// or the line as written when it points outside the library).
+pub type EntryRef = (usize, String);
+
+pub fn entry_key(e: &tunemesh_core::playlist::PlaylistEntry) -> &str {
+    e.track.as_deref().unwrap_or(&e.raw)
+}
+
+/// Finds the shown entries in a freshly read playlist: at their position if
+/// it still holds the same entry, else the first unclaimed entry with that
+/// identity. Fails when one is gone, so nothing wrong is changed.
+fn locate(p: &Playlist, refs: &[EntryRef]) -> io::Result<Vec<usize>> {
+    let mut found: Vec<usize> = Vec::with_capacity(refs.len());
+    for (pos, key) in refs {
+        let same = |i: usize| p.entries.get(i).is_some_and(|e| entry_key(e) == key);
+        let at = if same(*pos) && !found.contains(pos) {
+            Some(*pos)
+        } else {
+            (0..p.entries.len()).find(|&i| !found.contains(&i) && same(i))
+        };
+        match at {
+            Some(i) => found.push(i),
+            None => {
+                return Err(io::Error::other(
+                    "The playlist changed on another device. Nothing was changed; try again.",
+                ));
+            }
+        }
+    }
+    Ok(found)
+}
+
+/// Watches `root` recursively and passes the paths of every change that is
+/// not a read to `on_change`. Symlinks are never followed: a synced link
+/// must not make the app watch (and walk, on the main thread) folders
+/// outside the library, or loop through a "symlink bomb".
+fn watch_library(
+    root: &Path,
+    on_change: impl Fn(Vec<PathBuf>) + Send + 'static,
+) -> notify::Result<RecommendedWatcher> {
+    let mut watcher = RecommendedWatcher::new(
+        move |res: notify::Result<notify::Event>| {
+            // Reads (open/close-nowrite) are ignored: the app's own rescans
+            // and playlist reads would otherwise trigger the next rescan,
+            // forever.
+            if let Ok(ev) = res
+                && !matches!(ev.kind, EventKind::Access(_))
+            {
+                on_change(ev.paths);
+            }
+        },
+        notify::Config::default().with_follow_symlinks(false),
+    )?;
+    watcher.watch(root, RecursiveMode::Recursive)?;
+    Ok(watcher)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Tests that create a `Store` own the default main context in turn.
+    static MAIN_CONTEXT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn deleting_never_follows_a_symlinked_folder() {
@@ -541,6 +608,7 @@ mod tests {
 
     #[test]
     fn opening_a_library_adds_missing_stignore_rules() {
+        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
         let ctx = glib::MainContext::default();
         let _owner = ctx.acquire().expect("main context");
         let base =
@@ -571,6 +639,140 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
+        drop(store);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    /// This process's inotify file descriptors.
+    fn inotify_fds() -> Vec<String> {
+        fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .flatten()
+            .filter(|e| {
+                fs::read_link(e.path()).is_ok_and(|l| l.to_string_lossy().contains("inotify"))
+            })
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn watches(fd: &str) -> usize {
+        fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+            .map(|s| s.lines().filter(|l| l.starts_with("inotify wd:")).count())
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn the_watcher_never_follows_symlinks() {
+        let base = std::env::temp_dir().join(format!("tunemesh-watch-test-{}", std::process::id()));
+        let (root, outside) = (base.join("lib"), base.join("outside"));
+        fs::create_dir_all(root.join("Artist/Album")).unwrap();
+        for i in 0..300 {
+            fs::create_dir_all(outside.join(format!("d{i}"))).unwrap();
+        }
+        std::os::unix::fs::symlink(&outside, root.join("Linked")).unwrap();
+        // A symlink bomb: 7 levels, each holding 60 links to the next.
+        for level in 0..7 {
+            let dir = root.join(format!(".b/B{level}"));
+            fs::create_dir_all(&dir).unwrap();
+            if level < 6 {
+                for n in 0..60 {
+                    std::os::unix::fs::symlink(format!("../B{}", level + 1), dir.join(format!("l{n}"))).unwrap();
+                }
+            }
+        }
+
+        let before = inotify_fds();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let started = std::time::Instant::now();
+        let watcher = watch_library(&root, move |p| {
+            let _ = tx.send(p);
+        })
+        .unwrap();
+        let took = started.elapsed();
+        let count: usize = inotify_fds()
+            .iter()
+            .filter(|fd| !before.contains(fd))
+            .map(|fd| watches(fd))
+            .sum();
+
+        // lib, Artist, Album, .b and its 7 levels.
+        assert!(count <= 11, "{count} inotify watches: symlinks were followed");
+        assert!(took < Duration::from_secs(1), "watching took {took:?}");
+
+        // A change outside the library is not seen; one inside is.
+        fs::write(outside.join("d1/new"), b"x").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "a change outside the library was reported");
+        fs::write(root.join("Artist/Album/new"), b"x").unwrap();
+        assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok());
+        drop(watcher);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    fn playlist_lib(tag: &str, lines: &[&str]) -> (PathBuf, Rc<Store>, Vec<EntryRef>) {
+        let base = std::env::temp_dir().join(format!("tunemesh-pl-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(PLAYLISTS_DIR)).unwrap();
+        write_list(&base, lines);
+        let store = Store::new(base.clone());
+        let shown = Playlist::read(&base, "P").unwrap();
+        let refs = shown
+            .entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (i, entry_key(e).to_owned()))
+            .collect();
+        (base, store, refs)
+    }
+
+    fn write_list(base: &Path, lines: &[&str]) {
+        let body: String = lines.iter().map(|l| format!("../{l}.opus\n")).collect();
+        fs::write(base.join(PLAYLISTS_DIR).join("P.m3u8"), format!("#EXTM3U\n{body}")).unwrap();
+    }
+
+    fn names(base: &Path) -> Vec<String> {
+        Playlist::read(base, "P")
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| entry_key(e).trim_end_matches(".opus").to_owned())
+            .collect()
+    }
+
+    #[test]
+    fn removing_finds_an_entry_another_device_moved() {
+        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = glib::MainContext::default();
+        let _owner = ctx.acquire().expect("main context");
+        let (base, store, refs) = playlist_lib("rm", &["A", "B", "C"]);
+        // Another device moves C to the top; the user removes C as shown (position 2).
+        write_list(&base, &["C", "A", "B"]);
+        store.remove_from_playlist("P", &[refs[2].clone()]).unwrap();
+        assert_eq!(names(&base), ["A", "B"]);
+
+        // An entry that is gone: nothing changes, the user is told.
+        write_list(&base, &["A", "B"]);
+        let e = store.remove_from_playlist("P", &[(2, "C.opus".into())]).unwrap_err();
+        assert!(e.to_string().contains("changed"), "{e}");
+        assert_eq!(names(&base), ["A", "B"]);
+        drop(store);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn moving_finds_entries_after_another_device_removed_one() {
+        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = glib::MainContext::default();
+        let _owner = ctx.acquire().expect("main context");
+        let (base, store, refs) = playlist_lib("mv", &["A", "B", "C"]);
+        // Another device removes A; the user drags C (shown at 2) onto A (shown at 0).
+        write_list(&base, &["B", "C"]);
+        let e = store.move_in_playlist("P", &refs[2], &refs[0]).unwrap_err();
+        assert!(e.to_string().contains("changed"), "{e}");
+        assert_eq!(names(&base), ["B", "C"]);
+        // Dragging C onto B (shown at 1, now at 0) moves it there.
+        store.move_in_playlist("P", &refs[2], &refs[1]).unwrap();
+        assert_eq!(names(&base), ["C", "B"]);
         drop(store);
         fs::remove_dir_all(&base).unwrap();
     }

@@ -46,20 +46,56 @@ pub fn real_home() -> PathBuf {
 }
 
 pub fn config_file() -> PathBuf {
-    glib::user_config_dir().join("tunemesh").join("config.toml")
+    config_base().join("tunemesh").join("config.toml")
 }
 
 /// Per-device state (queue, position, volume): never inside the library.
 pub fn state_dir() -> PathBuf {
-    let base = std::env::var_os("XDG_STATE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| glib::home_dir().join(".local").join("state"));
-    base.join("tunemesh")
+    state_base().join("tunemesh")
 }
 
 pub fn cache_dir() -> PathBuf {
-    glib::user_cache_dir().join("tunemesh")
+    cache_base().join("tunemesh")
+}
+
+#[cfg(not(test))]
+fn config_base() -> PathBuf {
+    glib::user_config_dir()
+}
+
+#[cfg(not(test))]
+fn state_base() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| glib::home_dir().join(".local").join("state"))
+}
+
+#[cfg(not(test))]
+fn cache_base() -> PathBuf {
+    glib::user_cache_dir()
+}
+
+/// Unit tests never touch the developer's real config, state or cache:
+/// each test process gets its own folder under the temporary directory.
+#[cfg(test)]
+fn test_home() -> PathBuf {
+    std::env::temp_dir().join(format!("tunemesh-test-home-{}", std::process::id()))
+}
+
+#[cfg(test)]
+fn config_base() -> PathBuf {
+    test_home().join("config")
+}
+
+#[cfg(test)]
+fn state_base() -> PathBuf {
+    test_home().join("state")
+}
+
+#[cfg(test)]
+fn cache_base() -> PathBuf {
+    test_home().join("cache")
 }
 
 /// Where the built-in downloader assembles downloads (contract: created 0700).

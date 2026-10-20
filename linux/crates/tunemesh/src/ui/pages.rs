@@ -361,6 +361,7 @@ fn search(app: &Rc<App>, text: &str) -> Page {
             .map(|&i| Entry {
                 path: Some(lib.tracks[i].path.clone()),
                 label: String::new(),
+                key: None,
             })
             .collect();
         let list = tracklist::build(
@@ -720,6 +721,7 @@ fn album(app: &Rc<App>, key: &str) -> Page {
         .map(|p| Entry {
             path: Some(p),
             label: String::new(),
+            key: None,
         })
         .collect();
     detail_page(app, header, entries, &a.name, false, false, None)
@@ -778,6 +780,7 @@ fn artist(app: &Rc<App>, name: &str) -> Page {
         .map(|p| Entry {
             path: Some(p),
             label: String::new(),
+            key: None,
         })
         .collect();
     detail_page(app, header, entries, &ar.name, true, true, None)
@@ -829,6 +832,7 @@ fn playlist(app: &Rc<App>, name: &str) -> Page {
         .iter()
         .map(|e| Entry {
             path: e.track.clone(),
+            key: Some(crate::store::entry_key(e).to_owned()),
             label: e.label.clone().unwrap_or_else(|| {
                 let raw = e.track.as_deref().unwrap_or(&e.raw);
                 tunemesh_core::library::title_from_file_name(raw.rsplit('/').next().unwrap_or(raw))

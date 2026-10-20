@@ -10,6 +10,7 @@ use gtk::{gdk, gio, glib};
 
 use crate::app::App;
 use crate::covers::Source;
+use crate::store::EntryRef;
 use crate::ui::menu::{self, MenuCtx};
 use crate::ui::widgets::{fmt_duration, label};
 
@@ -18,6 +19,16 @@ pub struct Entry {
     pub path: Option<String>,
     /// Display text when the track is unavailable.
     pub label: String,
+    /// Playlist pages: the entry's identity (`store::entry_key`), so edits
+    /// find it again in a playlist another device changed.
+    pub key: Option<String>,
+}
+
+/// What a playlist row drag carries. Only rows of this app create it, so
+/// text dropped from other apps cannot reorder a playlist.
+struct DraggedEntry {
+    playlist: String,
+    from: EntryRef,
 }
 
 pub struct Spec {
@@ -55,6 +66,10 @@ pub struct Shared {
 }
 
 impl Shared {
+    fn entry_ref(&self, i: usize) -> Option<EntryRef> {
+        Some((i, self.entries.get(i)?.key.clone()?))
+    }
+
     fn available(&self, app: &App, i: usize) -> Option<String> {
         let path = self.entries[i].path.as_ref()?;
         app.store.library().track_index(path).map(|_| path.clone())
@@ -322,7 +337,9 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                     .collect();
                 let ctx = MenuCtx {
                     paths,
-                    playlist: pl.clone().map(|name| (name, targets.clone())),
+                    playlist: pl.clone().map(|name| {
+                        (name, targets.iter().filter_map(|&t| sh.entry_ref(t)).collect())
+                    }),
                     queue_index: None,
                 };
                 menu::popup(&a, root.upcast_ref(), x, y, ctx);
@@ -333,30 +350,42 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                 let source = gtk::DragSource::builder()
                     .actions(gdk::DragAction::MOVE)
                     .build();
-                let pos = row.pos.clone();
+                let (pos, sh, n) = (row.pos.clone(), shared.clone(), name.clone());
                 source.connect_prepare(move |_, _, _| {
-                    let i = pos.get()?;
-                    Some(gdk::ContentProvider::for_value(
-                        &format!("tm-pos:{i}").to_value(),
-                    ))
+                    let from = sh.entry_ref(pos.get()?)?;
+                    let payload = glib::BoxedAnyObject::new(DraggedEntry {
+                        playlist: n.clone(),
+                        from,
+                    });
+                    Some(gdk::ContentProvider::for_value(&payload.to_value()))
                 });
                 row.root.add_controller(source);
-                let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-                let (a, pos, root) = (app.clone(), row.pos.clone(), row.root.clone());
+                let target = gtk::DropTarget::new(
+                    glib::BoxedAnyObject::static_type(),
+                    gdk::DragAction::MOVE,
+                );
+                let (a, pos, root, sh) = (
+                    app.clone(),
+                    row.pos.clone(),
+                    row.root.clone(),
+                    shared.clone(),
+                );
                 target.connect_drop(move |_, value, _, _| {
                     root.remove_css_class("tm-drop-before");
-                    let Some(to) = pos.get() else { return false };
-                    let Ok(s) = value.get::<String>() else {
+                    let Some(to) = pos.get().and_then(|i| sh.entry_ref(i)) else {
                         return false;
                     };
-                    let Some(from) = s
-                        .strip_prefix("tm-pos:")
-                        .and_then(|n| n.parse::<usize>().ok())
-                    else {
+                    let Ok(obj) = value.get::<glib::BoxedAnyObject>() else {
                         return false;
                     };
-                    if from != to
-                        && let Err(e) = a.store.move_in_playlist(&name, from, to)
+                    let Ok(dragged) = obj.try_borrow::<DraggedEntry>() else {
+                        return false;
+                    };
+                    if dragged.playlist != name {
+                        return false;
+                    }
+                    if dragged.from.0 != to.0
+                        && let Err(e) = a.store.move_in_playlist(&name, &dragged.from, &to)
                     {
                         a.error("Could not reorder playlist", e);
                     }

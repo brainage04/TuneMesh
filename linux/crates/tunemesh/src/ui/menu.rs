@@ -7,14 +7,15 @@ use gtk::{gdk, gio, glib};
 use tunemesh_core::LIKED_SONGS;
 
 use crate::app::{App, Route};
+use crate::store::EntryRef;
 use crate::ui::widgets::plural;
 
 /// What a context menu acts on.
 pub struct MenuCtx {
     /// Library paths of the tracks (available ones only).
     pub paths: Vec<String>,
-    /// Playlist name and entry positions when opened inside a playlist.
-    pub playlist: Option<(String, Vec<usize>)>,
+    /// Playlist name and the entries as shown, when opened inside a playlist.
+    pub playlist: Option<(String, Vec<EntryRef>)>,
     /// Queue index when opened from the queue panel.
     pub queue_index: Option<usize>,
 }
