@@ -6,18 +6,8 @@
 APPDIR=${APPDIR:-$(dirname "$(readlink -f "$0")")}
 export APPDIR
 
-# The GTK hook pins the Adwaita GTK theme (libadwaita styles itself and warns
-# about GTK_THEME) and X11 (GTK 4 runs natively on Wayland); keep whatever
-# the user had set instead.
-user_backend=${GDK_BACKEND-}
-user_theme=${GTK_THEME-}
-for hook in "$APPDIR"/apprun-hooks/*.sh; do
-    # shellcheck source=/dev/null
-    [ -f "$hook" ] && . "$hook"
-done
-unset GTK_THEME GDK_BACKEND
-[ -n "$user_backend" ] && export GDK_BACKEND="$user_backend"
-[ -n "$user_theme" ] && export GTK_THEME="$user_theme"
+# linuxdeploy's wrapper has already sourced the GTK hook (GTK, GLib and
+# GdkPixbuf paths) before this script runs.
 
 # The worker uses the bundled ffmpeg/ffprobe; the app finds the worker next
 # to its own binary.

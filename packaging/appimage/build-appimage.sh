@@ -93,6 +93,16 @@ linuxdeploy --appdir "$appdir" --plugin gtk \
     --custom-apprun "$repo/packaging/appimage/AppRun" \
     --library "$(/sbin/ldconfig -p | awk '/libjack\.so\.0 / { print $NF; exit }')"
 
+# linuxdeploy wraps the custom AppRun in one that sources the GTK hook first.
+# The hook pins GDK_BACKEND=x11 (a GTK 3 workaround: GTK 4 runs natively on
+# Wayland, and a Wayland-only session has no X server) and the Adwaita GTK
+# theme (libadwaita styles itself and warns about GTK_THEME), overriding the
+# user's own values; drop both pins.
+hook=$appdir/apprun-hooks/linuxdeploy-plugin-gtk.sh
+grep -q '^export GDK_BACKEND=' "$hook"
+sed -i -e '/^export GDK_BACKEND=/d' -e '/^export GTK_THEME=/d' "$hook"
+grep -q 'apprun-hooks/"linuxdeploy-plugin-gtk.sh"' "$appdir/AppRun"
+
 # The Ubuntu packages every bundled program, library, loader, schema and icon
 # comes from (linuxdeploy copies most of their copyright files already).
 packages=$(

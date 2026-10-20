@@ -340,6 +340,11 @@ jobs:
           APP="$appimage" WORKER="$appimage worker" packaging/ci/smoke.sh
       - name: Playback through the bundled libmpv
         run: APP="$(ls "$PWD"/dist/TuneMesh-*.AppImage)" dbus-run-session -- packaging/ci/playback.sh
+      - name: Wayland-only session (headless sway, no X server)
+        if: ${{ !matrix.image }}
+        run: |
+          sudo apt-get install -yq sway
+          APP="$(ls "$PWD"/dist/TuneMesh-*.AppImage)" packaging/ci/wayland-launch.sh
       - name: Licence notices
         env:
           ARCH: ${{ matrix.arch }}
