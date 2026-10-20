@@ -13,6 +13,12 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# bash -eo pipefail for every run step (GitHub's default for steps without a
+# shell is bash -e, where a failing command before a pipe goes unnoticed).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   rust:
     name: Rust (fmt, clippy, test)
@@ -52,7 +58,7 @@ jobs:
       - run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
       - name: tests/ffmpeg_confinement.rs against the distribution's ffmpeg
         run: |
-          ffmpeg -hide_banner -version | head -1
+          ffmpeg -hide_banner -version | sed -n 1p
           cargo test --locked --manifest-path linux/Cargo.toml -p tunemesh-worker \
             --test ffmpeg_confinement -- --nocapture 2>&1 | tee test.log
           if grep -q '^skipped' test.log; then echo "::error::the test skipped"; exit 1; fi
