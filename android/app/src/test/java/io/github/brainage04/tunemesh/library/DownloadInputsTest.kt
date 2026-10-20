@@ -36,6 +36,28 @@ class DownloadInputsTest {
             "artist – song" to InputKind.Single,
             "ftp://youtube.com/playlist?list=PLx" to InputKind.Single,
             "" to InputKind.Single,
+            // docs/library-format.md, "YouTube links": a video in a list downloads the list; mixes stay single.
+            "https://www.youtube.com/watch?v=jNQXAC9IVRw&list=RDjNQXAC9IVRw" to InputKind.Single,
+            "https://music.youtube.com/watch?v=x&list=RDAMVMx" to InputKind.Single,
+            "https://music.youtube.com/watch?v=x&list=PLx&index=3" to InputKind.Playlist,
+            "https://music.youtube.com/watch?v=x&list=OLAK5uy_x" to InputKind.Album,
+            "https://music.youtube.com/playlist?list=RDCLAK5uy_k" to InputKind.Playlist,
+            "https://youtu.be/jNQXAC9IVRw?si=a&list=PLx" to InputKind.Playlist,
+            "https://youtu.be/jNQXAC9IVRw?list=RDx" to InputKind.Single,
+            "HTTPS://WWW.YouTube.COM/watch?v=x&list=PLx" to InputKind.Playlist,
+            "https://YOUTU.BE/x?list=PLx" to InputKind.Playlist,
+            "https://www.m.youtube.com/watch?v=x&list=PLx" to InputKind.Playlist,
+            "https://m.www.youtube.com/watch?v=x&list=PLx" to InputKind.Single,
+            "https://www.youtube.com/watch?v=x&list=" to InputKind.Single,
+            "https://www.youtube.com/watch?v=x&playlist=PLx" to InputKind.Single,
+            "https://www.youtube.com/watch?v=x&List=PLx" to InputKind.Single,
+            "https://www.youtube.com/watch?v=x&list=pl%20x" to InputKind.Playlist,
+            "https://www.youtube.com/watch?v=x#list=PLx" to InputKind.Single,
+            "https://www.youtube.com/watch?v=x&list=PLx#t=10" to InputKind.Playlist,
+            "https://youtu.be?list=PLx" to InputKind.Playlist,
+            "https://music.youtube.com/browse/MPREb_x?list=RDx" to InputKind.Album,
+            "https://notyoutube.com/watch?v=x&list=PLx" to InputKind.Single,
+            "  https://youtu.be/x?list=PLx  " to InputKind.Playlist,
         )
         for ((line, kind) in cases) assertEquals(line, kind, DownloadInputs.kind(line))
     }
