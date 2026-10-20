@@ -195,6 +195,9 @@ impl Client {
             // The API key travels in a header: never follow a redirect,
             // which could carry it to another origin.
             .max_redirects(0)
+            // Never send the key through a proxy from HTTP(S)_PROXY or
+            // ALL_PROXY: Syncthing is local, and TLS checks may be off.
+            .proxy(None)
             .tls_config(tls)
             .build()
             .into();
@@ -575,6 +578,57 @@ mod tests {
         assert!(
             other_seen.lock().unwrap().is_empty(),
             "the redirect target was contacted"
+        );
+    }
+
+    #[test]
+    fn proxy_settings_from_the_environment_are_ignored() {
+        let body = r#"{"myID":"DIRECT"}"#;
+        let (proxy, proxy_seen) = serve(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 15\r\nConnection: close\r\n\r\n{\"myID\":\"PROXY\"}"
+                .to_string(),
+        );
+        let (direct, _) = serve(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ));
+        // SAFETY: no other test reads these variables.
+        unsafe {
+            for k in [
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ] {
+                std::env::set_var(k, &proxy);
+            }
+            std::env::remove_var("NO_PROXY");
+            std::env::remove_var("no_proxy");
+        }
+        let client = Client::new(Endpoint {
+            base: direct,
+            api_key: "secret-key".into(),
+        });
+        let id = client.my_id();
+        unsafe {
+            for k in [
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+            ] {
+                std::env::remove_var(k);
+            }
+        }
+        assert_eq!(id.unwrap(), "DIRECT");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            proxy_seen.lock().unwrap().is_empty(),
+            "the proxy was contacted"
         );
     }
 }
