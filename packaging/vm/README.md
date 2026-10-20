@@ -70,9 +70,22 @@ app's `mpv.rs` and `player.rs`; those runs build the packages through
 and publishes only when it passes.
 
 Images are cached with `actions/cache` under a key made of the image URL and
-its checksum (`images.sh` reads the checksum from the distribution's own
-checksum file), and every download is checked against it. Logs are uploaded
+its checksum, and every download is checked against it. Logs are uploaded
 as the artifact `vm-logs-<distro>` when a job fails.
+
+## Image checksums and SSH trust
+
+- Ubuntu, Debian and Fedora images are pinned in `images.sh`, URL and
+  checksum both; the comment there says where new values come from and which
+  signature to check when moving a pin.
+- Arch and openSUSE Tumbleweed are rolling and keep no old images, so
+  `images.sh` takes the current snapshot and requires a good signature on its
+  checksum file from the release key in `keys/` (`gpgv`).
+- `run.sh` makes the guest's SSH host key itself and hands it over in the
+  cloud-init seed, so SSH checks the guest against that pinned key
+  (`StrictHostKeyChecking=yes`). QEMU binds the SSH forward on a port picked
+  just before; when someone else took the port first, QEMU fails and
+  `run.sh` retries with another one (five attempts).
 
 ## Running it locally
 
@@ -88,12 +101,12 @@ setsid --fork --wait heavy --mem 4G --label vm -- \
   `TM_VM_LOCK`). It never starts more than one VM; test several packages by
   passing them to the same run, and distributions one run after the other.
 - Needs `qemu-system-x86_64`, `qemu-img`, `ssh`, `curl`, `ffmpeg`, `python3`,
-  `flock`, `tar` and one of `cloud-localds`, `xorriso`, `genisoimage` or
+  `flock`, `tar`, `gpg`, `gpgv` and one of `cloud-localds`, `xorriso`, `genisoimage` or
   `mkisofs` (on NixOS: `nix shell nixpkgs#xorriso -c packaging/vm/run.sh ...`).
 - Images (300 MB to 700 MB each) are kept in `TM_VM_CACHE` (default
   `~/.cache/tunemesh-vm`), one per distribution; a download is tried twice at
   most. Delete the directory when done.
-- Each VM gets a fresh copy-on-write disk and SSH key in a temporary
+- Each VM gets a fresh copy-on-write disk, SSH client key and host key in a temporary
   directory that is removed afterwards (`TM_VM_KEEP=1` keeps it).
 - `TM_VM_ACCEL=tcg` forces emulation.
 - `TM_VM_HOLD=1` keeps the VM running after a failed package and prints the
