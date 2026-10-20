@@ -122,8 +122,8 @@ fn too_large(name: &str) -> Page {
     b.append(&widgets::empty(&format!(
         "Too large to open. Playlists can hold at most {} songs and {} MiB, \
          so TuneMesh leaves this one unchanged on every device.",
-        fmt_count(tunemesh_core::playlist::MAX_ENTRIES),
-        tunemesh_core::playlist::MAX_PLAYLIST_BYTES / (1024 * 1024),
+        fmt_count(tunemesh_core::limits::MAX_PLAYLIST_ENTRIES),
+        tunemesh_core::limits::MAX_PLAYLIST_BYTES / (1024 * 1024),
     )));
     simple(&b)
 }
@@ -597,7 +597,7 @@ fn hero(app: &App, art: HeroArt, kind: &str, title: &str, meta: &gtk::Widget) ->
         .build();
     text.append(&label(kind, &["tm-hero-kind"]));
     let t = gtk::Label::builder()
-        .label(title)
+        .label(tunemesh_core::limits::clip_line(title))
         .xalign(0.0)
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)

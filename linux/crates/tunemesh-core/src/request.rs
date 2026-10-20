@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::TUNEMESH_DIR;
 use crate::fsx::{Dir, Kind};
-
-/// Largest request or status file read; real ones are well under 1 KiB
-/// (status files with long failure lists stay below 100 KiB).
-const MAX_JSON_BYTES: u64 = 1024 * 1024;
+use crate::limits::{
+    self, MAX_FAILURES, MAX_INPUT_BYTES, MAX_JSON_BYTES, MAX_LISTED_REQUESTS, MAX_MESSAGE_BYTES,
+    MAX_REQUEST_PLAYLIST_BYTES, MAX_STATUS_TRACKS, MAX_TEXT_BYTES, MAX_WARNINGS,
+};
 
 const REQUESTS: &str = "requests";
 const STATUS: &str = "status";
@@ -92,10 +92,6 @@ pub struct Status {
     #[serde(default)]
     pub updated_at: String,
 }
-
-/// Status files list at most this many failures; `itemsDone`, `itemsTotal`
-/// and `message` still count all of them.
-pub const MAX_FAILURES: usize = 200;
 
 impl Status {
     pub fn new(request: &Request, state: RequestState) -> Self {
@@ -182,8 +178,40 @@ impl Request {
 
 impl Status {
     pub fn write(&self, root: &Path) -> io::Result<()> {
-        let json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
+        let mut s = self.clone();
+        s.clamp();
+        let json = serde_json::to_vec_pretty(&s).map_err(io::Error::other)?;
         open_dir(root, STATUS, true)?.write_atomic(&file_name(&self.id), &json)
+    }
+
+    /// Cuts every field to the contract's limits (`limits`): applied when a
+    /// status file is read and before one is written.
+    pub fn clamp(&mut self) {
+        let cut = |s: &mut String, max| limits::cut_in_place(s, max);
+        cut(&mut self.input, MAX_INPUT_BYTES);
+        if let Some(t) = &mut self.title {
+            cut(t, MAX_TEXT_BYTES);
+        }
+        if let Some(m) = &mut self.message {
+            cut(m, MAX_MESSAGE_BYTES);
+        }
+        self.warnings.truncate(MAX_WARNINGS);
+        for w in &mut self.warnings {
+            cut(w, MAX_TEXT_BYTES);
+        }
+        self.failures.truncate(MAX_FAILURES);
+        for f in &mut self.failures {
+            cut(&mut f.item, MAX_TEXT_BYTES);
+            cut(&mut f.error, MAX_TEXT_BYTES);
+        }
+        self.tracks.truncate(MAX_STATUS_TRACKS);
+    }
+
+    /// Records a warning, keeping at most `MAX_WARNINGS` of them.
+    pub fn add_warning(&mut self, warning: String) {
+        if self.warnings.len() < MAX_WARNINGS && !self.warnings.contains(&warning) {
+            self.warnings.push(warning);
+        }
     }
 
     /// Records a failed item, keeping at most `MAX_FAILURES` of them.
@@ -225,6 +253,23 @@ fn read_json<T: for<'de> Deserialize<'de>>(dir: &Dir, id: &str) -> io::Result<T>
     serde_json::from_slice(&bytes).map_err(io::Error::other)
 }
 
+fn read_request(dir: &Dir, id: &str) -> io::Result<Request> {
+    let mut r: Request = read_json(dir, id)?;
+    r.id = id.to_owned();
+    if let Some(p) = &mut r.playlist {
+        limits::cut_in_place(p, MAX_REQUEST_PLAYLIST_BYTES);
+    }
+    limits::cut_in_place(&mut r.requested_by, MAX_TEXT_BYTES);
+    Ok(r)
+}
+
+fn read_status_in(dir: &Dir, id: &str) -> io::Result<Status> {
+    let mut s: Status = read_json(dir, id)?;
+    s.id = id.to_owned();
+    s.clamp();
+    Ok(s)
+}
+
 /// The oldest `max` requests (by numeric id prefix), parsed. Unparseable or
 /// unreadable files among them (including symlinks) are returned separately
 /// with their id and error. The third value counts every request file, so
@@ -241,11 +286,8 @@ pub fn list_oldest_requests(
     let mut ok = Vec::new();
     let mut bad = Vec::new();
     for id in ids.into_iter().take(max) {
-        match read_json::<Request>(&dir, &id) {
-            Ok(mut req) => {
-                req.id = id;
-                ok.push(req);
-            }
+        match read_request(&dir, &id) {
+            Ok(req) => ok.push(req),
             Err(e) => bad.push((id, e)),
         }
     }
@@ -259,24 +301,69 @@ pub fn list_requests(root: &Path) -> (Vec<Request>, Vec<(String, io::Error)>) {
     (ok, bad)
 }
 
-/// All parseable status files, oldest first.
+/// The newest `MAX_LISTED_REQUESTS` parseable status files, oldest first
+/// (contract: "Limits"), cut to the contract's limits.
 pub fn list_statuses(root: &Path) -> Vec<Status> {
+    list_newest_statuses(root, MAX_LISTED_REQUESTS)
+}
+
+/// The newest `max` parseable status files, oldest first.
+pub fn list_newest_statuses(root: &Path, max: usize) -> Vec<Status> {
     let Ok(dir) = open_dir(root, STATUS, false) else {
         return Vec::new();
     };
-    ids_in(&dir)
-        .into_iter()
-        .filter_map(|id| {
-            read_json::<Status>(&dir, &id).ok().map(|mut s| {
-                s.id = id;
-                s
-            })
-        })
+    let ids = ids_in(&dir);
+    let skip = ids.len().saturating_sub(max);
+    ids.into_iter()
+        .skip(skip)
+        .filter_map(|id| read_status_in(&dir, &id).ok())
         .collect()
 }
 
+/// One download as clients list it: a request, its status, or both.
+#[derive(Debug, Clone)]
+pub struct Recent {
+    pub id: String,
+    pub request: Option<Request>,
+    pub status: Option<Status>,
+}
+
+/// The newest `MAX_LISTED_REQUESTS` ids over requests and status files
+/// together, newest first, each with whatever of the two could be read;
+/// plus the number of distinct ids in both directories, so clients can
+/// say how many more there are (contract: "Limits").
+pub fn recent(root: &Path) -> (Vec<Recent>, usize) {
+    let requests = open_dir(root, REQUESTS, false).ok();
+    let statuses = open_dir(root, STATUS, false).ok();
+    let mut ids: Vec<String> = requests
+        .iter()
+        .chain(statuses.iter())
+        .flat_map(ids_in)
+        .collect();
+    ids.sort_by(|a, b| order_key(b).cmp(&order_key(a)));
+    ids.dedup();
+    let total = ids.len();
+    let rows = ids
+        .into_iter()
+        .take(MAX_LISTED_REQUESTS)
+        .map(|id| Recent {
+            request: requests.as_ref().and_then(|d| read_request(d, &id).ok()),
+            status: statuses.as_ref().and_then(|d| read_status_in(d, &id).ok()),
+            id,
+        })
+        .collect();
+    (rows, total)
+}
+
+/// Ids of the request files, oldest first, without reading them.
+pub fn request_ids(root: &Path) -> Vec<String> {
+    open_dir(root, REQUESTS, false)
+        .map(|d| ids_in(&d))
+        .unwrap_or_default()
+}
+
 pub fn read_status(root: &Path, id: &str) -> Option<Status> {
-    read_json(&open_dir(root, STATUS, false).ok()?, id).ok()
+    read_status_in(&open_dir(root, STATUS, false).ok()?, id).ok()
 }
 
 fn remove(root: &Path, sub: &str, id: &str) -> io::Result<()> {
@@ -486,5 +573,89 @@ mod tests {
         assert_eq!(v["warnings"][0], "w");
         let back: Status = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
+    }
+
+    /// Status files are cut to the contract's limits when read and written.
+    #[test]
+    fn status_contents_are_bounded() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let r = Request::new("x", None, false, "t");
+        let mut s = Status::new(&r, RequestState::Done);
+        s.title = Some("t".repeat(5_000));
+        s.message = Some("é".repeat(5_000));
+        s.warnings = (0..80)
+            .map(|i| format!("{i}{}", "w".repeat(2_000)))
+            .collect();
+        s.failures = (0..300)
+            .map(|i| Failure {
+                item: format!("{i}"),
+                error: "e".repeat(2_000),
+            })
+            .collect();
+        s.tracks = vec!["a.mp3".into(); 20_000];
+        // Written as is (a hostile device would), then read back cut.
+        let json = serde_json::to_vec(&s).unwrap();
+        fs::create_dir_all(status_dir(root)).unwrap();
+        fs::write(status_path(root, &r.id), json).unwrap();
+        let back = read_status(root, &r.id).unwrap();
+        assert_eq!(back.title.unwrap().len(), MAX_TEXT_BYTES);
+        let m = back.message.unwrap();
+        assert!(m.len() <= MAX_MESSAGE_BYTES && m.len() > MAX_MESSAGE_BYTES - 2);
+        assert_eq!(back.warnings.len(), MAX_WARNINGS);
+        assert!(back.warnings.iter().all(|w| w.len() == MAX_TEXT_BYTES));
+        assert_eq!(back.failures.len(), MAX_FAILURES);
+        assert_eq!(back.failures[0].error.len(), MAX_TEXT_BYTES);
+        assert_eq!(back.tracks.len(), MAX_STATUS_TRACKS);
+        // The writer cuts too.
+        s.write(root).unwrap();
+        let written: serde_json::Value =
+            serde_json::from_slice(&fs::read(status_path(root, &r.id)).unwrap()).unwrap();
+        assert_eq!(written["warnings"].as_array().unwrap().len(), MAX_WARNINGS);
+        // Larger than 1 MiB: not read.
+        fs::write(
+            status_path(root, &r.id),
+            vec![b' '; MAX_JSON_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert!(read_status(root, &r.id).is_none());
+    }
+
+    /// Clients read only the newest ids over requests and status files.
+    #[test]
+    fn recent_reads_the_newest_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..MAX_LISTED_REQUESTS + 50 {
+            let mut r = Request::new(&format!("in {i}"), None, false, "t");
+            r.id = format!("{}-{:08x}", 1_000 + i, i);
+            r.write(root).unwrap();
+            if i % 2 == 0 {
+                Status::new(&r, RequestState::Queued).write(root).unwrap();
+            }
+        }
+        // A status without a request, newest of all.
+        let mut lone = Request::new("lone", None, false, "t");
+        lone.id = "9999-00000000".into();
+        Status::new(&lone, RequestState::Done).write(root).unwrap();
+        let (rows, total) = recent(root);
+        assert_eq!(total, MAX_LISTED_REQUESTS + 51);
+        assert_eq!(rows.len(), MAX_LISTED_REQUESTS);
+        assert_eq!(rows[0].id, "9999-00000000");
+        assert!(rows[0].request.is_none() && rows[0].status.is_some());
+        let newest = &rows[1];
+        assert_eq!(
+            newest.request.as_ref().unwrap().input,
+            format!("in {}", MAX_LISTED_REQUESTS + 49)
+        );
+        assert!(
+            rows.windows(2)
+                .all(|w| order_key(&w[0].id) > order_key(&w[1].id))
+        );
+        assert_eq!(request_ids(root).len(), MAX_LISTED_REQUESTS + 50);
+        assert_eq!(
+            list_statuses(root).len(),
+            (MAX_LISTED_REQUESTS + 50) / 2 + 1
+        );
     }
 }

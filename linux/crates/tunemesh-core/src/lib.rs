@@ -3,7 +3,10 @@
 
 pub mod atomic;
 pub mod fsx;
+#[cfg(any(test, feature = "hostile"))]
+pub mod hostile;
 pub mod library;
+pub mod limits;
 pub mod playlist;
 pub mod request;
 pub mod sanitize;

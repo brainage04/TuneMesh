@@ -7,21 +7,16 @@ use std::path::{Path, PathBuf};
 
 use crate::fsx::{Dir, Kind};
 use crate::library::{has_line_break, is_conflict_copy, title_from_file_name};
+use crate::limits::{
+    self, MAX_LABEL_BYTES, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES as MAX_ENTRIES,
+    MAX_PLAYLIST_LINE_BYTES as MAX_LINE_BYTES, MAX_PLAYLISTS,
+};
 use crate::{PLAYLISTS_DIR, sanitize};
 
 pub const LIKED_SONGS: &str = "Liked Songs";
 const EXT: &str = ".m3u8";
 
-/// Largest playlist file read or written (contract: "Playlists").
-pub const MAX_PLAYLIST_BYTES: u64 = 32 * 1024 * 1024;
-/// Most entries a playlist may have.
-pub const MAX_ENTRIES: usize = 250_000;
-/// Longest line, in bytes, without its line ending.
-pub const MAX_LINE_BYTES: usize = 32 * 1024;
-/// Longest `#EXTINF` label writers write (cut at a character boundary).
-const MAX_LABEL_BYTES: usize = 1024;
-
-/// A playlist over one of the limits above: listed, but never opened for
+/// A playlist over the contract's limits (`limits::MAX_PLAYLIST_*`): listed, but never opened for
 /// editing, rewritten or truncated. Carried inside an `io::Error`
 /// (`is_too_large`).
 #[derive(Debug)]
@@ -274,7 +269,7 @@ fn parse_extinf(info: &str) -> (u32, Option<Box<str>>) {
         .ok()
         .filter(|d| *d >= 0)
         .map_or(NO_DURATION, |d| d.min(i64::from(NO_DURATION - 1)) as u32);
-    let label = label.trim();
+    let label = limits::cut(label.trim(), MAX_LABEL_BYTES).trim_end();
     (dur, (!label.is_empty()).then(|| label.into()))
 }
 
@@ -312,11 +307,7 @@ pub fn parse(text: &str, root: &Path) -> Vec<PlaylistEntry> {
 /// `label` cut to `MAX_LABEL_BYTES` at a character boundary, line breaks
 /// replaced.
 fn clean_label(label: &str) -> String {
-    let mut end = label.len().min(MAX_LABEL_BYTES);
-    while !label.is_char_boundary(end) {
-        end -= 1;
-    }
-    label[..end].replace(['\n', '\r'], " ")
+    limits::cut(label, MAX_LABEL_BYTES).replace(['\n', '\r'], " ")
 }
 
 /// Serialises entries: `#EXTM3U`, then `#EXTINF` + path per entry, LF endings.
@@ -333,7 +324,9 @@ pub fn serialize(entries: &[PlaylistEntry], info: &dyn Fn(&str) -> Option<TrackI
         let label = match (&known, e.label()) {
             (Some(k), _) => clean_label(&k.label),
             (None, Some(l)) => clean_label(l),
-            (None, None) => title_from_file_name(e.path.rsplit('/').next().unwrap_or(&e.path)),
+            (None, None) => clean_label(&title_from_file_name(
+                e.path.rsplit('/').next().unwrap_or(&e.path),
+            )),
         };
         match duration {
             Some(d) => _ = writeln!(out, "#EXTINF:{d},{label}"),
@@ -398,6 +391,13 @@ pub fn list_names(root: &Path) -> Vec<String> {
         .filter(|stem| stem != LIKED_SONGS)
         .collect();
     names.sort_by_cached_key(|n| crate::search::fold(n));
+    if names.len() > MAX_PLAYLISTS {
+        eprintln!(
+            "tunemesh: listing the first {MAX_PLAYLISTS} of {} playlists (contract: \"Limits\")",
+            names.len()
+        );
+        names.truncate(MAX_PLAYLISTS);
+    }
     names
 }
 
@@ -475,16 +475,13 @@ impl Playlist {
         if self.entries.len() > MAX_ENTRIES {
             return Err(too_large("more than 250,000 entries"));
         }
-        if self
-            .entries
-            .iter()
-            .any(|e| e.path.len() + 3 > MAX_LINE_BYTES)
-        {
-            return Err(too_large("a line is longer than 32 KiB"));
-        }
         let text = serialize(&self.entries, info);
         if text.len() as u64 > MAX_PLAYLIST_BYTES {
             return Err(too_large("larger than 32 MiB"));
+        }
+        // Every line, #EXTINF lines included, must be one readers accept.
+        if text.lines().any(|line| line.len() > MAX_LINE_BYTES) {
+            return Err(too_large("a line is longer than 32 KiB"));
         }
         open_dir(root, true)?.write_atomic(&file_name(&self.name), text.as_bytes())
     }
@@ -553,6 +550,30 @@ impl Playlist {
         }
     }
 
+    /// Liked Songs: likes `tracks` at once, in their order, at the top
+    /// (already liked ones and line-break paths skipped). Linear, unlike
+    /// calling `like` for each.
+    pub fn like_all<'a>(&mut self, tracks: impl IntoIterator<Item = &'a str>) {
+        let mut seen: std::collections::HashSet<&str> = self
+            .entries
+            .iter()
+            .filter_map(PlaylistEntry::track)
+            .collect();
+        let new: Vec<PlaylistEntry> = tracks
+            .into_iter()
+            .filter(|t| !has_line_break(t) && seen.insert(t))
+            .map(PlaylistEntry::for_track)
+            .collect();
+        self.entries.splice(0..0, new);
+    }
+
+    /// Liked Songs: unlikes every track in `tracks` at once (linear).
+    pub fn unlike_all<'a>(&mut self, tracks: impl IntoIterator<Item = &'a str>) {
+        let gone: std::collections::HashSet<&str> = tracks.into_iter().collect();
+        self.entries
+            .retain(|e| e.track().is_none_or(|t| !gone.contains(t)));
+    }
+
     /// Liked Songs: unliking removes every entry for the track.
     pub fn unlike(&mut self, track: &str) {
         self.entries.retain(|e| e.track() != Some(track));
@@ -569,11 +590,16 @@ impl Playlist {
 
     /// Removes the entries at `positions` (any order, duplicates ignored).
     pub fn remove_positions(&mut self, positions: &[usize]) {
+        let mut remove = vec![false; self.entries.len()];
+        for &p in positions {
+            if let Some(r) = remove.get_mut(p) {
+                *r = true;
+            }
+        }
         let mut i = 0;
         self.entries.retain(|_| {
-            let keep = !positions.contains(&i);
             i += 1;
-            keep
+            !remove[i - 1]
         });
     }
 
@@ -961,5 +987,70 @@ mod tests {
         assert_eq!(resolve("../../a", root), None);
         assert_eq!(resolve("..", root), None);
         assert_eq!(resolve("/r/a//b", root).as_deref(), Some("a/b"));
+    }
+
+    /// R2-astra-1: a long entry without metadata gets a fallback label cut
+    /// like any other, so what is written can be read again; a label read
+    /// from the file is cut as well.
+    #[test]
+    fn long_entries_without_metadata_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Playlists")).unwrap();
+        let line = format!("../{}", "x".repeat(MAX_LINE_BYTES - 3));
+        fs::write(root.join("Playlists/Long.m3u8"), format!("{line}\n")).unwrap();
+        let p = Playlist::read(root, "Long").unwrap();
+        p.write(root, &|_| None).unwrap();
+        let text = fs::read_to_string(root.join("Playlists/Long.m3u8")).unwrap();
+        assert!(text.lines().all(|l| l.len() <= MAX_LINE_BYTES));
+        let again = Playlist::read(root, "Long").unwrap();
+        assert_eq!(again.entries.len(), 1);
+        assert_eq!(again.entries[0].line(), line);
+        assert_eq!(again.entries[0].label().unwrap().len(), MAX_LABEL_BYTES);
+        let big = format!("#EXTINF:3,{}\n../a.mp3\n", "é".repeat(2_000));
+        let e = parse(&big, root);
+        assert_eq!(e[0].label().unwrap().len(), MAX_LABEL_BYTES);
+    }
+
+    #[test]
+    fn lists_at_most_max_playlists() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Playlists")).unwrap();
+        for i in 0..MAX_PLAYLISTS + 5 {
+            fs::write(root.join(format!("Playlists/P{i:04}.m3u8")), "").unwrap();
+        }
+        fs::write(root.join("Playlists/Liked Songs.m3u8"), "").unwrap();
+        let names = list_names(root);
+        assert_eq!(names.len(), MAX_PLAYLISTS);
+        assert_eq!(names[0], "P0000");
+    }
+
+    /// Bulk edits are linear: removing or unliking 100,000 entries is quick
+    /// (they were quadratic: 11 s for 100,000 unlikes).
+    #[test]
+    fn bulk_edits_are_linear() {
+        let tracks: Vec<String> = (0..100_000).map(|i| format!("A/B/{i}.mp3")).collect();
+        let mut p = Playlist {
+            name: LIKED_SONGS.into(),
+            entries: Vec::new(),
+        };
+        p.append(tracks.iter().map(String::as_str));
+        let start = std::time::Instant::now();
+        let mut q = p.clone();
+        q.remove_positions(&(0..100_000).step_by(2).collect::<Vec<_>>());
+        assert_eq!(q.entries.len(), 50_000);
+        assert_eq!(q.entries[0].track(), Some("A/B/1.mp3"));
+        p.unlike_all(tracks.iter().skip(1).map(String::as_str));
+        assert_eq!(p.entries.len(), 1);
+        p.like_all(tracks.iter().map(String::as_str));
+        assert_eq!(p.entries.len(), 100_000);
+        assert_eq!(p.entries[0].track(), Some("A/B/1.mp3"));
+        assert_eq!(p.entries[99_999].track(), Some("A/B/0.mp3"));
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
     }
 }

@@ -179,7 +179,7 @@ impl Job<'_> {
 
     pub fn warn(&mut self, warning: String) {
         log!("[{}] {warning}", self.req.id);
-        self.status.warnings.push(warning);
+        self.status.add_warning(warning);
         self.flush(true);
     }
 
@@ -386,9 +386,7 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
         Err(e) => return Err(e),
     };
     if name == LIKED_SONGS {
-        for t in tracks.iter().rev() {
-            p.like(t);
-        }
+        p.like_all(tracks.iter().map(String::as_str));
     } else {
         p.append(tracks.iter().map(String::as_str));
     }
@@ -448,7 +446,11 @@ pub fn process(ctx: &mut Ctx, req: Request) {
     };
     job.flush(true);
 
+    let too_long = job.req.input.len() > tunemesh_core::limits::MAX_INPUT_BYTES;
     let result = match tools {
+        _ if too_long => {
+            SourceResult::fatal("The request is too long (more than 8 KiB)".to_owned())
+        }
         Err(e) => SourceResult::fatal(e),
         Ok(tools) => {
             job.tools = tools;
@@ -528,7 +530,7 @@ fn finish(job: &mut Job, r: SourceResult) {
                     // left unchanged and the warning says so.
                     let warning = format!("Could not update playlist “{name}”: {e}");
                     if playlist::is_too_large(&e) {
-                        s.warnings.push(warning.clone());
+                        s.add_warning(warning.clone());
                     }
                     notes.push(warning);
                 }
@@ -826,7 +828,7 @@ pub mod tests {
         fs::create_dir_all(root.join("Playlists")).unwrap();
         let text = format!(
             "#EXTM3U\n{}",
-            "../a.mp3\n".repeat(playlist::MAX_ENTRIES + 1)
+            "../a.mp3\n".repeat(tunemesh_core::limits::MAX_PLAYLIST_ENTRIES + 1)
         );
         fs::write(root.join("Playlists/Big.m3u8"), &text).unwrap();
         let err = add_to_playlist(root, "Big", &["b.mp3".to_owned()]).unwrap_err();

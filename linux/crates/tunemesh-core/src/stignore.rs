@@ -10,7 +10,6 @@ pub const FILE_NAME: &str = ".stignore";
 const HEADER: &str = "// TuneMesh";
 /// The rules from `docs/library-format.md`.
 pub const RULES: &[&str] = &["(?d).~tunemesh-*"];
-const MAX_BYTES: u64 = 1024 * 1024;
 
 /// Makes sure `<root>/.stignore` contains every rule in `RULES`: missing
 /// ones are appended (exact match after trimming), the user's lines and
@@ -20,7 +19,7 @@ const MAX_BYTES: u64 = 1024 * 1024;
 /// whether the file was written.
 pub fn ensure(root: &Path) -> io::Result<bool> {
     let dir = Dir::open(root)?;
-    let existing = match dir.read(FILE_NAME, MAX_BYTES) {
+    let existing = match dir.read(FILE_NAME, crate::limits::MAX_STIGNORE_BYTES) {
         Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),

@@ -15,5 +15,13 @@ lofty = "0.25"
 rustix = { version = "1", features = ["fs", "process"] }
 unicode-normalization = "0.1"
 
+[features]
+# The hostile-library generator (`hostile`, `examples/hostile_library.rs`).
+hostile = []
+
+[[example]]
+name = "hostile_library"
+required-features = ["hostile"]
+
 [dev-dependencies]
 tempfile = "3"

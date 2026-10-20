@@ -257,12 +257,21 @@ impl Dir {
 
     /// Entry names (valid UTF-8 only) with their kinds, `.` and `..` excluded.
     pub fn entries(&self) -> io::Result<Vec<(String, Kind)>> {
+        self.entries_up_to(usize::MAX).map(|(v, _)| v)
+    }
+
+    /// At most `max` entries of this directory (in directory order), and
+    /// whether that was all of them.
+    pub fn entries_up_to(&self, max: usize) -> io::Result<(Vec<(String, Kind)>, bool)> {
         let mut out = Vec::new();
         for entry in rustix::fs::Dir::read_from(&self.fd)? {
             let entry = entry?;
             let bytes = entry.file_name().to_bytes();
             if bytes == b"." || bytes == b".." {
                 continue;
+            }
+            if out.len() == max {
+                return Ok((out, false));
             }
             let Ok(name) = std::str::from_utf8(bytes) else {
                 continue;
@@ -276,7 +285,7 @@ impl Dir {
             };
             out.push((name.to_owned(), kind));
         }
-        Ok(out)
+        Ok((out, true))
     }
 
     /// Atomically replaces the file `name` in this directory with
@@ -471,5 +480,18 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 2);
         assert!(root.free_space().unwrap() > 0);
+    }
+
+    #[test]
+    fn entries_up_to_stops_at_the_limit() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..10 {
+            fs::write(dir.path().join(format!("f{i}")), b"").unwrap();
+        }
+        let d = Dir::open(dir.path()).unwrap();
+        let (some, complete) = d.entries_up_to(4).unwrap();
+        assert_eq!((some.len(), complete), (4, false));
+        let (all, complete) = d.entries_up_to(10).unwrap();
+        assert_eq!((all.len(), complete), (10, true));
     }
 }

@@ -190,7 +190,7 @@ fn run(args: Args) -> Result<(), Fatal> {
 /// Statuses left unfinished whose request file is gone were cancelled while
 /// no worker was watching.
 fn sweep_cancelled(root: &Path) {
-    for status in request::list_statuses(root) {
+    for status in request::list_newest_statuses(root, usize::MAX) {
         if !status.state.is_final() && request::is_cancelled(root, &status.id) {
             log!("[{}] request file gone; marking cancelled", status.id);
             let mut s = status;

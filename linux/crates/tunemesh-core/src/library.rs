@@ -11,6 +11,10 @@ use lofty::tag::{ItemKey, Tag};
 use serde::{Deserialize, Serialize};
 
 use crate::fsx::{Dir, Kind};
+use crate::limits::{
+    self, MAX_ARTISTS, MAX_COVER_BYTES, MAX_DEPTH, MAX_DIR_ENTRIES, MAX_TAG_ITEM_BYTES,
+    MAX_TAG_TEXT_BYTES, MAX_TRACKS,
+};
 use crate::search::{Query, fold};
 use crate::{PLAYLISTS_DIR, TUNEMESH_DIR};
 
@@ -168,8 +172,9 @@ pub struct TagInfo {
     pub has_picture: bool,
 }
 
+/// A trimmed, non-empty tag text cut to `MAX_TAG_TEXT_BYTES`.
 fn non_empty(s: Option<&str>) -> Option<String> {
-    s.map(str::trim)
+    s.map(|s| limits::cut(s.trim(), MAX_TAG_TEXT_BYTES).trim_end())
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
 }
@@ -183,7 +188,9 @@ fn tag_info(tag: &Tag) -> TagInfo {
     let mut artists: Vec<String> = Vec::new();
     for value in tag.get_strings(ItemKey::TrackArtist) {
         for part in value.split(['\0', ';']) {
-            if let Some(a) = non_empty(Some(part)) {
+            if artists.len() < MAX_ARTISTS
+                && let Some(a) = non_empty(Some(part))
+            {
                 artists.push(a);
             }
         }
@@ -204,7 +211,7 @@ fn tag_info(tag: &Tag) -> TagInfo {
         disc_number: tag.disk(),
         year,
         duration_ms: 0,
-        has_picture: !tag.pictures().is_empty(),
+        has_picture: tag.pictures().iter().any(|p| limits::cover_ok(p.data())),
     }
 }
 
@@ -217,6 +224,13 @@ fn tag_info(tag: &Tag) -> TagInfo {
 pub fn guarded<T>(what: &str, read: impl FnOnce() -> T) -> Option<T> {
     use std::sync::atomic::{AtomicBool, Ordering};
     static LOGGED: AtomicBool = AtomicBool::new(false);
+    static OPTIONS: std::sync::Once = std::sync::Once::new();
+    // lofty refuses any single item (a picture, a frame) above this.
+    OPTIONS.call_once(|| {
+        lofty::config::apply_global_options(
+            lofty::config::GlobalOptions::new().allocation_limit(MAX_TAG_ITEM_BYTES),
+        );
+    });
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
     if result.is_err() && !LOGGED.swap(true, Ordering::Relaxed) {
         eprintln!("tunemesh: the tag reader crashed on {what}; treating it as unreadable");
@@ -251,7 +265,10 @@ fn tagged_info(file: &lofty::file::TaggedFile) -> TagInfo {
         .map(tag_info)
         .unwrap_or_default();
     if !info.has_picture {
-        info.has_picture = file.tags().iter().any(|t| !t.pictures().is_empty());
+        info.has_picture = file
+            .tags()
+            .iter()
+            .any(|t| t.pictures().iter().any(|p| limits::cover_ok(p.data())));
     }
     info.duration_ms = file.properties().duration().as_millis() as u64;
     info
@@ -276,7 +293,13 @@ pub fn read_embedded_cover_from(file: &mut fs::File) -> Option<Vec<u8>> {
 
 fn cover_of(file: &lofty::file::TaggedFile) -> Option<Vec<u8>> {
     use lofty::picture::PictureType;
-    let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
+    // Only covers within the contract's limits are used.
+    let pictures: Vec<_> = file
+        .tags()
+        .iter()
+        .flat_map(|t| t.pictures())
+        .filter(|p| limits::cover_ok(p.data()))
+        .collect();
     pictures
         .iter()
         .find(|p| p.pic_type() == PictureType::CoverFront)
@@ -326,18 +349,15 @@ pub fn make_track(
     }
 }
 
-/// Deepest directory level the walk descends to (the root is level 0).
-/// Each level keeps one directory handle open, so the walk never holds more
-/// than `MAX_DEPTH + 1` descriptors.
-pub const MAX_DEPTH: usize = 64;
-
 /// Walks the library below `root` through directory handles: every
 /// subdirectory is opened with `O_NOFOLLOW` relative to its parent, so a
 /// directory swapped for a symlink while the walk runs is skipped, never
 /// followed. Hidden names, conflict copies, `Playlists/` and `.tunemesh/`
 /// are left out. `visit` gets each directory's handle, its root-relative
 /// path ("" for the root) and its regular files. Directories deeper than
-/// `MAX_DEPTH` are skipped with a log line.
+/// `MAX_DEPTH` are skipped with a log line, and so are the entries of a
+/// directory past `MAX_DIR_ENTRIES`. Each level keeps one directory handle
+/// open, so the walk never holds more than `MAX_DEPTH + 1` descriptors.
 fn walk(root: &Path, mut visit: impl FnMut(&Dir, &str, Vec<String>)) {
     struct Frame {
         dir: Dir,
@@ -349,7 +369,18 @@ fn walk(root: &Path, mut visit: impl FnMut(&Dir, &str, Vec<String>)) {
     let mut enter = |dir: Dir, rel: String| -> Frame {
         let mut files = Vec::new();
         let mut pending = Vec::new();
-        for (name, kind) in dir.entries().unwrap_or_default() {
+        let (entries, complete) = dir.entries_up_to(MAX_DIR_ENTRIES).unwrap_or_default();
+        if !complete {
+            eprintln!(
+                "tunemesh: scanning only {MAX_DIR_ENTRIES} entries of {} (contract: \"Limits\")",
+                if rel.is_empty() {
+                    "the library folder"
+                } else {
+                    &rel
+                }
+            );
+        }
+        for (name, kind) in entries {
             if is_ignored_name(&name) {
                 continue;
             }
@@ -411,6 +442,7 @@ fn walk(root: &Path, mut visit: impl FnMut(&Dir, &str, Vec<String>)) {
 /// symlink, even one swapped in while the scan runs.
 pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
     let mut tracks = Vec::new();
+    let mut left_out = 0usize;
     walk(root, |dir, rel_dir, files| {
         let rel_of = |name: &str| {
             if rel_dir.is_empty() {
@@ -424,12 +456,19 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
         for name in files {
             let lower = name.to_ascii_lowercase();
             if let Some(rank) = COVER_FILES.iter().position(|c| *c == lower) {
-                if dir_cover.as_ref().is_none_or(|(r, _)| rank < *r) {
+                let fits = dir
+                    .metadata(&name)
+                    .is_ok_and(|m| m.kind == Kind::File && m.len <= MAX_COVER_BYTES);
+                if fits && dir_cover.as_ref().is_none_or(|(r, _)| rank < *r) {
                     dir_cover = Some((rank, rel_of(&name)));
                 }
                 continue;
             }
             if !has_audio_extension(&name) {
+                continue;
+            }
+            if tracks.len() + audio.len() >= MAX_TRACKS {
+                left_out += 1;
                 continue;
             }
             let Ok(meta) = dir.metadata(&name) else {
@@ -478,6 +517,11 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
             tracks.push(track);
         }
     });
+    if left_out > 0 {
+        eprintln!(
+            "tunemesh: {left_out} audio files left out: the library holds at most {MAX_TRACKS} (contract: \"Limits\")"
+        );
+    }
     tracks.sort_by(|a, b| a.path.cmp(&b.path));
     tracks
 }

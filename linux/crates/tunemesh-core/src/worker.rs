@@ -66,7 +66,7 @@ fn open_dir(root: &Path, create: bool) -> io::Result<Dir> {
 pub fn read(root: &Path) -> Option<WorkerInfo> {
     let bytes = open_dir(root, false)
         .ok()?
-        .read(FILE_NAME, 64 * 1024)
+        .read(FILE_NAME, crate::limits::MAX_JSON_BYTES)
         .ok()?;
     serde_json::from_slice(&bytes).ok()
 }

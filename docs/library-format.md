@@ -320,7 +320,7 @@ at a character boundary.
 | --- | --- | --- |
 | A request, status or `worker.json` file | 1 MiB | Not read: a request is reported as an invalid request file, a status file is skipped, `worker.json` counts as absent |
 | `<root>/.stignore` | 1 MiB | Left unchanged (not read or rewritten) |
-| Request `input`; request `playlist` | 8 KiB; 1 KiB | The worker fails the request ("too long"); clients cut what they show |
+| Request `input`; request `playlist` | 8 KiB; 1 KiB | The worker fails the request ("too long"); readers cut them (also a status file's `input`) |
 | Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
 | Request and status files clients read | the newest 200 ids (a request with its status file counts once) | Older ones are counted but not read or shown |
 | Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |

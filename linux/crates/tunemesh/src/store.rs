@@ -1064,7 +1064,7 @@ mod tests {
             let big = base.join(PLAYLISTS_DIR).join("Big.m3u8");
             let text = format!(
                 "#EXTM3U\n{}",
-                "../missing.wav\n".repeat(playlist::MAX_ENTRIES + 1)
+                "../missing.wav\n".repeat(tunemesh_core::limits::MAX_PLAYLIST_ENTRIES + 1)
             );
             fs::write(&big, &text).unwrap();
             fs::write(
