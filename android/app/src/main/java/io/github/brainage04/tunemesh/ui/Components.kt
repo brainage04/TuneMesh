@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.brainage04.tunemesh.data.LibraryState
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.playback.PlayerUiState
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.theme.Accent
@@ -400,6 +401,10 @@ fun totalLength(tracks: List<Track>): String {
 }
 
 fun songCount(count: Int) = if (count == 1) "1 song" else "$count songs"
+
+/** "Playlist • 12 songs", or why it cannot be opened. */
+fun playlistSubtitle(playlist: Playlist) =
+    if (playlist.problem != null) "Playlist • too large to open" else "Playlist • ${songCount(playlist.size)}"
 
 /** Drops text-field focus when the keyboard is dismissed, so no cursor keeps blinking (and redrawing). */
 @OptIn(ExperimentalLayoutApi::class)

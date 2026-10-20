@@ -72,14 +72,51 @@ data class Artist(
     val tracks: List<Track>,
 )
 
-/** One line of a playlist. [path] is null when the entry does not point inside the library. */
-data class PlaylistEntry(
+/**
+ * One line of a playlist. [path] is null when the entry does not point inside the library. Kept small, since a
+ * playlist can hold hundreds of thousands of them: the entry line is stored only when it is not the canonical
+ * `../<path>` that [raw] derives, and [extinf] only when the reader asked for it.
+ */
+class PlaylistEntry private constructor(
     val path: String?,
-    val raw: String,
-    val extinf: String? = null,
-)
+    private val line: String?,
+    val extinf: String?,
+) {
+    /** The entry line as read or written, relative to `Playlists/` unless absolute. */
+    val raw: String get() = line ?: M3u8.entryLine(path!!)
 
+    override fun equals(other: Any?): Boolean =
+        other is PlaylistEntry && path == other.path && raw == other.raw && extinf == other.extinf
+
+    override fun hashCode(): Int = (path.hashCode() * 31 + raw.hashCode()) * 31 + extinf.hashCode()
+
+    override fun toString(): String = "PlaylistEntry(path=$path, raw=$raw, extinf=$extinf)"
+
+    companion object {
+        operator fun invoke(path: String?, raw: String, extinf: String? = null): PlaylistEntry =
+            PlaylistEntry(path, raw.takeUnless { path != null && raw.length == path.length + 3 && raw == M3u8.entryLine(path) }, extinf)
+    }
+}
+
+/**
+ * A playlist as lists show it. It carries no entries, so the app state does not grow with playlist length;
+ * [PlaylistContents] holds the entries of the playlist that is open.
+ */
 data class Playlist(
+    val name: String,
+    /** Number of entries, available or not. */
+    val size: Int,
+    /** The first few entries that point inside the library, in order, for the playlist's cover art. */
+    val artPaths: List<String>,
+    val modifiedMs: Long,
+    /** Why the playlist cannot be opened or changed on this device (too large), or null. */
+    val problem: String? = null,
+) {
+    val isLikedSongs: Boolean get() = name == LibraryFormat.LIKED_SONGS
+}
+
+/** The entries of one playlist, read when it is opened or changed. */
+data class PlaylistContents(
     val name: String,
     val entries: List<PlaylistEntry>,
     val modifiedMs: Long,

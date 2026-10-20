@@ -57,6 +57,7 @@ import io.github.brainage04.tunemesh.ui.Screen
 import io.github.brainage04.tunemesh.ui.ScreenTitle
 import io.github.brainage04.tunemesh.ui.SectionTitle
 import io.github.brainage04.tunemesh.ui.TrackRow
+import io.github.brainage04.tunemesh.ui.playlistSubtitle
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 
@@ -189,7 +190,7 @@ fun LibraryScreen(contentPadding: PaddingValues) {
                 }
             }
             items(library.playlists, key = { "p:" + it.name }) { playlist ->
-                LibraryRow(playlist.name, "Playlist • ${songCount(playlist.entries.size)}", { viewModel.push(Screen.PlaylistDetail(playlist.name)) }) {
+                LibraryRow(playlist.name, playlistSubtitle(playlist), { viewModel.push(Screen.PlaylistDetail(playlist.name)) }) {
                     PlaylistArt(playlist, it, 64.dp)
                 }
             }

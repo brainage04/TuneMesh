@@ -10,6 +10,7 @@ import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Playlist
+import io.github.brainage04.tunemesh.library.PlaylistContents
 import io.github.brainage04.tunemesh.library.PlaylistStore
 import io.github.brainage04.tunemesh.library.RawTags
 import io.github.brainage04.tunemesh.library.Stignore
@@ -31,6 +32,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 
 data class LibraryState(
     val root: File,
@@ -40,6 +42,8 @@ data class LibraryState(
     val index: LibraryIndex = LibraryIndex.EMPTY,
     val playlists: List<Playlist> = emptyList(),
     val liked: Set<String> = emptySet(),
+    /** Entries of the playlist screen that is open (see [LibraryRepository.openPlaylist]); only that one is held. */
+    val openPlaylist: PlaylistContents? = null,
     val downloads: List<DownloadItem> = emptyList(),
     /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
@@ -47,7 +51,7 @@ data class LibraryState(
 ) {
     /** Liked Songs always exists for the UI, even before its file is first written. */
     fun playlist(name: String): Playlist? = playlists.firstOrNull { it.name == name }
-        ?: if (name == LibraryFormat.LIKED_SONGS) Playlist(name, emptyList(), 0) else null
+        ?: if (name == LibraryFormat.LIKED_SONGS) Playlist(name, 0, emptyList(), 0) else null
     val likedSongs: Playlist? get() = playlists.firstOrNull { it.isLikedSongs }
 }
 
@@ -67,6 +71,12 @@ class LibraryRepository(
     private var foregroundJob: Job? = null
     @Volatile private var foreground = false
     private var pendingRefresh: Job? = null
+    /** A refresh is waiting for [scanMutex] and has not started reading yet; further requests join it. */
+    private val refreshQueued = AtomicBoolean(false)
+    @Volatile private var openedPlaylist: String? = null
+    /** `lastModified` and length of the files behind [LibraryState.liked] and [LibraryState.openPlaylist]. */
+    private var likedStamp: Pair<Long, Long>? = null
+    private var openStamp: Pair<Long, Long>? = null
 
     val root: File get() = _state.value.root
     private val playlistStore get() = PlaylistStore(root) { _state.value.index.byPath[it] }
@@ -122,12 +132,24 @@ class LibraryRepository(
         scope.launch { refresh() }
     }
 
-    suspend fun refresh() = scanMutex.withLock {
+    /**
+     * Rescans the library, playlists and downloads. Requests made while one refresh waits to start are merged into
+     * it (start-up, the activity coming to the foreground and file events otherwise queue one full rescan each).
+     */
+    suspend fun refresh() {
+        if (!refreshQueued.compareAndSet(false, true)) return
+        scanMutex.withLock {
+            refreshQueued.set(false)
+            refreshLocked()
+        }
+    }
+
+    private fun refreshLocked() {
         val access = hasAccess()
         val root = settings.libraryRoot
         if (!access) {
             _state.update { it.copy(root = root, hasAccess = false) }
-            return@withLock
+            return
         }
         _state.update { it.copy(root = root, hasAccess = true, scanning = true) }
         try {
@@ -156,10 +178,65 @@ class LibraryRepository(
         }
     }
 
-    private fun reloadPlaylists() {
-        val playlists = playlistStore.list()
-        val liked = playlists.firstOrNull { it.isLikedSongs }?.entries?.mapNotNullTo(HashSet()) { it.path } ?: emptySet()
-        _state.update { it.copy(playlists = playlists, liked = liked) }
+    /**
+     * Re-reads the playlist summaries, and Liked Songs and the open playlist when their files changed ([force]
+     * after this app changed one). Unchanged files are not read again, so a large one is never held twice.
+     */
+    private fun reloadPlaylists(force: Boolean = false) {
+        val store = playlistStore
+        val playlists = store.list()
+        _state.update { it.copy(playlists = playlists) }
+
+        val likedFile = store.file(LibraryFormat.LIKED_SONGS)
+        val liked = stamp(likedFile)
+        if (force || liked != likedStamp) {
+            likedStamp = liked
+            val paths = try {
+                store.likedPaths()
+            } catch (error: IOException) {
+                Log.w(TAG, "Cannot read Liked Songs", error)
+                emptySet()
+            }
+            _state.update { it.copy(liked = paths) }
+        }
+        reloadOpenPlaylist(force)
+    }
+
+    private fun stamp(file: File): Pair<Long, Long> = file.lastModified() to file.length()
+
+    private fun reloadOpenPlaylist(force: Boolean) {
+        val name = openedPlaylist
+        if (name == null) {
+            openStamp = null
+            _state.update { it.copy(openPlaylist = null) }
+            return
+        }
+        val store = playlistStore
+        val stamp = stamp(store.file(name))
+        if (!force && stamp == openStamp && _state.value.openPlaylist?.name == name) return
+        openStamp = stamp
+        // The old entries stay on screen while the new ones load (both are bounded by M3u8.MAX_ENTRIES).
+        val contents = try {
+            store.contents(name)
+        } catch (error: IOException) {
+            Log.w(TAG, "Cannot read playlist $name", error)
+            null
+        }
+        if (openedPlaylist == name) _state.update { it.copy(openPlaylist = contents) }
+    }
+
+    /** Loads the entries of playlist [name] for its screen; one playlist is open at a time. */
+    fun openPlaylist(name: String) {
+        if (openedPlaylist == name && _state.value.openPlaylist?.name == name) return
+        openedPlaylist = name
+        scope.launch { scanMutex.withLock { reloadOpenPlaylist(force = true) } }
+    }
+
+    /** Releases the entries of [name] when its screen goes away. */
+    fun closePlaylist(name: String) {
+        if (openedPlaylist != name) return
+        openedPlaylist = null
+        _state.update { state -> if (state.openPlaylist?.name == name) state.copy(openPlaylist = null) else state }
     }
 
     private fun reloadDownloads() {
@@ -226,7 +303,7 @@ class LibraryRepository(
             } catch (error: Exception) {
                 _messages.tryEmit(error.message ?: error.toString())
             }
-            scanMutex.withLock { reloadPlaylists() }
+            scanMutex.withLock { reloadPlaylists(force = true) }
         }
     }
 

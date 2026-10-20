@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -151,17 +152,24 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     val playlist = library.playlist(name) ?: return Missing("Playlist", contentPadding)
-    val resolved = playlist.entries.map { entry -> entry.path?.let { library.index.byPath[it] } }
-    val playable = resolved.filterNotNull()
+    // Only the open playlist's entries are held, and only while its screen is shown.
+    DisposableEffect(name) {
+        viewModel.repository.openPlaylist(name)
+        onDispose { viewModel.repository.closePlaylist(name) }
+    }
+    val contents = library.openPlaylist?.takeIf { it.name == name }
+    val entries = contents?.entries ?: emptyList()
+    val resolved = remember(entries, library.index) { entries.map { entry -> entry.path?.let { library.index.byPath[it] } } }
+    val playable = remember(resolved) { resolved.filterNotNull() }
     var editing by remember(name) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             DetailHeader(
                 title = playlist.name,
                 subtitle = if (playlist.isLikedSongs) "Your liked songs" else "Playlist",
-                stats = buildString {
-                    append(songCount(playlist.entries.size))
-                    if (playable.size != playlist.entries.size) append(" • ${playlist.entries.size - playable.size} unavailable")
+                stats = if (playlist.problem != null) "Too large to open" else buildString {
+                    append(songCount(contents?.entries?.size ?: playlist.size))
+                    if (contents != null && playable.size != entries.size) append(" • ${entries.size - playable.size} unavailable")
                     if (playable.isNotEmpty()) append(" • ${totalLength(playable)}")
                 },
                 seed = playlist.name,
@@ -172,14 +180,17 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                 playEnabled = playable.isNotEmpty(),
                 art = { PlaylistArt(playlist, it, 232.dp) },
                 actions = {
-                    if (playlist.entries.size > 1) {
+                    if (entries.size > 1) {
                         TextButton(onClick = { editing = !editing }) { Text(if (editing) "Done" else "Edit order") }
                     }
                     PlaylistMenu(playlist.name, playlist.isLikedSongs, playable)
                 },
             )
         }
-        if (playlist.entries.isEmpty()) {
+        playlist.problem?.let { problem ->
+            item { EmptyMessage("This playlist cannot be opened", "$problem. It is left unchanged.") }
+        }
+        if (playlist.problem == null && contents != null && entries.isEmpty()) {
             item {
                 EmptyMessage(
                     if (playlist.isLikedSongs) "Songs you like appear here" else "This playlist is empty",
@@ -187,7 +198,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                 )
             }
         }
-        itemsIndexed(playlist.entries) { index, entry ->
+        itemsIndexed(entries) { index, entry ->
             val track = resolved[index]
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
@@ -205,7 +216,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                     IconButton(onClick = { viewModel.repository.movePlaylistEntry(playlist.name, index, index - 1) }, enabled = index > 0) {
                         Icon(AppIcons.Up, "Move up")
                     }
-                    IconButton(onClick = { viewModel.repository.movePlaylistEntry(playlist.name, index, index + 1) }, enabled = index < playlist.entries.lastIndex) {
+                    IconButton(onClick = { viewModel.repository.movePlaylistEntry(playlist.name, index, index + 1) }, enabled = index < entries.lastIndex) {
                         Icon(AppIcons.DownArrow, "Move down")
                     }
                 }

@@ -212,7 +212,7 @@ private fun AddToPlaylistDialog(tracks: List<Track>, viewModel: AppViewModel, on
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(playlist.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(songCount(playlist.entries.size), color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                            Text(songCount(playlist.size), color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

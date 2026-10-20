@@ -2,6 +2,8 @@ package io.github.brainage04.tunemesh.library
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -49,8 +51,8 @@ class PlaylistStoreTest {
             "#EXTM3U\n#EXTINF:42,Gone - Away\n../Gone/X/Away [9].opus\n#EXTINF:60,Artist - B [2]\n../Artist/Album/B [2].opus\n",
             liked(),
         )
-        assertFalse(store.isLiked(a.path))
-        assertTrue(store.isLiked(b.path))
+        assertFalse(a.path in store.likedPaths())
+        assertTrue(b.path in store.likedPaths())
     }
 
     @Test
@@ -144,5 +146,64 @@ class PlaylistStoreTest {
     fun extinfNeverBreaksTheLine() {
         val tagged = Track("A/B/x.opus", "Two\nline\rtitle", "Art\r\nist", "B", "B", null, null, 1_000, 1, 1)
         assertEquals("#EXTINF:1,Art  ist - Two line title", M3u8.extinf(tagged))
+    }
+
+    @Test
+    fun listKeepsSummariesNotEntries() {
+        val store = store()
+        val name = store.create("Mix")
+        store.add(name, listOf(c, b, a, c))
+        File(temp.root, "Playlists/Mix.m3u8").appendText("../Gone/x.opus\n")
+        val mix = store.list().single()
+        assertEquals(5, mix.size)
+        assertEquals(listOf(c.path, b.path, a.path, c.path), mix.artPaths)
+        assertSame(tracks.getValue(c.path).path, mix.artPaths[0])
+        assertNull(mix.problem)
+        val many = (1..20).map { track("Artist/Album/T$it [$it].opus") }
+        val big = PlaylistStore(temp.root) { path -> many.firstOrNull { it.path == path } }
+        big.add("Big", many)
+        assertEquals(PlaylistStore.ART_PATHS, big.list().first { it.name == "Big" }.artPaths.size)
+    }
+
+    @Test
+    fun aPlaylistBeyondTheLimitsIsListedButNeverRewritten() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val huge = File(dir, "Huge.m3u8")
+        huge.outputStream().buffered().use { out ->
+            out.write("#EXTM3U\n".toByteArray())
+            repeat(M3u8.MAX_ENTRIES + 1) { out.write("../missing.wav\n".toByteArray()) }
+        }
+        val before = huge.readBytes()
+        val store = store()
+        val listed = store.list().single()
+        assertEquals("Huge", listed.name)
+        assertTrue(listed.problem!!.contains("more than ${M3u8.MAX_ENTRIES} entries"))
+        assertThrows(PlaylistTooLargeException::class.java) { store.contents("Huge") }
+        assertThrows(PlaylistException::class.java) { store.add("Huge", listOf(a)) }
+        assertThrows(PlaylistException::class.java) { store.removeAt("Huge", 0, null) }
+        assertThrows(PlaylistException::class.java) { store.move("Huge", 0, 1) }
+        assertTrue(before.contentEquals(huge.readBytes()))
+
+        File(dir, "Liked Songs.m3u8").writeBytes(before)
+        assertThrows(PlaylistException::class.java) { store.setLiked(a, true) }
+        assertThrows(PlaylistTooLargeException::class.java) { store.likedPaths() }
+        assertTrue(before.contentEquals(File(dir, "Liked Songs.m3u8").readBytes()))
+    }
+
+    @Test
+    fun aFileLargerThanTheByteLimitIsNotRead() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        java.io.RandomAccessFile(File(dir, "Sparse.m3u8"), "rw").use { it.setLength(M3u8.MAX_BYTES + 1) }
+        assertTrue(store().list().single().problem!!.contains("larger than 32 MiB"))
+    }
+
+    @Test
+    fun contentsLeaveOutExtinfAndReadKeepsIt() {
+        val store = store()
+        store.add("Mix", listOf(a))
+        assertNull(store.contents("Mix")!!.entries.single().extinf)
+        assertEquals("#EXTINF:60,Artist - A [1]", store.read("Mix")!!.entries.single().extinf)
+        assertNull(store.contents("Nothing"))
+        assertEquals(emptySet<String>(), store.likedPaths())
     }
 }

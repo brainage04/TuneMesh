@@ -40,7 +40,7 @@ import io.github.brainage04.tunemesh.ui.MediaTile
 import io.github.brainage04.tunemesh.ui.Screen
 import io.github.brainage04.tunemesh.ui.ScreenTitle
 import io.github.brainage04.tunemesh.ui.SectionTitle
-import io.github.brainage04.tunemesh.ui.songCount
+import io.github.brainage04.tunemesh.ui.playlistSubtitle
 import io.github.brainage04.tunemesh.ui.theme.SurfaceHigh
 import java.time.LocalTime
 
@@ -100,7 +100,7 @@ fun HomeScreen(contentPadding: PaddingValues) {
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 10.dp)) {
                     items(library.playlists, key = { it.name }) { playlist ->
-                        MediaTile(playlist.name, "Playlist • ${songCount(playlist.entries.size)}", { viewModel.push(Screen.PlaylistDetail(playlist.name)) }, Modifier.width(160.dp)) {
+                        MediaTile(playlist.name, playlistSubtitle(playlist), { viewModel.push(Screen.PlaylistDetail(playlist.name)) }, Modifier.width(160.dp)) {
                             PlaylistArt(playlist, it, 160.dp)
                         }
                     }
@@ -159,6 +159,6 @@ fun PlaylistArt(
         return
     }
     val library = LocalLibrary.current
-    val first = playlist.entries.firstNotNullOfOrNull { entry -> entry.path?.let { library.index.byPath[it] } }
+    val first = playlist.artPaths.firstNotNullOfOrNull { library.index.byPath[it] }
     CoverArt(first, playlist.name, modifier, shape = shape, sizeHint = sizeHint, placeholderIcon = AppIcons.Queue)
 }

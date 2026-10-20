@@ -37,38 +37,96 @@ object AtomicFiles {
 
 class PlaylistException(message: String) : Exception(message)
 
-/** Playlist files below `<root>/Playlists`. Every change re-reads the file first and writes atomically. */
+/**
+ * Playlist files below `<root>/Playlists`. Every change re-reads the file first and writes atomically. Files are
+ * streamed ([M3u8.read]): listing keeps a few fields per playlist, and only the playlist that is open or being
+ * changed is held entry by entry. A playlist beyond [M3u8]'s limits is listed with a [Playlist.problem] and is
+ * never rewritten.
+ */
 class PlaylistStore(private val root: File, private val lookup: (String) -> Track?) {
     private val directory get() = File(root, LibraryFormat.PLAYLISTS_DIR)
 
     fun file(name: String): File = File(directory, name + LibraryFormat.PLAYLIST_EXTENSION)
 
+    /** The library's own string for [path], so entries do not each hold a copy. */
+    private fun canonical(path: String): String? = lookup(path)?.path
+
+    private fun stream(file: File, keepExtinf: Boolean, onEntry: (PlaylistEntry) -> Unit) {
+        if (file.length() > M3u8.MAX_BYTES) throw PlaylistTooLargeException("larger than ${M3u8.MAX_BYTES / (1024 * 1024)} MiB")
+        file.inputStream().use { M3u8.read(it, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry) }
+    }
+
+    /** All playlists, Liked Songs first, as summaries. Files that cannot be read at all are left out. */
     fun list(): List<Playlist> {
         val files = directory.listFiles { file ->
             file.isFile && file.name.endsWith(LibraryFormat.PLAYLIST_EXTENSION) &&
                 !LibraryFormat.isHidden(file.name) && !LibraryFormat.isConflictCopy(file.name)
         } ?: return emptyList()
-        return files.mapNotNull { read(it) }.sortedWith(
+        return files.mapNotNull(::summary).sortedWith(
             compareBy<Playlist> { !it.isLikedSongs }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
         )
     }
 
-    fun read(name: String): Playlist? = read(file(name))
-
-    private fun read(file: File): Playlist? {
-        val text = try {
-            file.readText(Charsets.UTF_8)
+    private fun summary(file: File): Playlist? {
+        val name = file.name.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)
+        var size = 0
+        val art = ArrayList<String>(ART_PATHS)
+        return try {
+            stream(file, keepExtinf = false) { entry ->
+                size++
+                val path = entry.path
+                if (art.size < ART_PATHS && path != null && lookup(path) != null) art += path
+            }
+            Playlist(name, size, art, file.lastModified())
+        } catch (error: PlaylistTooLargeException) {
+            Playlist(name, 0, emptyList(), file.lastModified(), problem = "Too large to open on this device (${error.message})")
         } catch (_: IOException) {
-            return null
+            null
         }
-        return Playlist(
-            name = file.name.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION),
-            entries = M3u8.parse(text, root.absolutePath),
-            modifiedMs = file.lastModified(),
-        )
     }
 
-    private fun entries(name: String): List<PlaylistEntry> = read(name)?.entries ?: emptyList()
+    /**
+     * The entries of playlist [name] for a screen (without `#EXTINF` lines), or null when it does not exist or
+     * cannot be read. Throws [PlaylistTooLargeException] beyond the limits.
+     */
+    fun contents(name: String): PlaylistContents? = read(name, keepExtinf = false)
+
+    /** The playlist as a writer needs it, `#EXTINF` lines included; null when the file does not exist. */
+    fun read(name: String): PlaylistContents? = read(name, keepExtinf = true)
+
+    private fun read(name: String, keepExtinf: Boolean): PlaylistContents? {
+        val file = file(name)
+        val entries = ArrayList<PlaylistEntry>()
+        try {
+            stream(file, keepExtinf) { entries += it }
+        } catch (_: java.io.FileNotFoundException) {
+            return null
+        }
+        entries.trimToSize()
+        return PlaylistContents(name, entries, file.lastModified())
+    }
+
+    /** Library paths in Liked Songs, without keeping its entries; empty when it does not exist. */
+    fun likedPaths(): Set<String> {
+        val paths = HashSet<String>()
+        try {
+            stream(file(LibraryFormat.LIKED_SONGS), keepExtinf = false) { entry -> entry.path?.let(paths::add) }
+        } catch (_: java.io.FileNotFoundException) {
+        }
+        return paths
+    }
+
+    /**
+     * Entries to change. A missing file is empty; a file that cannot be read or is too large is never rewritten
+     * from a partial read, so the change is refused.
+     */
+    private fun entries(name: String): List<PlaylistEntry> = try {
+        read(name)?.entries ?: emptyList()
+    } catch (_: PlaylistTooLargeException) {
+        throw PlaylistException("\"$name\" is too large to change on this device")
+    } catch (error: IOException) {
+        throw PlaylistException("Cannot read \"$name\": ${error.message}")
+    }
 
     private fun write(name: String, entries: List<PlaylistEntry>) {
         AtomicFiles.write(file(name), M3u8.write(entries, lookup))
@@ -130,8 +188,6 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         write(name, entries)
     }
 
-    fun isLiked(path: String): Boolean = entries(LibraryFormat.LIKED_SONGS).any { it.path == path }
-
     fun setLiked(track: Track, liked: Boolean) {
         val current = entries(LibraryFormat.LIKED_SONGS)
         val updated = if (liked) like(current, track) else unlike(current, track.path)
@@ -139,6 +195,9 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
     }
 
     companion object {
+        /** Candidate tracks kept per listed playlist for its cover art (the first one that is available). */
+        const val ART_PATHS = 8
+
         /** Liking inserts the track at the top unless it is already liked. */
         fun like(entries: List<PlaylistEntry>, track: Track): List<PlaylistEntry> = when {
             !M3u8.canWrite(track.path) || entries.any { it.path == track.path } -> entries

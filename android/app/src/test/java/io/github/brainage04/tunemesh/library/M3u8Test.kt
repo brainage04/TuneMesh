@@ -2,6 +2,8 @@ package io.github.brainage04.tunemesh.library
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class M3u8Test {
@@ -97,5 +99,92 @@ class M3u8Test {
         // A kept entry's old #EXTINF never carries a CR into the file either.
         val label = M3u8.parse("#EXTINF:3,Two\rParts\n../A/B/c.mp3\n", root)
         assertEquals("#EXTM3U\n#EXTINF:3,Two Parts\n../A/B/c.mp3\n", M3u8.write(label) { null })
+    }
+
+    /** As tunemesh-core's `resolve`, lines are resolved exactly as written: spaces are part of the name. */
+    @Test
+    fun linesAreNotTrimmedBeforeResolving() {
+        assertEquals("Playlists/  ../A/B/x.mp3", M3u8.resolve("  ../A/B/x.mp3", root))
+        assertEquals("A/B/x.mp3 ", M3u8.resolve("../A/B/x.mp3 ", root))
+        assertEquals("Playlists/\t../x.mp3", M3u8.resolve("\t../x.mp3", root))
+        // A leading space makes an absolute path relative to Playlists/, as in the core.
+        assertEquals("Playlists/ $root/A/x.mp3", M3u8.resolve(" $root/A/x.mp3", root))
+        val entries = M3u8.parse("#EXTM3U\n  ../A/B/x.mp3\n../A/B/y.mp3  \r\n", root)
+        assertEquals(listOf("Playlists/  ../A/B/x.mp3", "A/B/y.mp3  "), entries.map { it.path })
+        assertEquals(listOf("  ../A/B/x.mp3", "../A/B/y.mp3  "), entries.map { it.raw })
+    }
+
+    @Test
+    fun resolveMatchesTheCoreForEveryShape() {
+        val cases = mapOf(
+            "../A/B/x.mp3" to "A/B/x.mp3",
+            "A/x.mp3" to "Playlists/A/x.mp3",
+            "./../A//B/./x.mp3" to "A/B/x.mp3",
+            "../A/B/x.mp3/" to "A/B/x.mp3",
+            "../../x.mp3" to null,
+            ".." to null,
+            "../" to null,
+            "$root/A/x.mp3" to "A/x.mp3",
+            "$root//A/../x.mp3" to "x.mp3",
+            "$root/" to null,
+            "${root}x/A.mp3" to null,
+            "/elsewhere/A.mp3" to null,
+            "../.hidden/..a/x.mp3" to ".hidden/..a/x.mp3",
+        )
+        for ((line, path) in cases) assertEquals(line, path, M3u8.resolve(line, root))
+        assertEquals("A/x.mp3", M3u8.resolve("/A/x.mp3", "/"))
+    }
+
+    @Test
+    fun canonicalEntriesKeepNoSecondCopyOfTheirLine() {
+        val shared = "A/B/x.mp3"
+        val entries = ArrayList<PlaylistEntry>()
+        M3u8.read(
+            "#EXTM3U\n#EXTINF:3,A - x\n../A/B/x.mp3\n./../A/B/x.mp3\n".byteInputStream(),
+            root,
+            keepExtinf = false,
+            canonical = { if (it == shared) shared else null },
+        ) { entries += it }
+        assertSame(shared, entries[0].path)
+        assertSame(shared, entries[1].path)
+        assertEquals("../A/B/x.mp3", entries[0].raw)
+        assertEquals("./../A/B/x.mp3", entries[1].raw)
+        assertNull(entries[0].extinf)
+        // The line is derived from the path, not stored: the field holding it is null.
+        val line = PlaylistEntry::class.java.getDeclaredField("line").apply { isAccessible = true }
+        assertNull(line.get(entries[0]))
+        assertEquals("./../A/B/x.mp3", line.get(entries[1]))
+    }
+
+    @Test
+    fun limitsRefuseInsteadOfTruncating() {
+        fun read(text: String, maxBytes: Long = M3u8.MAX_BYTES, maxEntries: Int = M3u8.MAX_ENTRIES): Int {
+            var count = 0
+            M3u8.read(text.byteInputStream(), root, keepExtinf = false, maxBytes = maxBytes, maxEntries = maxEntries) { count++ }
+            return count
+        }
+        val three = "#EXTM3U\n../a.mp3\n#comment\n\n../b.mp3\n../c.mp3"
+        assertEquals(3, read(three, maxEntries = 3))
+        assertThrows(PlaylistTooLargeException::class.java) { read(three, maxEntries = 2) }
+        assertEquals(3, read(three, maxBytes = three.length.toLong()))
+        assertThrows(PlaylistTooLargeException::class.java) { read(three, maxBytes = three.length - 1L) }
+        val longLine = "../" + "x".repeat(M3u8.MAX_LINE_BYTES - 3)
+        assertEquals(1, read("$longLine\n"))
+        assertThrows(PlaylistTooLargeException::class.java) { read("${longLine}y\n") }
+    }
+
+    /** Lines split across read buffers, multi-byte characters and a final line without LF. */
+    @Test
+    fun streamingMatchesWholeTextParsing() {
+        val text = buildString {
+            append("\uFEFF#EXTM3U\r\n")
+            repeat(20_000) { append("#EXTINF:$it,Sigur Rós - ☃ $it\r\n../Sigur Rós/Ágætis byrjun/Song $it 🎵.opus\r\n") }
+            append("../last.mp3")
+        }
+        val entries = M3u8.parse(text, root)
+        assertEquals(20_001, entries.size)
+        assertEquals("Sigur Rós/Ágætis byrjun/Song 19999 🎵.opus", entries[19_999].path)
+        assertEquals("#EXTINF:19999,Sigur Rós - ☃ 19999", entries[19_999].extinf)
+        assertEquals("last.mp3", entries.last().path)
     }
 }
