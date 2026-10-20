@@ -126,4 +126,23 @@ class PlaylistStoreTest {
         assertEquals(existing, PlaylistStore.like(existing, a))
         assertEquals(listOf(a.path), PlaylistStore.unlike(existing, b.path).map { it.path })
     }
+
+    @Test
+    fun tracksWithLineBreaksInTheirPathAreNeverWritten() {
+        val broken = track("Artist/Album/Two\nLines [4].opus")
+        val carriage = track("Art\rist/Album/D [5].opus")
+        val store = store()
+        store.create("Mix")
+        store.add("Mix", listOf(a, broken, carriage, b))
+        assertEquals(listOf(a.path, b.path), store.read("Mix")!!.entries.map { it.path })
+        store.setLiked(broken, true)
+        assertEquals("#EXTM3U\n", liked())
+        assertEquals(emptyList<PlaylistEntry>(), PlaylistStore.like(emptyList(), carriage))
+    }
+
+    @Test
+    fun extinfNeverBreaksTheLine() {
+        val tagged = Track("A/B/x.opus", "Two\nline\rtitle", "Art\r\nist", "B", "B", null, null, 1_000, 1, 1)
+        assertEquals("#EXTINF:1,Art  ist - Two line title", M3u8.extinf(tagged))
+    }
 }

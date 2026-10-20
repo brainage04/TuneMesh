@@ -113,8 +113,9 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         if (!file(name).delete() && file(name).exists()) throw PlaylistException("Could not delete \"$name\"")
     }
 
+    /** Appends [tracks]; a track whose path contains a line break is skipped (see [LibraryFormat.hasLineBreak]). */
     fun add(name: String, tracks: List<Track>) {
-        write(name, entries(name) + tracks.map(M3u8::entryFor))
+        write(name, entries(name) + tracks.filter { M3u8.canWrite(it.path) }.map(M3u8::entryFor))
     }
 
     /** Removes the entry at [index], or the first entry for [path] if the file changed since it was shown. */
@@ -139,8 +140,10 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
 
     companion object {
         /** Liking inserts the track at the top unless it is already liked. */
-        fun like(entries: List<PlaylistEntry>, track: Track): List<PlaylistEntry> =
-            if (entries.any { it.path == track.path }) entries else listOf(M3u8.entryFor(track)) + entries
+        fun like(entries: List<PlaylistEntry>, track: Track): List<PlaylistEntry> = when {
+            !M3u8.canWrite(track.path) || entries.any { it.path == track.path } -> entries
+            else -> listOf(M3u8.entryFor(track)) + entries
+        }
 
         /** Unliking removes every entry for the track. */
         fun unlike(entries: List<PlaylistEntry>, path: String): List<PlaylistEntry> = entries.filter { it.path != path }

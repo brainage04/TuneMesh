@@ -89,6 +89,18 @@ class LibraryFormatTest {
     }
 
     @Test
+    fun namesWithLineBreaksAreNotInTheLibrary() {
+        assertFalse(LibraryFormat.isAudioPath("Artist/Album/Two\nLines.mp3"))
+        assertFalse(LibraryFormat.isAudioPath("Artist/Album/Carriage\rReturn.mp3"))
+        assertFalse(LibraryFormat.isAudioPath("Art\nist/Album/Song.mp3"))
+        assertTrue(LibraryFormat.isExcludedDirectory("Art\nist"))
+        assertTrue(LibraryFormat.isExcludedDirectory("Artist/Al\rbum"))
+        assertFalse(LibraryFormat.isExcludedDirectory("Artist/Album"))
+        // Other control characters are not line breaks: such files stay in the library.
+        assertTrue(LibraryFormat.isAudioPath("Artist/Album/Tab\tHere.mp3"))
+    }
+
+    @Test
     fun metadataFallbacks() {
         val nested = Track.fromTags("Daft Punk/Discovery/One More Time [FGBhQbmPwH8].opus", RawTags(), 1, 2)
         assertEquals("One More Time", nested.title)

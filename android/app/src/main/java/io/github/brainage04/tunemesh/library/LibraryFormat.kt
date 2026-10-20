@@ -23,12 +23,18 @@ object LibraryFormat {
 
     fun isHidden(name: String): Boolean = name.startsWith(".")
 
+    /**
+     * True when a name contains LF or CR. Such a file or directory is not part of the library (an m3u8 entry
+     * line could not name it): scanners skip it and everything below it, and playlists never get such an entry.
+     */
+    fun hasLineBreak(name: String): Boolean = name.contains('\n') || name.contains('\r')
+
     fun extension(name: String): String = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
 
     /** True when a library-relative path (with `/` separators) names a track. */
     fun isAudioPath(relativePath: String): Boolean {
         val parts = relativePath.split('/')
-        if (parts.isEmpty() || parts.any { it.isEmpty() || isHidden(it) }) return false
+        if (parts.isEmpty() || parts.any { it.isEmpty() || isHidden(it) || hasLineBreak(it) }) return false
         if (parts.size > 1 && parts[0] == PLAYLISTS_DIR) return false
         val name = parts.last()
         return !isConflictCopy(name) && extension(name) in AUDIO_EXTENSIONS
@@ -37,7 +43,7 @@ object LibraryFormat {
     /** True when a directory directly below the root (or deeper) must not be scanned. */
     fun isExcludedDirectory(relativePath: String): Boolean {
         val parts = relativePath.split('/')
-        return parts.any { isHidden(it) } || parts.firstOrNull() == PLAYLISTS_DIR
+        return parts.any { isHidden(it) || hasLineBreak(it) } || parts.firstOrNull() == PLAYLISTS_DIR
     }
 
     /** File name without extension and without a trailing ` [<id>]`. */

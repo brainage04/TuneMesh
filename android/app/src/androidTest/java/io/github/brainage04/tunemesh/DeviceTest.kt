@@ -67,9 +67,15 @@ class DeviceTest {
         writeWav(File(root, "Test Artist/Test Album/Tone [abc123].wav"), seconds = 3)
         writeWav(File(root, ".tunemesh/requests/ignored.wav"), seconds = 1)
         writeWav(File(root, "Playlists/ignored.wav"), seconds = 1)
+        // Names with line breaks are not part of the library (an m3u8 line could not name them).
+        writeWav(File(root, "Test Artist/Test Album/Two\nLines.wav"), seconds = 1)
+        writeWav(File(root, "Test Artist/Test Album/Carriage\rReturn.wav"), seconds = 1)
+        writeWav(File(root, "Broken\nArtist/Album/Inside.wav"), seconds = 1)
         val cache = File(context.cacheDir, "test-tag-cache.json").apply { delete() }
 
-        val first = LibraryScanner(cache).scan(root).tracks
+        val result = LibraryScanner(cache).scan(root)
+        assertTrue(result.directories.none { '\n' in it.path })
+        val first = result.tracks
         assertEquals(1, first.size)
         val track = first.single()
         assertEquals("Test Artist/Test Album/Tone [abc123].wav", track.path)

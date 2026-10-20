@@ -49,11 +49,14 @@ object M3u8 {
     /** Entry line for a library-relative path: relative to `Playlists/`, not URL-encoded. */
     fun entryLine(path: String): String = "../$path"
 
+    /** Whether a library-relative path can be a playlist entry: no component may contain a line break. */
+    fun canWrite(path: String): Boolean = !LibraryFormat.hasLineBreak(path)
+
     fun entryFor(track: Track): PlaylistEntry = PlaylistEntry(path = track.path, raw = entryLine(track.path), extinf = extinf(track))
 
     fun extinf(track: Track): String {
         val seconds = if (track.durationMs > 0) (track.durationMs + 500) / 1000 else -1
-        return "$EXTINF$seconds,${track.artist} - ${track.title}".replace('\n', ' ')
+        return "$EXTINF$seconds,${track.artist} - ${track.title}".replace('\n', ' ').replace('\r', ' ')
     }
 
     /**

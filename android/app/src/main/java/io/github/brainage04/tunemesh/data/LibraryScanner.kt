@@ -35,7 +35,9 @@ class LibraryScanner(private val cacheFile: File) {
     @Synchronized
     fun cachedTracks(root: File): List<Track> {
         load(root)
-        return cache.map { (path, entry) -> Track.fromTags(path, entry.tags, entry.size, entry.modifiedMs) }
+        // Filtered like a scan, so a cache from an older version with laxer rules shows nothing a scan would drop.
+        return cache.filterKeys(LibraryFormat::isAudioPath)
+            .map { (path, entry) -> Track.fromTags(path, entry.tags, entry.size, entry.modifiedMs) }
     }
 
     @Synchronized
