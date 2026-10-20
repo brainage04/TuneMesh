@@ -96,6 +96,10 @@ storage cannot hold symlinks.
 - Readers ignore `*.sync-conflict-*` copies.
 - Writers never write an entry whose path contains LF or CR: adding such a
   track to a playlist skips that entry and adds the rest.
+- Readers may refuse a playlist they cannot hold: one larger than 32 MiB
+  (all implementations), and on Android one with more than 250,000 entries
+  or a line longer than 32 KiB. Such a playlist is listed as too large, is
+  not opened, and is never rewritten or truncated.
 
 ## Download requests
 

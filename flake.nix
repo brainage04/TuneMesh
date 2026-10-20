@@ -130,6 +130,69 @@
           test -s ${tunemesh}/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
           touch $out
         '';
+
+        # The NixOS module's sandbox: the worker service starts and becomes
+        # the downloader, and a unit with exactly the worker's sandboxing
+        # runs `tunemesh-worker --self-test` and deno. Needs KVM.
+        worker-module = pkgs.testers.runNixOSTest {
+          name = "tunemesh-worker-module";
+          nodes.machine =
+            { config, ... }:
+            {
+              imports = [ self.nixosModules.worker ];
+              users.users.alice = {
+                isNormalUser = true;
+                uid = 1000;
+              };
+              # A library path with a space and `%` (escaping in the unit).
+              systemd.tmpfiles.settings."10-tunemesh-test" = {
+                "/home/alice/Music".d = {
+                  user = "alice";
+                  group = "users";
+                  mode = "0755";
+                };
+                "/home/alice/Music/Tune Mesh 100%%".d = {
+                  user = "alice";
+                  group = "users";
+                  mode = "0755";
+                };
+              };
+              services.tunemesh-worker = {
+                enable = true;
+                user = "alice";
+                libraryPath = "/home/alice/Music/Tune Mesh 100%";
+                workDir = "/var/cache/tunemesh worker 100%";
+              };
+              systemd.services.tunemesh-sandbox-check = {
+                inherit (config.systemd.services.tunemesh-worker) environment;
+                serviceConfig = config.systemd.services.tunemesh-worker.serviceConfig // {
+                  Type = "oneshot";
+                  Restart = "no";
+                  ExecStart = pkgs.writeShellScript "tunemesh-sandbox-check" ''
+                    set -eu
+                    ${lib.getExe tunemesh-worker} --self-test --work-dir ${lib.escapeShellArg config.services.tunemesh-worker.workDir}
+                    export DENO_DIR="$XDG_CACHE_HOME/deno"
+                    ${lib.getExe pkgs.deno} eval 'console.log("deno " + (6 * 7))'
+                    echo "deno: $(echo 'console.log(Deno.version.v8)' | \
+                      ${lib.getExe pkgs.deno} run --no-prompt --no-remote --no-code-cache --v8-flags=--jitless -)"
+                  '';
+                };
+              };
+            };
+          testScript = ''
+            machine.wait_for_unit("multi-user.target")
+            machine.wait_until_succeeds(
+                "journalctl -u tunemesh-worker | grep -q 'is now the downloader'", timeout=120
+            )
+            machine.succeed("test -s '/home/alice/Music/Tune Mesh 100%/.tunemesh/worker.json'")
+            machine.succeed("systemctl start tunemesh-sandbox-check")
+            out = machine.succeed("journalctl -u tunemesh-sandbox-check")
+            print(out)
+            assert "self-test passed" in out, "self-test did not pass"
+            assert "deno 42" in out, "deno did not run"
+            machine.fail("journalctl -b | grep -q 'status=31/SYS'")
+          '';
+        };
       };
 
       devShells.${system}.default = pkgs.mkShell {
@@ -238,7 +301,8 @@
           };
 
           config = lib.mkIf cfg.enable {
-            systemd.tmpfiles.settings."10-tunemesh-worker".${cfg.workDir}.d = {
+            # tmpfiles expands `%` specifiers in paths.
+            systemd.tmpfiles.settings."10-tunemesh-worker".${lib.replaceStrings [ "%" ] [ "%%" ] cfg.workDir}.d = {
               inherit (cfg) user;
               group = config.users.users.${cfg.user}.group;
               mode = "0700";
@@ -251,7 +315,8 @@
               after = [ "network-online.target" ];
               # Caches live in the work directory, the only writable place
               # besides the library.
-              environment = {
+              # systemd expands `%` specifiers in Environment= values.
+              environment = lib.mapAttrs (_: lib.replaceStrings [ "%" ] [ "%%" ]) {
                 XDG_CACHE_HOME = "${cfg.workDir}/.cache";
                 XDG_CONFIG_HOME = "${cfg.workDir}/.config";
                 XDG_DATA_HOME = "${cfg.workDir}/.local/share";
@@ -315,8 +380,13 @@
                 SystemCallArchitectures = "native";
                 SystemCallFilter = [
                   "@system-service"
+                  # deno (yt-dlp's JavaScript runtime) calls pkey_alloc while
+                  # V8 starts.
+                  "@pkey"
                   "~@privileged"
                 ];
+                # A filtered call fails instead of killing the process.
+                SystemCallErrorNumber = "EPERM";
                 # A second layer under the worker's egress proxy, which already
                 # refuses every non-public address and the host's own interface
                 # addresses for yt-dlp, its ffmpeg and the worker itself. Not
@@ -337,6 +407,23 @@
                   "fc00::/7"
                   # NAT64: reaches the embedded IPv4 address.
                   "64:ff9b::/96"
+                  # The other IPv6 blocks the worker refuses: local-use NAT64,
+                  # 6to4, IPv4-compatible and SIIT addresses (all can reach a
+                  # private IPv4 address), and IANA's not globally reachable
+                  # blocks (discard, IETF assignments incl. Teredo,
+                  # documentation, SRv6, site-local). The worker itself
+                  # allows the few global ones inside 2001::/23; nothing
+                  # needed for downloads lives there.
+                  "64:ff9b:1::/48"
+                  "2002::/16"
+                  "::/96"
+                  "::ffff:0:0:0/96"
+                  "100::/64"
+                  "2001::/23"
+                  "2001:db8::/32"
+                  "3fff::/20"
+                  "5f00::/16"
+                  "fec0::/10"
                 ];
                 # 127.0.0.1: yt-dlp reaches the worker's egress proxy there (the
                 # filter applies to loopback traffic as well). Like the resolver
