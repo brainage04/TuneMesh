@@ -113,6 +113,33 @@ fn simple(child: &impl IsA<gtk::Widget>) -> Page {
     }
 }
 
+/// A playlist over the contract's size limits: it is not opened, played or
+/// changed on any device.
+fn too_large(name: &str) -> Page {
+    let b = page_box();
+    b.append(&label(name, &["tm-page-title"]));
+    b.append(&widgets::empty(&format!(
+        "Too large to open. Playlists can hold at most {} songs and {} MiB, \
+         so TuneMesh leaves this one unchanged on every device.",
+        fmt_count(tunemesh_core::playlist::MAX_ENTRIES),
+        tunemesh_core::playlist::MAX_PLAYLIST_BYTES / (1024 * 1024),
+    )));
+    simple(&b)
+}
+
+/// `250000` as `250,000`.
+fn fmt_count(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
 fn not_found() -> Page {
     let b = page_box();
     b.append(&widgets::empty("This item is no longer in your library."));
@@ -192,7 +219,11 @@ fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Summary) -> gtk::Widget {
         app,
         art,
         &p.name,
-        &format!("Playlist • {}", plural(p.count, "song", "songs")),
+        &if app.store.is_too_large(&p.name) {
+            "Too large to open".to_owned()
+        } else {
+            format!("Playlist • {}", plural(p.count, "song", "songs"))
+        },
         move || app1.navigate(Route::Playlist(name.clone())),
         move || {
             // The entries are read when the user asks to play them.
@@ -769,6 +800,9 @@ fn artist(app: &Rc<App>, name: &str) -> Page {
 }
 
 fn playlist(app: &Rc<App>, name: &str) -> Page {
+    if app.store.is_too_large(name) {
+        return too_large(name);
+    }
     let lib = app.store.library();
     let Some(p) = app.store.playlist(name) else {
         return not_found();

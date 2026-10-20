@@ -54,6 +54,9 @@ pub struct Store {
     playlists: RefCell<Vec<Summary>>,
     liked: RefCell<Playlist>,
     liked_set: RefCell<HashSet<String>>,
+    /// Playlists over the contract's size limits (Liked Songs included):
+    /// listed, never opened or rewritten.
+    too_large: RefCell<HashSet<String>>,
     listeners: RefCell<Vec<Listener>>,
     watcher: RefCell<Option<RecommendedWatcher>>,
     scanning: Cell<bool>,
@@ -73,6 +76,7 @@ impl Store {
                 entries: Vec::new(),
             }),
             liked_set: RefCell::new(HashSet::new()),
+            too_large: RefCell::new(HashSet::new()),
             listeners: RefCell::new(Vec::new()),
             watcher: RefCell::new(None),
             scanning: Cell::new(false),
@@ -261,22 +265,43 @@ impl Store {
 
     // ---- playlists ---------------------------------------------------
 
-    fn read_all_playlists(&self) -> (Vec<Summary>, Playlist) {
+    fn read_all_playlists(&self) -> (Vec<Summary>, Playlist, HashSet<String>) {
         let root = self.root();
-        let lists = playlist::list_names(&root)
-            .into_iter()
-            .filter_map(|name| Playlist::summary(&root, &name, SUMMARY_TRACKS).ok())
-            .collect();
-        let liked = Playlist::read(&root, LIKED_SONGS).unwrap_or(Playlist {
-            name: LIKED_SONGS.into(),
-            entries: Vec::new(),
-        });
-        (lists, liked)
+        let mut too_large = HashSet::new();
+        let mut lists = Vec::new();
+        for name in playlist::list_names(&root) {
+            match Playlist::summary(&root, &name, SUMMARY_TRACKS) {
+                Ok(s) => lists.push(s),
+                Err(e) if playlist::is_too_large(&e) => {
+                    lists.push(Summary {
+                        name: name.clone(),
+                        count: 0,
+                        first_tracks: Vec::new(),
+                    });
+                    too_large.insert(name);
+                }
+                Err(e) => eprintln!("tunemesh: cannot read playlist {name:?}: {e}"),
+            }
+        }
+        let liked = match Playlist::read(&root, LIKED_SONGS) {
+            Ok(p) => p,
+            Err(e) => {
+                if playlist::is_too_large(&e) {
+                    too_large.insert(LIKED_SONGS.to_owned());
+                }
+                Playlist {
+                    name: LIKED_SONGS.into(),
+                    entries: Vec::new(),
+                }
+            }
+        };
+        (lists, liked, too_large)
     }
 
     fn load_playlists(&self) {
-        let (lists, liked) = self.read_all_playlists();
+        let (lists, liked, too_large) = self.read_all_playlists();
         *self.playlists.borrow_mut() = lists;
+        *self.too_large.borrow_mut() = too_large;
         self.set_liked(liked);
     }
 
@@ -290,10 +315,11 @@ impl Store {
     }
 
     fn reload_playlists(&self) {
-        let (lists, liked) = self.read_all_playlists();
+        let (lists, liked, too_large) = self.read_all_playlists();
         // A summary does not show every change (a reorder further down), so
         // any change below Playlists/ refreshes what shows playlists.
         *self.playlists.borrow_mut() = lists;
+        *self.too_large.borrow_mut() = too_large;
         self.emit(StoreChange::Playlists);
         if liked != *self.liked.borrow() {
             self.set_liked(liked);
@@ -306,12 +332,21 @@ impl Store {
         self.playlists.borrow().clone()
     }
 
+    /// Playlists songs can be added to: too large ones are left out.
     pub fn playlist_names(&self) -> Vec<String> {
+        let too_large = self.too_large.borrow();
         self.playlists
             .borrow()
             .iter()
+            .filter(|p| !too_large.contains(&p.name))
             .map(|p| p.name.clone())
             .collect()
+    }
+
+    /// Whether the playlist is over the size limits: it is listed as "Too
+    /// large to open", and nothing opens, plays or rewrites it.
+    pub fn is_too_large(&self, name: &str) -> bool {
+        self.too_large.borrow().contains(name)
     }
 
     pub fn liked(&self) -> Playlist {
@@ -328,6 +363,9 @@ impl Store {
 
     /// A playlist with all its entries, read from its file now.
     pub fn playlist(&self, name: &str) -> Option<Playlist> {
+        if self.is_too_large(name) {
+            return None;
+        }
         if name == LIKED_SONGS {
             return Some(self.liked());
         }
@@ -417,6 +455,9 @@ impl Store {
     }
 
     pub fn rename_playlist(&self, old: &str, new: &str) -> io::Result<String> {
+        if self.is_too_large(old) {
+            return Err(io::Error::other("This playlist is too large to change."));
+        }
         let new = Playlist::rename(&self.root(), old, new)?;
         let mut lists = self.playlists.borrow_mut();
         if let Some(p) = lists.iter_mut().find(|p| p.name == old) {
@@ -825,6 +866,59 @@ mod tests {
         // Dragging C onto B (shown at 1, now at 0) moves it there.
         store.move_in_playlist("P", &refs[2], &refs[1]).unwrap();
         assert_eq!(names(&base), ["C", "B"]);
+        drop(store);
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn too_large_playlists_are_listed_but_never_rewritten() {
+        let _serial = MAIN_CONTEXT.lock().unwrap_or_else(|e| e.into_inner());
+        let ctx = glib::MainContext::default();
+        let _owner = ctx.acquire().expect("main context");
+        let base = std::env::temp_dir().join(format!("tunemesh-big-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join(PLAYLISTS_DIR)).unwrap();
+        let big = base.join(PLAYLISTS_DIR).join("Big.m3u8");
+        let text = format!(
+            "#EXTM3U\n{}",
+            "../missing.wav\n".repeat(playlist::MAX_ENTRIES + 1)
+        );
+        fs::write(&big, &text).unwrap();
+        fs::write(
+            base.join(PLAYLISTS_DIR).join("Small.m3u8"),
+            "#EXTM3U\n../a.opus\n",
+        )
+        .unwrap();
+        let store = Store::new(base.clone());
+
+        assert!(store.is_too_large("Big"));
+        assert!(
+            store.playlists().iter().any(|p| p.name == "Big"),
+            "still listed"
+        );
+        assert_eq!(store.playlist_names(), ["Small"], "not offered as a target");
+        assert!(store.playlist("Big").is_none(), "never opened");
+        assert!(store.add_to_playlist("Big", &["a.opus".into()]).is_err());
+        assert!(
+            store
+                .remove_from_playlist("Big", &[(0, "missing.wav".into())])
+                .is_err()
+        );
+        assert!(
+            store
+                .move_in_playlist(
+                    "Big",
+                    &(0, "missing.wav".into()),
+                    &(1, "missing.wav".into())
+                )
+                .is_err()
+        );
+        assert!(store.rename_playlist("Big", "Other").is_err());
+        assert_eq!(
+            fs::read_to_string(&big).unwrap(),
+            text,
+            "the file is untouched"
+        );
         drop(store);
         fs::remove_dir_all(&base).unwrap();
     }

@@ -212,7 +212,11 @@ impl Sidebar {
                 &app,
                 art.upcast(),
                 &p.name,
-                &format!("Playlist • {}", plural(p.count, "song", "songs")),
+                &if app.store.is_too_large(&p.name) {
+                    "Too large to open".to_owned()
+                } else {
+                    format!("Playlist • {}", plural(p.count, "song", "songs"))
+                },
                 Route::Playlist(p.name.clone()),
             );
         }
