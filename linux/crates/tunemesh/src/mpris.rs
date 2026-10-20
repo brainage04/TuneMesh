@@ -84,16 +84,9 @@ pub fn start(app: &Rc<App>) {
         let built = MprisPlayer::builder("tunemesh")
             .identity("TuneMesh")
             .desktop_entry(APP_ID)
-            .supported_uri_schemes(["file"])
-            .supported_mime_types([
-                "audio/mpeg",
-                "audio/ogg",
-                "audio/opus",
-                "audio/flac",
-                "audio/mp4",
-                "audio/x-wav",
-                "audio/webm",
-            ])
+            // No URI schemes or MIME types: OpenUri is not supported (the
+            // app only plays files of its library), and MPRIS clients read
+            // empty lists as "do not call OpenUri".
             .can_raise(true)
             .can_quit(true)
             .can_play(true)

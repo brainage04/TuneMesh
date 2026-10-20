@@ -461,13 +461,15 @@ impl Store {
     /// Deletes track files (this syncs to every device) and empty parent
     /// directories, then drops them from the in-memory library.
     pub fn delete_tracks(&self, paths: &[String]) -> io::Result<()> {
-        let result = delete_files(&self.root(), paths);
+        let (gone, result) = delete_files(&self.root(), paths);
+        // Only tracks whose file is really gone leave the library; one that
+        // could not be deleted stays listed.
         let remaining: Vec<Track> = self
             .lib
             .borrow()
             .tracks
             .iter()
-            .filter(|t| !paths.contains(&t.path))
+            .filter(|t| !gone.contains(&t.path))
             .cloned()
             .collect();
         *self.lib.borrow_mut() = Rc::new(Library::new(remaining));
@@ -479,8 +481,12 @@ impl Store {
 /// Deletes library files and their emptied parent directories. Paths are
 /// opened below `root` without following symlinks, so a synced symlinked
 /// folder cannot redirect a delete outside the library.
-fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
-    let top = Dir::open(root)?;
+fn delete_files(root: &Path, paths: &[String]) -> (Vec<String>, io::Result<()>) {
+    let top = match Dir::open(root) {
+        Ok(d) => d,
+        Err(e) => return (Vec::new(), Err(e)),
+    };
+    let mut gone = Vec::new();
     let mut result = Ok(());
     for rel in paths {
         let (parent, name) = rel.rsplit_once('/').unwrap_or(("", rel.as_str()));
@@ -496,6 +502,7 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
             result = Err(e);
             continue;
         }
+        gone.push(rel.clone());
         // Emptied parent folders go too (never through a symlink).
         let mut dir = parent;
         while !dir.is_empty() {
@@ -512,7 +519,7 @@ fn delete_files(root: &Path, paths: &[String]) -> io::Result<()> {
             dir = up;
         }
     }
-    result
+    (gone, result)
 }
 
 /// A playlist entry as shown: its position and its identity (the track path,
@@ -590,7 +597,7 @@ mod tests {
         fs::write(outside.join("Album/Keep [b].opus"), b"x").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("Linked")).unwrap();
 
-        let r = delete_files(
+        let (gone, r) = delete_files(
             &root,
             &[
                 "Linked/Album/Keep [b].opus".into(),
@@ -598,6 +605,11 @@ mod tests {
             ],
         );
         assert!(r.is_err(), "the symlinked path must be refused");
+        assert_eq!(
+            gone,
+            ["Artist/Album/Song [a].opus"],
+            "only the real track is gone"
+        );
         assert!(outside.join("Album/Keep [b].opus").exists());
         assert!(
             !root.join("Artist").exists(),
@@ -676,7 +688,11 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             if level < 6 {
                 for n in 0..60 {
-                    std::os::unix::fs::symlink(format!("../B{}", level + 1), dir.join(format!("l{n}"))).unwrap();
+                    std::os::unix::fs::symlink(
+                        format!("../B{}", level + 1),
+                        dir.join(format!("l{n}")),
+                    )
+                    .unwrap();
                 }
             }
         }
@@ -696,13 +712,19 @@ mod tests {
             .sum();
 
         // lib, Artist, Album, .b and its 7 levels.
-        assert!(count <= 11, "{count} inotify watches: symlinks were followed");
+        assert!(
+            count <= 11,
+            "{count} inotify watches: symlinks were followed"
+        );
         assert!(took < Duration::from_secs(1), "watching took {took:?}");
 
         // A change outside the library is not seen; one inside is.
         fs::write(outside.join("d1/new"), b"x").unwrap();
         std::thread::sleep(Duration::from_millis(300));
-        assert!(rx.try_recv().is_err(), "a change outside the library was reported");
+        assert!(
+            rx.try_recv().is_err(),
+            "a change outside the library was reported"
+        );
         fs::write(root.join("Artist/Album/new"), b"x").unwrap();
         assert!(rx.recv_timeout(Duration::from_secs(2)).is_ok());
         drop(watcher);
@@ -727,7 +749,11 @@ mod tests {
 
     fn write_list(base: &Path, lines: &[&str]) {
         let body: String = lines.iter().map(|l| format!("../{l}.opus\n")).collect();
-        fs::write(base.join(PLAYLISTS_DIR).join("P.m3u8"), format!("#EXTM3U\n{body}")).unwrap();
+        fs::write(
+            base.join(PLAYLISTS_DIR).join("P.m3u8"),
+            format!("#EXTM3U\n{body}"),
+        )
+        .unwrap();
     }
 
     fn names(base: &Path) -> Vec<String> {
@@ -752,7 +778,9 @@ mod tests {
 
         // An entry that is gone: nothing changes, the user is told.
         write_list(&base, &["A", "B"]);
-        let e = store.remove_from_playlist("P", &[(2, "C.opus".into())]).unwrap_err();
+        let e = store
+            .remove_from_playlist("P", &[(2, "C.opus".into())])
+            .unwrap_err();
         assert!(e.to_string().contains("changed"), "{e}");
         assert_eq!(names(&base), ["A", "B"]);
         drop(store);

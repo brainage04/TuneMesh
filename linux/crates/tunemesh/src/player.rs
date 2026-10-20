@@ -791,8 +791,11 @@ impl Player {
         self.emit(&[Change::Position, Change::Seeked]);
     }
 
+    /// Sets the volume (0-100). NaN and infinities (possible from D-Bus
+    /// callers) are ignored: they would reach mpv and be saved as `null`,
+    /// which makes the next start lose the queue.
     pub fn set_volume(&self, v: f64) {
-        let v = v.clamp(0.0, 100.0);
+        let Some(v) = sane_volume(v) else { return };
         if (self.st.borrow().volume - v).abs() < 0.01 {
             return;
         }
@@ -1068,9 +1071,23 @@ impl Player {
     }
 }
 
+fn sane_volume(v: f64) -> Option<f64> {
+    v.is_finite().then(|| v.clamp(0.0, 100.0))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn volume_ignores_non_finite_values() {
+        assert_eq!(sane_volume(f64::NAN), None);
+        assert_eq!(sane_volume(f64::INFINITY), None);
+        assert_eq!(sane_volume(f64::NEG_INFINITY), None);
+        assert_eq!(sane_volume(250.0), Some(100.0));
+        assert_eq!(sane_volume(-3.0), Some(0.0));
+        assert_eq!(sane_volume(42.5), Some(42.5));
+    }
 
     fn state(paths: &[&str], current: usize, repeat: Repeat) -> State {
         State {
