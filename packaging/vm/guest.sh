@@ -137,15 +137,18 @@ activate() {
 }
 leftover_processes() { pgrep -u "$(id -u)" -x 'tunemesh|tunemesh-worker'; }
 not_running() { ! leftover_processes; }
+app_gone() { ! pgrep -u "$(id -u)" -x tunemesh; }
 worker_running() { pgrep -u "$(id -u)" -x tunemesh-worker; }
 
 # The program's own scopes: `flatpak run` and `snap run` move it out of the
 # service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
 # so stopping that service alone does not reach it.
 scopes=("app-flatpak-$APP_ID-*.scope" 'snap.tunemesh.*.scope')
-# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit.
+# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit. A
+# transient unit whose program already exited cleanly is gone, so stop may
+# fail; whether anything still runs is what counts.
 stop_unit() {
-    systemctl --user stop "$1" "${scopes[@]}"
+    systemctl --user stop "$1" "${scopes[@]}" 2>/dev/null || true
     wait_for 15 not_running || fail "TuneMesh still runs 15 s after stopping $1"
 }
 
@@ -354,7 +357,12 @@ test_package() {
     log "playback confirmed: position advanced, stream on tm-null, play-pause pauses"
     WAYLAND_DISPLAY=$wl grim "$out/screenshot.png" || true
 
-    # SIGTERM, as on logout: the app saves its state and exits cleanly.
+    # SIGTERM to the app itself (as `kill` would): it saves its state and
+    # exits cleanly. Not `systemctl stop` first: that signals every process of
+    # the unit at once, and the AppImage runtime then unmounts the image under
+    # the still running app (SIGBUS).
+    pkill -TERM -u "$(id -u)" -x tunemesh
+    wait_for 15 app_gone || fail "the app did not exit within 15 s of SIGTERM"
     stop_unit tm-app.service
     journalctl --user --since "@$app_start" -u tm-app.service -u "${scopes[0]}" -u "${scopes[1]}" \
         --no-pager >"$out/app.log" 2>&1 || true

@@ -46,7 +46,7 @@ logind session:
      `PlaybackStatus` `Playing`, the `Position` advancing by at least 3 s in
      5 s, the generated track in `Metadata`, and a running TuneMesh stream
      linked to `tm-null` in `pw-dump`; then `app.play-pause` must pause;
-   - takes a screenshot, then stops the app with SIGTERM: it must exit
+   - takes a screenshot, then sends the app process SIGTERM: it must exit
      within 15 s, cleanly, and log no missing icons, GSettings schemas or GTK
      criticals;
    - uninstalls it and checks that no file of the package is left
