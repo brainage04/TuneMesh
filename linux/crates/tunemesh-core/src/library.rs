@@ -3,13 +3,15 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::rc::Rc;
 use std::time::UNIX_EPOCH;
 
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, Tag};
 use serde::{Deserialize, Serialize};
 
+use crate::fsx::{Dir, Kind};
 use crate::search::{Query, fold};
 use crate::{PLAYLISTS_DIR, TUNEMESH_DIR};
 
@@ -200,6 +202,9 @@ fn tag_info(tag: &Tag) -> TagInfo {
 
 /// Reads tags and duration; unreadable files yield an empty `TagInfo` so the
 /// track still appears with its fallbacks.
+///
+/// Follows symlinks: for files below the library root use
+/// [`read_tags_from`] with a file from `fsx::Dir::open_file`.
 pub fn read_tags(path: &Path) -> TagInfo {
     lofty::read_from_path(path).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
 }
@@ -223,9 +228,21 @@ fn tagged_info(file: &lofty::file::TaggedFile) -> TagInfo {
 }
 
 /// Reads the embedded front cover (or first picture) of an audio file.
+///
+/// Follows symlinks: for files below the library root use
+/// [`read_embedded_cover_from`] with a file from `fsx::Dir::open_file`.
 pub fn read_embedded_cover(path: &Path) -> Option<Vec<u8>> {
+    cover_of(&lofty::read_from_path(path).ok()?)
+}
+
+/// [`read_embedded_cover`] for an already open file (see
+/// `fsx::Dir::open_file`).
+pub fn read_embedded_cover_from(file: &mut fs::File) -> Option<Vec<u8>> {
+    cover_of(&lofty::read_from(file).ok()?)
+}
+
+fn cover_of(file: &lofty::file::TaggedFile) -> Option<Vec<u8>> {
     use lofty::picture::PictureType;
-    let file = lofty::read_from_path(path).ok()?;
     let pictures: Vec<_> = file.tags().iter().flat_map(|t| t.pictures()).collect();
     pictures
         .iter()
@@ -275,66 +292,94 @@ pub fn make_track(
     }
 }
 
+/// Walks the library below `root` through directory handles: every
+/// subdirectory is opened with `O_NOFOLLOW` relative to its parent, so a
+/// directory swapped for a symlink while the walk runs is skipped, never
+/// followed. Hidden names, conflict copies, `Playlists/` and `.tunemesh/`
+/// are left out. `visit` gets each directory's handle, its root-relative
+/// path ("" for the root) and its regular files.
+fn walk(root: &Path, mut visit: impl FnMut(&Dir, &str, Vec<String>)) {
+    let Ok(root_dir) = Dir::open(root) else {
+        return;
+    };
+    // Depth first; a parent stays open only while its children are pending.
+    let mut stack: Vec<(Rc<Dir>, String, String)> = Vec::new();
+    let mut current = Some((Rc::new(root_dir), String::new()));
+    loop {
+        if let Some((dir, rel_dir)) = current.take() {
+            let Ok(entries) = dir.entries() else { continue };
+            let mut files = Vec::new();
+            for (name, kind) in entries {
+                if is_ignored_name(&name) {
+                    continue;
+                }
+                match kind {
+                    Kind::Dir
+                        if !(rel_dir.is_empty()
+                            && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) =>
+                    {
+                        let rel = if rel_dir.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{rel_dir}/{name}")
+                        };
+                        stack.push((dir.clone(), name, rel));
+                    }
+                    // Symlinks are never followed (docs/library-format.md).
+                    Kind::File => files.push(name),
+                    _ => {}
+                }
+            }
+            visit(&dir, &rel_dir, files);
+        }
+        let Some((parent, name, rel)) = stack.pop() else {
+            break;
+        };
+        if let Ok(child) = parent.child(&name) {
+            current = Some((Rc::new(child), rel));
+        }
+    }
+}
+
 /// Scans `root`. Tracks in `previous` whose path, mtime and size are
 /// unchanged are reused without reading the file again. Returns tracks sorted
-/// by path.
+/// by path. Files are read through `fsx` handles and never through a
+/// symlink, even one swapped in while the scan runs.
 pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
     let mut tracks = Vec::new();
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, rel_dir)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut audio = Vec::new();
-        let mut dir_cover: Option<(usize, String)> = None;
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if is_ignored_name(name) {
-                continue;
-            }
-            let rel = if rel_dir.is_empty() {
+    walk(root, |dir, rel_dir, files| {
+        let rel_of = |name: &str| {
+            if rel_dir.is_empty() {
                 name.to_owned()
             } else {
                 format!("{rel_dir}/{name}")
-            };
-            let Ok(file_type) = entry.file_type() else {
-                continue;
-            };
-            if file_type.is_dir() {
-                if rel_dir.is_empty() && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR) {
-                    continue;
-                }
-                stack.push((entry.path(), rel));
-                continue;
             }
-            // Symlinks are never followed (docs/library-format.md), so only
-            // regular files count: a synced link cannot make the app read or
-            // play a file outside the library.
-            if !file_type.is_file() {
-                continue;
-            }
-            let Ok(meta) = entry.metadata() else { continue };
+        };
+        let mut audio = Vec::new();
+        let mut dir_cover: Option<(usize, String)> = None;
+        for name in files {
             let lower = name.to_ascii_lowercase();
             if let Some(rank) = COVER_FILES.iter().position(|c| *c == lower) {
                 if dir_cover.as_ref().is_none_or(|(r, _)| rank < *r) {
-                    dir_cover = Some((rank, rel));
+                    dir_cover = Some((rank, rel_of(&name)));
                 }
                 continue;
             }
-            if has_audio_extension(name) {
-                let mtime = meta
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs() as i64);
-                audio.push((entry.path(), rel, mtime, meta.len()));
+            if !has_audio_extension(&name) {
+                continue;
+            }
+            let Ok(meta) = dir.metadata(&name) else {
+                continue;
+            };
+            if meta.kind == Kind::File {
+                audio.push((name, meta));
             }
         }
         let dir_cover = dir_cover.map(|(_, rel)| rel);
-        for (abs, rel, mtime, size) in audio {
+        for (name, meta) in audio {
+            let rel = rel_of(&name);
             let track = match previous.get(&rel) {
-                Some(old) if old.mtime == mtime && old.size == size => {
+                Some(old) if old.mtime == meta.mtime && old.size == meta.len => {
                     let mut t = old.clone();
                     if t.cover != CoverSource::Embedded {
                         t.cover = dir_cover
@@ -343,11 +388,35 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
                     }
                     t
                 }
-                _ => make_track(&rel, read_tags(&abs), dir_cover.as_deref(), mtime, size),
+                _ => {
+                    // Opened without following a symlink; the open file's own
+                    // size and time are recorded.
+                    let Ok(mut file) = dir.open_file(&name) else {
+                        continue;
+                    };
+                    let (len, mtime) = file
+                        .metadata()
+                        .map(|m| {
+                            let mtime = m
+                                .modified()
+                                .ok()
+                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                                .map_or(0, |d| d.as_secs() as i64);
+                            (m.len(), mtime)
+                        })
+                        .unwrap_or((meta.len, meta.mtime));
+                    make_track(
+                        &rel,
+                        read_tags_from(&mut file),
+                        dir_cover.as_deref(),
+                        mtime,
+                        len,
+                    )
+                }
             };
             tracks.push(track);
         }
-    }
+    });
     tracks.sort_by(|a, b| a.path.cmp(&b.path));
     tracks
 }
@@ -356,45 +425,28 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
 /// them; when several files carry one id, the lexically first path wins.
 pub fn source_id_index(root: &Path) -> HashMap<String, String> {
     let mut index: HashMap<String, String> = HashMap::new();
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.to_path_buf(), String::new())];
-    while let Some((dir, rel_dir)) = stack.pop() {
-        let Ok(entries) = fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if is_ignored_name(name) {
+    walk(root, |_, rel_dir, files| {
+        for name in files {
+            if !has_audio_extension(&name) {
                 continue;
             }
+            let Some(id) = source_id_from_file_name(&name) else {
+                continue;
+            };
             let rel = if rel_dir.is_empty() {
-                name.to_owned()
+                name.clone()
             } else {
                 format!("{rel_dir}/{name}")
             };
-            match entry.file_type() {
-                Ok(t)
-                    if t.is_dir()
-                        && !(rel_dir.is_empty()
-                            && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) =>
-                {
-                    stack.push((entry.path(), rel));
+            match index.get_mut(id) {
+                Some(existing) if *existing <= rel => {}
+                Some(existing) => *existing = rel,
+                None => {
+                    index.insert(id.to_owned(), rel);
                 }
-                Ok(t) if t.is_file() && has_audio_extension(name) => {
-                    if let Some(id) = source_id_from_file_name(name) {
-                        match index.get_mut(id) {
-                            Some(existing) if *existing <= rel => {}
-                            Some(existing) => *existing = rel,
-                            None => {
-                                index.insert(id.to_owned(), rel);
-                            }
-                        }
-                    }
-                }
-                _ => {}
             }
         }
-    }
+    });
     index
 }
 
@@ -755,6 +807,55 @@ mod tests {
         let index = source_id_index(root);
         assert_eq!(index.len(), 1);
         assert_eq!(index["vid42"], "Art/Alb/a [vid42].opus");
+    }
+
+    /// A device swapping a scanned directory for a symlink to an outside
+    /// directory (renameat2 RENAME_EXCHANGE) while the scan runs must never
+    /// make it list or read a file from outside the root.
+    #[test]
+    fn scan_survives_directory_symlink_swaps() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.mp3"), b"outside").unwrap();
+        fs::write(outside.path().join("secret [leak].opus"), b"outside").unwrap();
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path().to_path_buf();
+        fs::create_dir_all(root.join("swap/Album")).unwrap();
+        fs::write(root.join("swap/real.mp3"), b"x").unwrap();
+        fs::write(root.join("swap/Album/inner.mp3"), b"x").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("link")).unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let swapper = {
+            let (stop, root) = (stop.clone(), root.clone());
+            std::thread::spawn(move || {
+                let dir = fs::File::open(&root).unwrap();
+                let mut n = 0u64;
+                while !stop.load(Ordering::Relaxed) {
+                    rustix::fs::renameat_with(
+                        &dir,
+                        "swap",
+                        &dir,
+                        "link",
+                        rustix::fs::RenameFlags::EXCHANGE,
+                    )
+                    .unwrap();
+                    n += 1;
+                }
+                n
+            })
+        };
+        for _ in 0..400 {
+            for t in scan(&root, &HashMap::new()) {
+                assert!(!t.path.contains("secret"), "read outside file: {}", t.path);
+            }
+            for (_, rel) in source_id_index(&root) {
+                assert!(!rel.contains("secret"), "indexed outside file: {rel}");
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        assert!(swapper.join().unwrap() > 100);
     }
 
     #[test]

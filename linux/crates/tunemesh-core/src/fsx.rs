@@ -37,6 +37,15 @@ impl Kind {
     }
 }
 
+/// Size and modification time of a directory entry (not following symlinks).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Meta {
+    pub kind: Kind,
+    pub len: u64,
+    /// Seconds since the Unix epoch.
+    pub mtime: i64,
+}
+
 /// An open directory; all operations are relative to it.
 #[derive(Debug)]
 pub struct Dir {
@@ -195,6 +204,23 @@ impl Dir {
     pub fn kind(&self, name: &str) -> io::Result<Kind> {
         let stat = rustix::fs::statat(&self.fd, component(name)?, AtFlags::SYMLINK_NOFOLLOW)?;
         Ok(Kind::from_type(FileType::from_raw_mode(stat.st_mode)))
+    }
+
+    /// Kind, size and modification time of `name`, without following a
+    /// symlink.
+    pub fn metadata(&self, name: &str) -> io::Result<Meta> {
+        let st = rustix::fs::statat(&self.fd, component(name)?, AtFlags::SYMLINK_NOFOLLOW)?;
+        Ok(Meta {
+            kind: Kind::from_type(FileType::from_raw_mode(st.st_mode)),
+            len: st.st_size as u64,
+            mtime: st.st_mtime as i64,
+        })
+    }
+
+    /// Opens the subdirectory `name` of this directory; a symlink (or
+    /// anything but a directory) is refused.
+    pub fn child(&self, name: &str) -> io::Result<Self> {
+        self.child_dir(component(name)?, false)
     }
 
     /// Whether `rel` exists as a regular file (no symlinks on the way).
