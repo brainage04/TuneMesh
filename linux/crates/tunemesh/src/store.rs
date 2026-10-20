@@ -13,7 +13,7 @@ use gtk::glib;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tunemesh_core::fsx::Dir;
-use tunemesh_core::playlist::{self, LIKED_SONGS, TrackInfo};
+use tunemesh_core::playlist::{self, LIKED_SONGS, Summary, TrackInfo};
 use tunemesh_core::{Library, PLAYLISTS_DIR, Playlist, TUNEMESH_DIR, Track, library};
 
 use crate::config;
@@ -49,7 +49,9 @@ pub struct Store {
     me: Weak<Store>,
     root: RefCell<PathBuf>,
     lib: RefCell<Rc<Library>>,
-    playlists: RefCell<Vec<Playlist>>,
+    /// Playlists other than Liked Songs, as summaries: a long playlist is
+    /// only held entry by entry while its page is open.
+    playlists: RefCell<Vec<Summary>>,
     liked: RefCell<Playlist>,
     liked_set: RefCell<HashSet<String>>,
     listeners: RefCell<Vec<Listener>>,
@@ -259,11 +261,11 @@ impl Store {
 
     // ---- playlists ---------------------------------------------------
 
-    fn read_all_playlists(&self) -> (Vec<Playlist>, Playlist) {
+    fn read_all_playlists(&self) -> (Vec<Summary>, Playlist) {
         let root = self.root();
         let lists = playlist::list_names(&root)
             .into_iter()
-            .filter_map(|name| Playlist::read(&root, &name).ok())
+            .filter_map(|name| Playlist::summary(&root, &name, SUMMARY_TRACKS).ok())
             .collect();
         let liked = Playlist::read(&root, LIKED_SONGS).unwrap_or(Playlist {
             name: LIKED_SONGS.into(),
@@ -289,10 +291,10 @@ impl Store {
 
     fn reload_playlists(&self) {
         let (lists, liked) = self.read_all_playlists();
-        if lists != *self.playlists.borrow() {
-            *self.playlists.borrow_mut() = lists;
-            self.emit(StoreChange::Playlists);
-        }
+        // A summary does not show every change (a reorder further down), so
+        // any change below Playlists/ refreshes what shows playlists.
+        *self.playlists.borrow_mut() = lists;
+        self.emit(StoreChange::Playlists);
         if liked != *self.liked.borrow() {
             self.set_liked(liked);
             self.emit(StoreChange::Liked);
@@ -300,7 +302,7 @@ impl Store {
     }
 
     /// All playlists except Liked Songs, sorted by name.
-    pub fn playlists(&self) -> Vec<Playlist> {
+    pub fn playlists(&self) -> Vec<Summary> {
         self.playlists.borrow().clone()
     }
 
@@ -316,19 +318,25 @@ impl Store {
         self.liked.borrow().clone()
     }
 
+    pub fn liked_summary(&self) -> Summary {
+        summarize(&self.liked.borrow())
+    }
+
     pub fn liked_count(&self) -> usize {
         self.liked.borrow().entries.len()
     }
 
+    /// A playlist with all its entries, read from its file now.
     pub fn playlist(&self, name: &str) -> Option<Playlist> {
         if name == LIKED_SONGS {
             return Some(self.liked());
         }
-        self.playlists
-            .borrow()
-            .iter()
-            .find(|p| p.name == name)
-            .cloned()
+        if !self.playlists.borrow().iter().any(|p| p.name == name) {
+            return None;
+        }
+        Playlist::read(&self.root(), name)
+            .inspect_err(|e| eprintln!("tunemesh: cannot read playlist {name:?}: {e}"))
+            .ok()
     }
 
     pub fn is_liked(&self, path: &str) -> bool {
@@ -388,8 +396,8 @@ impl Store {
         } else {
             let mut lists = self.playlists.borrow_mut();
             match lists.iter_mut().find(|x| x.name == name) {
-                Some(x) => *x = p,
-                None => lists.push(p),
+                Some(x) => *x = summarize(&p),
+                None => lists.push(summarize(&p)),
             }
             drop(lists);
             self.emit(StoreChange::Playlists);
@@ -401,7 +409,7 @@ impl Store {
         let p = Playlist::create(&self.root(), name)?;
         let name = p.name.clone();
         let mut lists = self.playlists.borrow_mut();
-        lists.push(p);
+        lists.push(summarize(&p));
         lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
         drop(lists);
         self.emit(StoreChange::Playlists);
@@ -520,6 +528,22 @@ fn delete_files(root: &Path, paths: &[String]) -> (Vec<String>, io::Result<()>) 
         }
     }
     (gone, result)
+}
+
+/// Tracks a playlist summary keeps for its cover.
+const SUMMARY_TRACKS: usize = 8;
+
+fn summarize(p: &Playlist) -> Summary {
+    Summary {
+        name: p.name.clone(),
+        count: p.entries.len(),
+        first_tracks: p
+            .entries
+            .iter()
+            .filter_map(|e| e.track.clone())
+            .take(SUMMARY_TRACKS)
+            .collect(),
+    }
 }
 
 /// A playlist entry as shown: its position and its identity (the track path,

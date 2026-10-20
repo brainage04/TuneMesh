@@ -205,17 +205,14 @@ impl Sidebar {
             Route::Artists,
         );
         for p in app.store.playlists() {
-            let source = Source::for_paths(
-                &lib,
-                p.entries.iter().filter_map(|e| e.track.as_deref()),
-                &p.name,
-            );
+            let source =
+                Source::for_paths(&lib, p.first_tracks.iter().map(String::as_str), &p.name);
             let art = widgets::cover(&app, source, 44, false);
             self.row(
                 &app,
                 art.upcast(),
                 &p.name,
-                &format!("Playlist • {}", plural(p.entries.len(), "song", "songs")),
+                &format!("Playlist • {}", plural(p.count, "song", "songs")),
                 Route::Playlist(p.name.clone()),
             );
         }

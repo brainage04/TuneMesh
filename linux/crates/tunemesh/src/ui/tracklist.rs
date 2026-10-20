@@ -6,7 +6,9 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
+
+use tunemesh_core::Playlist;
 
 use crate::app::App;
 use crate::covers::Source;
@@ -14,14 +16,57 @@ use crate::store::EntryRef;
 use crate::ui::menu::{self, MenuCtx};
 use crate::ui::widgets::{fmt_duration, label};
 
-pub struct Entry {
+/// What a track list shows. A playlist is held once, as read: a long one
+/// costs no second copy, and rows are made only for what is on screen.
+pub enum Entries {
+    /// Library paths (albums, artists, search results).
+    Tracks(Vec<String>),
+    Playlist(Playlist),
+}
+
+impl Entries {
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            Entries::Tracks(v) => v.len(),
+            Entries::Playlist(p) => p.entries.len(),
+        }
+    }
+
     /// Library path; `None` for playlist lines pointing outside the library.
-    pub path: Option<String>,
-    /// Display text when the track is unavailable.
-    pub label: String,
+    fn path(&self, i: usize) -> Option<&str> {
+        match self {
+            Entries::Tracks(v) => v.get(i).map(String::as_str),
+            Entries::Playlist(p) => p.entries.get(i)?.track.as_deref(),
+        }
+    }
+
     /// Playlist pages: the entry's identity (`store::entry_key`), so edits
     /// find it again in a playlist another device changed.
-    pub key: Option<String>,
+    fn key(&self, i: usize) -> Option<&str> {
+        match self {
+            Entries::Tracks(_) => None,
+            Entries::Playlist(p) => p.entries.get(i).map(crate::store::entry_key),
+        }
+    }
+
+    /// Display text when the track is unavailable.
+    fn label(&self, i: usize) -> String {
+        match self {
+            Entries::Tracks(_) => String::new(),
+            Entries::Playlist(p) => p.entries.get(i).map_or_else(String::new, |e| {
+                e.label.clone().unwrap_or_else(|| {
+                    let raw = e.track.as_deref().unwrap_or(&e.raw);
+                    tunemesh_core::library::title_from_file_name(
+                        raw.rsplit('/').next().unwrap_or(raw),
+                    )
+                })
+            }),
+        }
+    }
 }
 
 /// What a playlist row drag carries. Only rows of this app create it, so
@@ -34,7 +79,7 @@ struct DraggedEntry {
 pub struct Spec {
     /// Context name for "playing from".
     pub context: String,
-    pub entries: Vec<Entry>,
+    pub entries: Entries,
     pub show_album: bool,
     pub show_cover: bool,
     /// Enables remove-from-playlist and drag-and-drop reordering.
@@ -45,6 +90,71 @@ pub struct Spec {
 enum Item {
     Header,
     Track(usize),
+}
+
+/// The list model: an optional header row, then one row per entry. Row
+/// objects are made when GTK asks for them (the rows on screen), not one
+/// per entry up front.
+mod rows {
+    use gtk::subclass::prelude::*;
+    use gtk::{gio, glib};
+
+    mod imp {
+        use std::cell::Cell;
+
+        use gtk::subclass::prelude::*;
+        use gtk::{gio, glib, prelude::*};
+
+        use super::super::Item;
+
+        #[derive(Default)]
+        pub struct Rows {
+            pub header: Cell<bool>,
+            pub len: Cell<u32>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Rows {
+            const NAME: &'static str = "TmTrackRows";
+            type Type = super::Rows;
+            type Interfaces = (gio::ListModel,);
+        }
+
+        impl ObjectImpl for Rows {}
+
+        impl ListModelImpl for Rows {
+            fn item_type(&self) -> glib::Type {
+                glib::BoxedAnyObject::static_type()
+            }
+
+            fn n_items(&self) -> u32 {
+                self.len.get() + u32::from(self.header.get())
+            }
+
+            fn item(&self, position: u32) -> Option<glib::Object> {
+                let header = u32::from(self.header.get());
+                let item = match position {
+                    0 if header == 1 => Item::Header,
+                    p if p < self.n_items() => Item::Track((p - header) as usize),
+                    _ => return None,
+                };
+                Some(glib::BoxedAnyObject::new(item).upcast())
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct Rows(ObjectSubclass<imp::Rows>) @implements gio::ListModel;
+    }
+
+    impl Rows {
+        pub fn new(header: bool, len: usize) -> Self {
+            let rows: Self = glib::Object::new();
+            rows.imp().header.set(header);
+            rows.imp().len.set(u32::try_from(len).unwrap_or(u32::MAX));
+            rows
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -61,18 +171,21 @@ struct RowW {
 }
 
 pub struct Shared {
-    entries: Vec<Entry>,
+    entries: Entries,
     rows: RefCell<Vec<RowW>>,
 }
 
 impl Shared {
     fn entry_ref(&self, i: usize) -> Option<EntryRef> {
-        Some((i, self.entries.get(i)?.key.clone()?))
+        Some((i, self.entries.key(i)?.to_owned()))
     }
 
     fn available(&self, app: &App, i: usize) -> Option<String> {
-        let path = self.entries[i].path.as_ref()?;
-        app.store.library().track_index(path).map(|_| path.clone())
+        let path = self.entries.path(i)?;
+        app.store
+            .library()
+            .track_index(path)
+            .map(|_| path.to_owned())
     }
 
     pub fn refresh_rows(&self, app: &App) {
@@ -85,8 +198,7 @@ impl Shared {
 
     fn update_row(&self, app: &App, r: &RowW, i: usize) {
         let lib = app.store.library();
-        let entry = &self.entries[i];
-        let track = entry.path.as_deref().and_then(|p| lib.track(p));
+        let track = self.entries.path(i).and_then(|p| lib.track(p));
         r.index.set_label(&(i + 1).to_string());
         match track {
             Some(t) => {
@@ -125,15 +237,15 @@ impl Shared {
                 }
             }
             None => {
-                r.title.set_label(&entry.label);
+                let label = self.entries.label(i);
+                r.title.set_label(&label);
                 r.artist.set_label("Unavailable on this device");
                 if let Some(a) = &r.album {
                     a.set_label("");
                 }
                 r.duration.set_label("");
                 if let Some(c) = &r.cover {
-                    app.covers
-                        .apply(c, Source::Placeholder(entry.label.clone()), 40);
+                    app.covers.apply(c, Source::Placeholder(label), 40);
                 }
                 r.root.add_css_class("unavailable");
                 r.root.remove_css_class("current");
@@ -260,15 +372,8 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
     });
     app.register_track_list(&shared);
 
-    let store = gio::ListStore::new::<glib::BoxedAnyObject>();
     let has_header = spec.header.is_some();
-    if has_header {
-        store.append(&glib::BoxedAnyObject::new(Item::Header));
-    }
-    let items: Vec<glib::BoxedAnyObject> = (0..shared.entries.len())
-        .map(|i| glib::BoxedAnyObject::new(Item::Track(i)))
-        .collect();
-    store.extend_from_slice(&items);
+    let store = rows::Rows::new(has_header, shared.entries.len());
     let offset = u32::from(has_header);
     let selection = gtk::MultiSelection::new(Some(store));
 

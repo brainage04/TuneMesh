@@ -4,13 +4,14 @@ use std::rc::Rc;
 
 use adw::prelude::*;
 use gtk::{gio, glib};
+use tunemesh_core::playlist::Summary;
 use tunemesh_core::search::{Query, fold};
 use tunemesh_core::{LIKED_SONGS, Library, Playlist};
 
 use crate::app::{App, Page, Route};
 use crate::covers::Source;
 use crate::ui::menu::{self, MenuCtx};
-use crate::ui::tracklist::{self, Entry, Spec};
+use crate::ui::tracklist::{self, Entries, Spec};
 use crate::ui::widgets::{self, Tile, TileArt, fmt_total, label, plural, section_title, tile_flow};
 use crate::ui::{downloads, settings};
 
@@ -174,7 +175,7 @@ fn artist_tile(app: &Rc<App>, lib: &Rc<Library>, i: usize, tile: &Tile) {
     );
 }
 
-fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Playlist) -> gtk::Widget {
+fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Summary) -> gtk::Widget {
     let tile = Tile::new(false);
     let liked = p.name == LIKED_SONGS;
     let art = if liked {
@@ -182,26 +183,24 @@ fn playlist_tile(app: &Rc<App>, lib: &Rc<Library>, p: &Playlist) -> gtk::Widget 
     } else {
         TileArt::Cover(Source::for_paths(
             lib,
-            p.entries.iter().filter_map(|e| e.track.as_deref()),
+            p.first_tracks.iter().map(String::as_str),
             &p.name,
         ))
     };
-    let (app1, app2, name, name2, paths) = (
-        app.clone(),
-        app.clone(),
-        p.name.clone(),
-        p.name.clone(),
-        available_paths(lib, p),
-    );
+    let (app1, app2, name, name2) = (app.clone(), app.clone(), p.name.clone(), p.name.clone());
     tile.set(
         app,
         art,
         &p.name,
-        &format!("Playlist • {}", plural(p.entries.len(), "song", "songs")),
+        &format!("Playlist • {}", plural(p.count, "song", "songs")),
         move || app1.navigate(Route::Playlist(name.clone())),
         move || {
-            app2.player
-                .play_tracks(&name2, paths.clone(), 0, Some(false))
+            // The entries are read when the user asks to play them.
+            let Some(p) = app2.store.playlist(&name2) else {
+                return;
+            };
+            let paths = available_paths(&app2.store.library(), &p);
+            app2.player.play_tracks(&name2, paths, 0, Some(false))
         },
     );
     tile.widget.upcast()
@@ -286,7 +285,7 @@ fn home(app: &Rc<App>) -> Page {
         b.append(&s);
     }
 
-    let mut lists = vec![playlist_tile(app, &lib, &app.store.liked())];
+    let mut lists = vec![playlist_tile(app, &lib, &app.store.liked_summary())];
     lists.extend(
         app.store
             .playlists()
@@ -344,7 +343,7 @@ fn search(app: &Rc<App>, text: &str) -> Page {
         return simple(&b);
     }
     let r = lib.search(&q);
-    let lists: Vec<Playlist> = std::iter::once(app.store.liked())
+    let lists: Vec<Summary> = std::iter::once(app.store.liked_summary())
         .chain(app.store.playlists())
         .filter(|p| q.matches(&fold(&p.name)))
         .collect();
@@ -354,16 +353,13 @@ fn search(app: &Rc<App>, text: &str) -> Page {
     }
     if !r.tracks.is_empty() {
         b.append(&section_title("Songs"));
-        let entries = r
-            .tracks
-            .iter()
-            .take(50)
-            .map(|&i| Entry {
-                path: Some(lib.tracks[i].path.clone()),
-                label: String::new(),
-                key: None,
-            })
-            .collect();
+        let entries = Entries::Tracks(
+            r.tracks
+                .iter()
+                .take(50)
+                .map(|&i| lib.tracks[i].path.clone())
+                .collect(),
+        );
         let list = tracklist::build(
             app,
             Spec {
@@ -517,7 +513,7 @@ fn playlists(app: &Rc<App>) -> Page {
     head.append(&create);
     b.append(&head);
     let flow = tile_flow();
-    flow.append(&playlist_tile(app, &lib, &app.store.liked()));
+    flow.append(&playlist_tile(app, &lib, &app.store.liked_summary()));
     for p in app.store.playlists() {
         flow.append(&playlist_tile(app, &lib, &p));
     }
@@ -660,7 +656,7 @@ fn actions(app: &Rc<App>, name: &str, paths: Vec<String>, more: Option<MoreMenu>
 fn detail_page(
     app: &Rc<App>,
     header: gtk::Box,
-    spec_entries: Vec<Entry>,
+    spec_entries: Entries,
     context: &str,
     show_album: bool,
     show_cover: bool,
@@ -716,14 +712,7 @@ fn album(app: &Rc<App>, key: &str) -> Page {
         &meta_line(parts),
     ));
     header.append(&actions(app, &a.name, paths.clone(), None));
-    let entries = paths
-        .into_iter()
-        .map(|p| Entry {
-            path: Some(p),
-            label: String::new(),
-            key: None,
-        })
-        .collect();
+    let entries = Entries::Tracks(paths);
     detail_page(app, header, entries, &a.name, false, false, None)
 }
 
@@ -775,14 +764,7 @@ fn artist(app: &Rc<App>, name: &str) -> Page {
     songs.set_margin_top(12);
     songs.set_margin_bottom(8);
     header.append(&songs);
-    let entries = paths
-        .into_iter()
-        .map(|p| Entry {
-            path: Some(p),
-            label: String::new(),
-            key: None,
-        })
-        .collect();
+    let entries = Entries::Tracks(paths);
     detail_page(app, header, entries, &ar.name, true, true, None)
 }
 
@@ -827,18 +809,7 @@ fn playlist(app: &Rc<App>, name: &str) -> Page {
         };
         header.append(&widgets::empty(msg));
     }
-    let entries = p
-        .entries
-        .iter()
-        .map(|e| Entry {
-            path: e.track.clone(),
-            key: Some(crate::store::entry_key(e).to_owned()),
-            label: e.label.clone().unwrap_or_else(|| {
-                let raw = e.track.as_deref().unwrap_or(&e.raw);
-                tunemesh_core::library::title_from_file_name(raw.rsplit('/').next().unwrap_or(raw))
-            }),
-        })
-        .collect();
+    let entries = Entries::Playlist(p);
     detail_page(
         app,
         header,
