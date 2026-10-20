@@ -436,4 +436,70 @@ mod tests {
         assert!(!fetches(LOCAL_ONLY, M3U));
         assert!(!fetches(LOCAL_ONLY, HLS));
     }
+
+    /// A silent 8 kHz mono WAV of `secs` seconds.
+    fn wav(secs: u32) -> Vec<u8> {
+        let data = 8000 * 2 * secs;
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&8000u32.to_le_bytes());
+        v.extend_from_slice(&16000u32.to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data.to_le_bytes());
+        v.resize(v.len() + data as usize, 0);
+        v
+    }
+
+    #[test]
+    fn a_track_swapped_for_a_symlink_after_opening_still_plays_the_original() {
+        let base = std::env::temp_dir().join(format!("tunemesh-swap-test-{}", std::process::id()));
+        let (root, outside) = (base.join("lib"), base.join("outside"));
+        std::fs::create_dir_all(root.join("Artist/Album")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let rel = "Artist/Album/Song [s].wav";
+        std::fs::write(root.join(rel), wav(1)).unwrap();
+        std::fs::write(outside.join("other.wav"), wav(5)).unwrap();
+
+        let track = crate::player::open_track(&root, rel).unwrap();
+        // The path now points outside the library.
+        std::fs::remove_file(root.join(rel)).unwrap();
+        std::os::unix::fs::symlink(outside.join("other.wav"), root.join(rel)).unwrap();
+        assert!(
+            crate::player::open_track(&root, rel).is_err(),
+            "a symlinked track must be refused"
+        );
+
+        let base_opts: Vec<_> = BASE_OPTIONS
+            .iter()
+            .copied()
+            .chain([
+                ("ao", "null"),
+                ("audio-fallback-to-null", "yes"),
+                ("pause", "yes"),
+            ])
+            .collect();
+        let mpv = Mpv::create(&base_opts, LOCAL_ONLY).unwrap();
+        mpv.command(&["loadfile", &track.mpv_path]).unwrap();
+        let start = Instant::now();
+        let mut duration = None;
+        while start.elapsed() < Duration::from_secs(4) && duration.is_none() {
+            duration = mpv.get_f64("duration");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        mpv.quit();
+        drop(track);
+        std::fs::remove_dir_all(&base).unwrap();
+        let d = duration.expect("mpv did not load the open track");
+        assert!(
+            (d - 1.0).abs() < 0.1,
+            "played a {d} s file, not the 1 s original"
+        );
+    }
 }

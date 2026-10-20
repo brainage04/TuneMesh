@@ -3,7 +3,9 @@
 //! next one, so gapless playback works while TuneMesh owns the queue.
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,6 +15,30 @@ use serde::{Deserialize, Serialize};
 
 use crate::config;
 use crate::mpv::{EndReason, Event, Mpv};
+
+/// An open library track and the path mpv opens it by.
+///
+/// Library files arrive from every synced device, and a file can be swapped
+/// for a symlink after the scan. So the app opens each track itself, below
+/// the root without following symlinks, and mpv opens `/proc/self/fd/N`:
+/// that names the inode the app opened, whatever happens to the path later.
+/// The `File` must stay open until mpv has opened the track.
+pub struct OpenTrack {
+    file: File,
+    pub mpv_path: String,
+}
+
+pub fn open_track(root: &Path, rel: &str) -> std::io::Result<OpenTrack> {
+    let file = tunemesh_core::fsx::Dir::open(root)?.open_file(rel)?;
+    let mpv_path = format!("/proc/self/fd/{}", file.as_raw_fd());
+    Ok(OpenTrack { file, mpv_path })
+}
+
+impl OpenTrack {
+    fn into_file(self) -> File {
+        self.file
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Repeat {
@@ -134,6 +160,12 @@ pub struct Player {
     st: RefCell<State>,
     listeners: RefCell<Vec<Listener>>,
     tick: RefCell<Option<glib::SourceId>>,
+    /// The open files behind mpv's current and preloaded next entries.
+    current_file: RefCell<Option<File>>,
+    next_file: RefCell<Option<File>>,
+    /// Files of entries mpv no longer plays, kept open until it has loaded a
+    /// newer file (so a descriptor number is never reused under it).
+    retired: RefCell<Vec<File>>,
     save_scheduled: Cell<bool>,
     ticks_since_save: Cell<u32>,
     me: Weak<Player>,
@@ -163,6 +195,9 @@ impl Player {
             }),
             listeners: RefCell::new(Vec::new()),
             tick: RefCell::new(None),
+            current_file: RefCell::new(None),
+            next_file: RefCell::new(None),
+            retired: RefCell::new(Vec::new()),
             save_scheduled: Cell::new(false),
             ticks_since_save: Cell::new(0),
         });
@@ -216,8 +251,20 @@ impl Player {
         }
     }
 
-    fn abs(&self, rel: &str) -> String {
-        self.root.borrow().join(rel).to_string_lossy().into_owned()
+    fn open(&self, rel: &str) -> Option<OpenTrack> {
+        match open_track(&self.root.borrow(), rel) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("tunemesh: cannot play {rel:?}: {e}");
+                None
+            }
+        }
+    }
+
+    fn retire(&self, slot: &RefCell<Option<File>>) {
+        if let Some(f) = slot.borrow_mut().take() {
+            self.retired.borrow_mut().push(f);
+        }
     }
 
     // ---- read access -------------------------------------------------
@@ -281,9 +328,33 @@ impl Player {
         self.apply_loop();
         mpv.set_flag("pause", !play);
         let start_opt = format!("start={start:.3}");
-        if let Err(e) = mpv.command(&["loadfile", &self.abs(&path), "replace", "-1", &start_opt]) {
+        self.retire(&self.current_file);
+        self.retire(&self.next_file);
+        let Some(track) = self.open(&path) else {
+            // Unreadable or not a regular file: show it, stopped.
+            let _ = mpv.command(&["stop"]);
+            {
+                let mut st = self.st.borrow_mut();
+                st.loaded = false;
+                st.current_entry = None;
+                st.next_entry = None;
+                st.position = 0.0;
+                st.duration = 0.0;
+                st.playing = false;
+            }
+            self.update_tick();
+            self.emit(&[
+                Change::Track,
+                Change::Playing,
+                Change::Position,
+                Change::Queue,
+            ]);
+            return;
+        };
+        if let Err(e) = mpv.command(&["loadfile", &track.mpv_path, "replace", "-1", &start_opt]) {
             eprintln!("tunemesh: {e}");
         }
+        *self.current_file.borrow_mut() = Some(track.into_file());
         {
             let mut st = self.st.borrow_mut();
             st.loaded = true;
@@ -314,12 +385,16 @@ impl Player {
             st.next_index().map(|i| (i, st.items[i].path.clone()))
         };
         let Some((index, path)) = want else { return };
+        let Some(track) = self.open(&path) else {
+            return;
+        };
         if mpv
-            .command(&["loadfile", &self.abs(&path), "append"])
+            .command(&["loadfile", &track.mpv_path, "append"])
             .is_err()
         {
             return;
         }
+        *self.next_file.borrow_mut() = Some(track.into_file());
         let count = mpv.get_i64("playlist-count").unwrap_or(0);
         if let Some(id) = self.entry_id_at(count - 1) {
             self.st.borrow_mut().next_entry = Some((id, index, path));
@@ -349,6 +424,7 @@ impl Player {
             if let Some(mpv) = &self.mpv {
                 let _ = mpv.command(&["playlist-clear"]);
             }
+            self.retire(&self.next_file);
             self.st.borrow_mut().next_entry = None;
             self.append_next();
         }
@@ -378,6 +454,9 @@ impl Player {
             st.position = 0.0;
             st.duration = 0.0;
         }
+        self.retire(&self.current_file);
+        let next = self.next_file.borrow_mut().take();
+        *self.current_file.borrow_mut() = next;
         if let Some(mpv) = &self.mpv {
             let _ = mpv.command(&["playlist-clear"]);
         }
@@ -435,12 +514,16 @@ impl Player {
                 self.st.borrow_mut().duration = d;
                 self.emit(&[Change::Position]);
             }
-            Event::FileLoaded | Event::Shutdown => {}
+            // mpv has opened its newest file: older ones are done with.
+            Event::FileLoaded => self.retired.borrow_mut().clear(),
+            Event::Shutdown => {}
         }
     }
 
     /// The last track finished: stop at its start, paused.
     fn ended(&self) {
+        self.retire(&self.current_file);
+        self.retire(&self.next_file);
         {
             let mut st = self.st.borrow_mut();
             st.loaded = false;
@@ -821,6 +904,8 @@ impl Player {
                 if loaded && let Some(mpv) = &self.mpv {
                     let _ = mpv.command(&["stop"]);
                 }
+                self.retire(&self.current_file);
+                self.retire(&self.next_file);
                 let mut st = self.st.borrow_mut();
                 st.loaded = false;
                 st.playing = false;
