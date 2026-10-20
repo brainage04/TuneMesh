@@ -573,6 +573,8 @@ impl Library {
 
         let mut albums: Vec<Album> = Vec::new();
         let mut album_by_key: HashMap<String, usize> = HashMap::new();
+        // Album of each track, so later passes need no key lookups.
+        let mut album_of: Vec<usize> = Vec::with_capacity(tracks.len());
         for (i, t) in tracks.iter().enumerate() {
             let key = album_key(t.listed_artist(), &t.album);
             let idx = *album_by_key.entry(key).or_insert_with(|| {
@@ -587,6 +589,7 @@ impl Library {
                 });
                 albums.len() - 1
             });
+            album_of.push(idx);
             let a = &mut albums[idx];
             a.tracks.push(i);
             a.added = a.added.max(t.mtime);
@@ -611,6 +614,14 @@ impl Library {
             });
         }
 
+        // Position of each track within its album, for the artist order.
+        let mut in_album = vec![0usize; tracks.len()];
+        for a in &albums {
+            for (p, &ti) in a.tracks.iter().enumerate() {
+                in_album[ti] = p;
+            }
+        }
+
         let mut artists: Vec<Artist> = Vec::new();
         let mut artist_by_name: HashMap<String, usize> = HashMap::new();
         for (i, t) in tracks.iter().enumerate() {
@@ -626,12 +637,14 @@ impl Library {
             });
             artists[idx].tracks.push(i);
         }
-        for artist in &mut artists {
+        // The artist (by index) that last listed each album: dedups in O(1).
+        let mut listed_by = vec![usize::MAX; albums.len()];
+        for (k, artist) in artists.iter_mut().enumerate() {
             let mut seen = Vec::new();
             for &ti in &artist.tracks {
-                let t = &tracks[ti];
-                let ai = album_by_key[&album_key(t.listed_artist(), &t.album)];
-                if !seen.contains(&ai) {
+                let ai = album_of[ti];
+                if listed_by[ai] != k {
+                    listed_by[ai] = k;
                     seen.push(ai);
                 }
             }
@@ -649,15 +662,11 @@ impl Library {
                 .enumerate()
                 .map(|(p, &a)| (a, p))
                 .collect();
-            let album_pos = |ti: usize| {
-                let t = &tracks[ti];
-                let ai = album_by_key[&album_key(t.listed_artist(), &t.album)];
-                let within = albums[ai].tracks.iter().position(|&x| x == ti).unwrap_or(0);
-                (order[&ai], within)
-            };
-            artist.tracks.sort_by_key(|&ti| album_pos(ti));
+            artist
+                .tracks
+                .sort_by_key(|&ti| (order[&album_of[ti]], in_album[ti]));
         }
-        artists.sort_by_key(|a| fold(&a.name));
+        artists.sort_by_cached_key(|a| fold(&a.name));
         let artist_by_name = artists
             .iter()
             .enumerate()
@@ -1177,6 +1186,43 @@ mod tests {
         let mut old = serde_json::to_value(&again[0]).unwrap();
         old.as_object_mut().unwrap().remove("mtime_nsec");
         assert!(serde_json::from_value::<Track>(old).is_err());
+    }
+
+    /// R2-opus-2: grouping is O(n log n): one 40,000-track album with
+    /// shuffled track numbers builds in well under a second (it took 8 s
+    /// when each artist track looked up its album position linearly).
+    #[test]
+    fn huge_album_builds_quickly() {
+        let n = 40_000u32;
+        let mut numbers: Vec<u32> = (1..=n).collect();
+        fastrand::Rng::with_seed(7).shuffle(&mut numbers);
+        let tracks: Vec<Track> = numbers
+            .iter()
+            .enumerate()
+            .map(|(i, &no)| {
+                let info = TagInfo {
+                    title: Some(format!("Song {i}")),
+                    artists: vec!["One Artist".into()],
+                    album: Some("One Album".into()),
+                    track_number: Some(no),
+                    ..TagInfo::default()
+                };
+                make_track(&format!("A/B/{i:05}.mp3"), info, None, (0, 0), 0)
+            })
+            .collect();
+        let start = std::time::Instant::now();
+        let lib = Library::new(tracks);
+        let took = start.elapsed();
+        // Generous for debug builds and busy machines (release: ~30 ms).
+        assert!(
+            took < std::time::Duration::from_secs(if cfg!(debug_assertions) { 3 } else { 1 }),
+            "{took:?}"
+        );
+        assert_eq!(lib.albums.len(), 1);
+        let album = &lib.albums[0].tracks;
+        assert_eq!(lib.tracks[album[0]].track_number, Some(1));
+        assert_eq!(lib.tracks[album[n as usize - 1]].track_number, Some(n));
+        assert_eq!(lib.artists[0].tracks, *album);
     }
 
     #[test]
