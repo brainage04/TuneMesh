@@ -161,7 +161,12 @@ fn decode(job: &Job) -> Vec<u8> {
         Source::Placeholder(seed) => return placeholder(seed, job.size),
         source => read_cover(&job.root, source),
     };
-    let image = bytes.and_then(|b| image::load_from_memory(&b).ok());
+    // A synced picture is untrusted input: a decoder panic leaves this
+    // cover as a placeholder instead of ending the cover thread.
+    let image = bytes.and_then(|b| {
+        tunemesh_core::library::guarded("a cover picture", || image::load_from_memory(&b).ok())
+            .flatten()
+    });
     let Some(img) = image else {
         let seed = match &job.source {
             Source::Embedded(s) | Source::File(s) | Source::Placeholder(s) => s,
@@ -337,7 +342,10 @@ pub fn art_file(root: &Path, track: &Track) -> Option<PathBuf> {
             let dir = crate::config::cache_dir().join("art");
             let file = dir.join(format!(
                 "{:016x}.img",
-                hash_of(&format!("{}:{}:{rel}", track.path, track.mtime))
+                hash_of(&format!(
+                    "{}:{}.{:09}:{rel}",
+                    track.path, track.mtime, track.mtime_nsec
+                ))
             ));
             if !file.exists() {
                 let bytes = read_cover(root, &source)?;
