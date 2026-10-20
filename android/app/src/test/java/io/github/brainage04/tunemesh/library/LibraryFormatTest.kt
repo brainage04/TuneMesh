@@ -6,31 +6,72 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LibraryFormatTest {
+    // The first five tests mirror tunemesh-core's sanitize.rs tests case for case.
+
     @Test
-    fun sanitiseReplacesForbiddenAndControlCharacters() {
-        assertEquals("a_b_c_d_e_f_g_h_i_j_k", LibraryFormat.sanitizeComponent("a/b\\c:d*e?f\"g<h>i|j\u0001k"))
-        assertEquals("tab_here_", LibraryFormat.sanitizeComponent("tab\there\u007f"))
+    fun replacesForbiddenAndControlCharacters() {
+        assertEquals("AC_DC_ _Live_ _1991_____", LibraryFormat.sanitizeComponent("AC/DC: \"Live\" <1991>?|*\\"))
+        assertEquals("tab_here_", LibraryFormat.sanitizeComponent("tab\there\u0007"))
     }
 
     @Test
-    fun sanitiseReplacesTrailingDotsAndSpaces() {
-        assertEquals("Hello wor__", LibraryFormat.sanitizeComponent("Hello wor. "))
+    fun fixesTrailingDotSpaceAndLeadingDot() {
         assertEquals("Mr_", LibraryFormat.sanitizeComponent("Mr."))
+        assertEquals("_..And Justice", LibraryFormat.sanitizeComponent("...And Justice"))
+        assertEquals("x", LibraryFormat.sanitizeComponent("  x  "))
         assertEquals("_", LibraryFormat.sanitizeComponent(""))
-        assertEquals("_hidden", LibraryFormat.sanitizeComponent(".hidden"))
         assertEquals("_", LibraryFormat.sanitizeComponent("."))
     }
 
     @Test
-    fun sanitiseLimitsUtf8BytesWithoutSplittingCharacters() {
-        val name = "é".repeat(100) // 200 bytes
-        val result = LibraryFormat.sanitizeComponent(name)
-        assertEquals(60, result.length)
-        assertTrue(result.toByteArray(Charsets.UTF_8).size <= 120)
-        val emoji = "🎵".repeat(40) // 4 bytes each
-        assertEquals(30 * 2, LibraryFormat.sanitizeComponent(emoji).length)
-        assertTrue(LibraryFormat.playlistFileName("x".repeat(300)).toByteArray().size <= 120)
-        assertTrue(LibraryFormat.playlistFileName("x".repeat(300)).endsWith(".m3u8"))
+    fun limitsComponentTo120BytesOnCharBoundary() {
+        val s = LibraryFormat.sanitizeComponent("é".repeat(100)) // 200 bytes
+        assertTrue(s.toByteArray(Charsets.UTF_8).size <= LibraryFormat.MAX_COMPONENT_BYTES)
+        assertEquals("é".repeat(60), s)
+    }
+
+    @Test
+    fun fileNameKeepsIdSuffix() {
+        val name = LibraryFormat.sanitizeFileName("a".repeat(300), " [dQw4w9WgXcQ].opus")
+        assertEquals(LibraryFormat.MAX_COMPONENT_BYTES, name.toByteArray(Charsets.UTF_8).size)
+        assertTrue(name.endsWith(" [dQw4w9WgXcQ].opus"))
+        assertEquals("What_ Now..m3u8", LibraryFormat.sanitizeFileName("What? Now.", ".m3u8"))
+        assertEquals("Song [x].mp3", LibraryFormat.sanitizeFileName("Song", " [x].mp3"))
+    }
+
+    @Test
+    fun sanitisingIsIdempotent() {
+        for (s in listOf("Mr.", "a/b", " .x. ", "Ünïcødé ☃", "ß".repeat(90))) {
+            val once = LibraryFormat.sanitizeComponent(s)
+            assertEquals(once, LibraryFormat.sanitizeComponent(once))
+        }
+    }
+
+    /** Rust's `char::is_control` (Cc) includes C1 controls; `str::trim` removes Unicode White_Space only. */
+    @Test
+    fun matchesRustCharacterClasses() {
+        assertEquals("a_b_c_d", LibraryFormat.sanitizeComponent("a\u0080b\u0085c\u009fd"))
+        assertEquals("a_b_c", LibraryFormat.sanitizeComponent("a\u007fb\u001fc"))
+        assertEquals("line_break", LibraryFormat.sanitizeComponent("line\nbreak\r"))
+        // U+001C-001F are not White_Space: kept and replaced, where Kotlin's trim() would drop them.
+        assertEquals("_x_", LibraryFormat.sanitizeComponent("\u001cx\u001f"))
+        // U+0085, NBSP and the ideographic space are White_Space: trimmed at the ends.
+        assertEquals("x", LibraryFormat.sanitizeComponent("\u0085\u00a0x\u3000\u2029"))
+        // Format characters (Cf) such as the zero-width joiner stay, as in Rust.
+        assertEquals("a\u200db", LibraryFormat.sanitizeComponent("a\u200db"))
+        assertEquals("🎵_", LibraryFormat.sanitizeComponent("🎵\ud800"))
+        assertEquals("🎵".repeat(30), LibraryFormat.sanitizeComponent("🎵".repeat(40)))
+    }
+
+    @Test
+    fun playlistFileNamesMatchTheDesktop() {
+        assertEquals("What_ Now..m3u8", LibraryFormat.playlistFileName("What? Now."))
+        assertEquals("Road trip.m3u8", LibraryFormat.playlistFileName("  Road trip "))
+        assertEquals("_hidden.m3u8", LibraryFormat.playlistFileName(".hidden"))
+        assertEquals("_.m3u8", LibraryFormat.playlistFileName(" "))
+        val long = LibraryFormat.playlistFileName("x".repeat(300))
+        assertEquals(LibraryFormat.MAX_COMPONENT_BYTES, long.toByteArray().size)
+        assertTrue(long.endsWith(".m3u8"))
     }
 
     @Test

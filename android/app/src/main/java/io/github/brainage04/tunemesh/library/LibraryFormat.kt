@@ -61,25 +61,65 @@ object LibraryFormat {
     fun firstArtist(artist: String): String =
         artist.split(';', '\u0000').map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: artist.trim()
 
-    /**
-     * Makes one file or directory name safe for every TuneMesh device: forbidden and control characters
-     * become `_`, a leading `.` (hidden, so ignored by readers) and a trailing `.` or space become `_`, and the
-     * result is at most [maxBytes] UTF-8 bytes.
+    /*
+     * Names written by TuneMesh, the same rules as tunemesh-core's sanitize.rs (keep the two in step):
+     * trim Unicode White_Space, replace `/ \ : * ? " < > |` and control characters (category Cc: U+0000-001F,
+     * U+007F-009F) with `_`, cut to MAX_COMPONENT_BYTES UTF-8 bytes on a character boundary, then replace a
+     * leading `.` and each trailing `.` or space with `_`. Kotlin strings may also hold unpaired surrogates,
+     * which Rust strings cannot; they become `_` as well.
      */
-    fun sanitizeComponent(name: String, maxBytes: Int = MAX_COMPONENT_BYTES): String {
-        val replaced = buildString(name.length) {
-            for (char in name) {
-                append(if (char in "/\\:*?\"<>|" || char.code < 0x20 || char.code == 0x7f) '_' else char)
+
+    /** Sanitises one path component (an artist, album or playlist name); `sanitize::component` in Rust. */
+    fun sanitizeComponent(name: String): String {
+        val result = fixEnds(truncateUtf8(replaceForbidden(trimWhiteSpace(name)), MAX_COMPONENT_BYTES))
+        return result.ifEmpty { "_" }
+    }
+
+    /**
+     * Sanitises a file name made of a free-form [stem] and a fixed [suffix] (for example `" [id].opus"` or
+     * `".m3u8"`): the stem is shortened first so the suffix always survives. `sanitize::file_name` in Rust.
+     */
+    fun sanitizeFileName(stem: String, suffix: String): String {
+        val safeSuffix = replaceForbidden(suffix)
+        var safeStem = replaceForbidden(trimWhiteSpace(stem))
+        if (safeStem.startsWith(".")) safeStem = "_" + safeStem.substring(1)
+        if (safeStem.isEmpty()) safeStem = "_"
+        val suffixBytes = safeSuffix.toByteArray(Charsets.UTF_8).size
+        safeStem = truncateUtf8(safeStem, maxOf(MAX_COMPONENT_BYTES - suffixBytes, 1))
+        return fixEnds(truncateUtf8(safeStem + safeSuffix, MAX_COMPONENT_BYTES))
+    }
+
+    private fun isForbidden(char: Char): Boolean =
+        char in "/\\:*?\"<>|" || Character.getType(char) == Character.CONTROL.toInt()
+
+    private fun replaceForbidden(value: String): String = buildString(value.length) {
+        var index = 0
+        while (index < value.length) {
+            val char = value[index]
+            val pair = char.isHighSurrogate() && index + 1 < value.length && value[index + 1].isLowSurrogate()
+            when {
+                pair -> append(char).append(value[index + 1])
+                char.isSurrogate() || isForbidden(char) -> append('_')
+                else -> append(char)
             }
+            index += if (pair) 2 else 1
         }
-        var result = truncateUtf8(replaced, maxBytes)
-        if (result.isEmpty()) return "_"
+    }
+
+    /** Unicode White_Space, which Rust's `str::trim` removes (Kotlin's `trim` differs, e.g. U+001C, U+0085). */
+    private fun isWhiteSpace(char: Char): Boolean = when (char.code) {
+        in 0x09..0x0D, 0x20, 0x85, 0xA0, 0x1680, in 0x2000..0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000 -> true
+        else -> false
+    }
+
+    private fun trimWhiteSpace(value: String): String = value.trim(::isWhiteSpace)
+
+    /** A leading `.` and each trailing `.` or space become `_`. */
+    private fun fixEnds(value: String): String {
+        var result = value
         if (result.startsWith(".")) result = "_" + result.substring(1)
-        val trimmedEnd = result.trimEnd('.', ' ')
-        if (trimmedEnd.length != result.length) {
-            result = trimmedEnd + "_".repeat(result.length - trimmedEnd.length)
-        }
-        return result
+        val kept = result.trimEnd('.', ' ')
+        return kept + "_".repeat(result.length - kept.length)
     }
 
     private fun truncateUtf8(value: String, maxBytes: Int): String {
@@ -98,9 +138,8 @@ object LibraryFormat {
         return builder.toString()
     }
 
-    /** Playlist file name (`<Name>.m3u8`) for a user-entered playlist name. */
-    fun playlistFileName(name: String): String =
-        sanitizeComponent(name.trim(), MAX_COMPONENT_BYTES - PLAYLIST_EXTENSION.length) + PLAYLIST_EXTENSION
+    /** Playlist file name (`<Name>.m3u8`) for a user-entered playlist name, as the desktop app and worker name it. */
+    fun playlistFileName(name: String): String = sanitizeFileName(name, PLAYLIST_EXTENSION)
 
     /** Lowercase, accent-free form used for instant search. */
     fun searchKey(value: String): String =
