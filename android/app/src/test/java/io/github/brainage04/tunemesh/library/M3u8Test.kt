@@ -79,4 +79,23 @@ class M3u8Test {
         val t = track("A/B/x.opus", "x", "A", 0)
         assertEquals("#EXTINF:-1,A - x", M3u8.extinf(t))
     }
+
+    /** As tunemesh-core's `serialize`: an entry holding a CR (only a lone CR survives parsing) is dropped. */
+    @Test
+    fun entriesWithLineBreaksAreDroppedOnWrite() {
+        val text = "#EXTM3U\r\n#EXTINF:5,Ok\r\n../A/B/ok.mp3\r\n#EXTINF:6,Bro\rken\n../A/B/bro\rken.mp3\n" +
+            "#EXTINF:7,Gone\r\r\n../Gone/x\ry/missing.mp3\n../A/B/last.mp3\r\r\n"
+        val entries = M3u8.parse(text, root)
+        assertEquals(
+            listOf("../A/B/ok.mp3", "../A/B/bro\rken.mp3", "../Gone/x\ry/missing.mp3", "../A/B/last.mp3"),
+            entries.map { it.raw },
+        )
+        assertEquals(
+            "#EXTM3U\n#EXTINF:5,Ok\n../A/B/ok.mp3\n#EXTINF:-1,last\n../A/B/last.mp3\n",
+            M3u8.write(entries) { null },
+        )
+        // A kept entry's old #EXTINF never carries a CR into the file either.
+        val label = M3u8.parse("#EXTINF:3,Two\rParts\n../A/B/c.mp3\n", root)
+        assertEquals("#EXTM3U\n#EXTINF:3,Two Parts\n../A/B/c.mp3\n", M3u8.write(label) { null })
+    }
 }

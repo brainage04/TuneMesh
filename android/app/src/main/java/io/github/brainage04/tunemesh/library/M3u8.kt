@@ -13,7 +13,8 @@ object M3u8 {
         val entries = mutableListOf<PlaylistEntry>()
         var pendingExtinf: String? = null
         for (rawLine in text.removePrefix("\uFEFF").split('\n')) {
-            val line = rawLine.removeSuffix("\r")
+            // As Rust's str::lines plus trim_end_matches('\r'): CRLF endings go, a CR inside a line stays.
+            val line = rawLine.trimEnd('\r')
             if (line.isBlank()) continue
             if (line.startsWith("#")) {
                 if (line.startsWith(EXTINF)) pendingExtinf = line
@@ -61,15 +62,18 @@ object M3u8 {
 
     /**
      * Serialises [entries]. Entries whose track is known get a fresh `#EXTINF`; missing ones keep the line they
-     * were read with so nothing is lost when rewriting.
+     * were read with so nothing is lost when rewriting. An entry whose line or path holds a line break (a lone CR
+     * read from an old file) is dropped, as tunemesh-core's `serialize` does: writers never write LF or CR in an
+     * entry, and the line would turn into two.
      */
     fun write(entries: List<PlaylistEntry>, lookup: (String) -> Track?): String = buildString {
         append(HEADER).append('\n')
         for (entry in entries) {
+            if (LibraryFormat.hasLineBreak(entry.raw) || entry.path?.let(LibraryFormat::hasLineBreak) == true) continue
             val track = entry.path?.let(lookup)
             val info = when {
                 track != null -> extinf(track)
-                entry.extinf != null -> entry.extinf
+                entry.extinf != null -> entry.extinf.replace('\n', ' ').replace('\r', ' ')
                 else -> "$EXTINF-1,${LibraryFormat.titleFromFileName(entry.raw.substringAfterLast('/'))}"
             }
             append(info).append('\n')
