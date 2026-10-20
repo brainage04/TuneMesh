@@ -43,4 +43,19 @@ class ShareInputTest {
         assertEquals("", ShareActivity.sharedInput(share(null)))
         assertEquals("", ShareActivity.sharedInput(null))
     }
+
+    /** Punctuation that ends the sentence around a link is not part of it; brackets the link opened stay. */
+    @Test
+    fun trailingPunctuationIsDropped() {
+        fun input(text: String) = ShareActivity.sharedInput(share(text))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("Watch https://youtu.be/jNQXAC9IVRw."))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("(https://youtu.be/jNQXAC9IVRw)!"))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("\"https://youtu.be/jNQXAC9IVRw\","))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("<https://youtu.be/jNQXAC9IVRw>;"))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("[https://youtu.be/jNQXAC9IVRw]?"))
+        assertEquals("https://youtu.be/jNQXAC9IVRw", input("'https://youtu.be/jNQXAC9IVRw':"))
+        assertEquals("https://en.wikipedia.org/wiki/Song_(band)", input("See https://en.wikipedia.org/wiki/Song_(band)."))
+        assertEquals("https://example.com/a?b=c", input("https://example.com/a?b=c?!"))
+        assertEquals("https://music.youtube.com/watch?v=x&list=y", input("https://music.youtube.com/watch?v=x&list=y"))
+    }
 }

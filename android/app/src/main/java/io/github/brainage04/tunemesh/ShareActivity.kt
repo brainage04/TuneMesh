@@ -80,7 +80,30 @@ class ShareActivity : ComponentActivity() {
          */
         fun sharedInput(intent: Intent?): String {
             val text = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().trim()
-            return url.find(text)?.value ?: text
+            return url.find(text)?.value?.let(::trimTrailingPunctuation) ?: text
+        }
+
+        /**
+         * [url] without the punctuation that ends the sentence around it (`.,;:!?'"` and closing brackets). A
+         * closing bracket stays when the URL opened it, as in `https://en.wikipedia.org/wiki/Song_(band)`.
+         */
+        internal fun trimTrailingPunctuation(url: String): String {
+            var end = url.length
+            while (end > 0) {
+                val char = url[end - 1]
+                val keep = when (char) {
+                    '.', ',', ';', ':', '!', '?', '\'', '"', '>' -> false
+                    ')', ']', '}' -> {
+                        val open = when (char) { ')' -> '('; ']' -> '['; else -> '{' }
+                        val part = url.substring(0, end)
+                        part.count { it == open } >= part.count { it == char }
+                    }
+                    else -> true
+                }
+                if (keep) break
+                end--
+            }
+            return url.substring(0, end)
         }
     }
 }
