@@ -91,7 +91,7 @@ class PlaybackService : MediaSessionService() {
         if (queue.items.isEmpty()) return
         player.repeatMode = queue.repeatMode
         player.setMediaItems(
-            queue.items.map(QueueItems::build),
+            QueueItems.withUniqueIds(queue.items).map(QueueItems::build),
             queue.index.coerceIn(0, queue.items.lastIndex),
             queue.positionMs,
         )
@@ -141,8 +141,10 @@ class PlaybackService : MediaSessionService() {
         ): ListenableFuture<List<MediaItem>> {
             val repository = (application as TuneMeshApp).repository
             val root = repository.root
+            val player = mediaSession.player
+            val used = (0 until player.mediaItemCount).mapTo(HashSet()) { QueueItems.id(player.getMediaItemAt(it)) }
             return Futures.immediateFuture(
-                mediaItems.mapNotNull { QueueItems.resolve(this@PlaybackService, it, root, repository::track) },
+                mediaItems.mapNotNull { QueueItems.resolve(this@PlaybackService, it, root, repository::track, used) },
             )
         }
 
@@ -158,7 +160,7 @@ class PlaybackService : MediaSessionService() {
             }
             return Futures.immediateFuture(
                 MediaSession.MediaItemsWithStartPosition(
-                    queue.items.map(QueueItems::build),
+                    QueueItems.withUniqueIds(queue.items).map(QueueItems::build),
                     queue.index.coerceIn(0, queue.items.lastIndex),
                     queue.positionMs,
                 ),

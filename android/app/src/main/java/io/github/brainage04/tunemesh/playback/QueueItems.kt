@@ -80,13 +80,30 @@ object QueueItems {
      * it does not name an audio file inside [root]. The session is exported, so other apps' controllers must not
      * make the player open arbitrary files or URLs, nor make the app load their metadata (artwork URIs in
      * particular) with its All files access: only the media URI and the queue entry ID are taken from [item].
+     *
+     * Queue entry IDs must stay unique (the queue screen keys rows by them, undoing shuffle maps them): the
+     * controller's ID is kept only when it is not in [used] (the IDs already queued and those given out earlier
+     * in the same batch), else the entry gets a new one. The ID kept or given is added to [used].
      */
-    fun resolve(context: Context, item: MediaItem, root: File, track: (String) -> Track?): MediaItem? {
+    fun resolve(
+        context: Context,
+        item: MediaItem,
+        root: File,
+        track: (String) -> Track?,
+        used: MutableSet<String> = HashSet(),
+    ): MediaItem? {
         val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return null
         val path = LibraryUris.libraryPath(uri.toString(), root) ?: return null
         val resolved = track(path) ?: return null
-        val id = item.mediaId.takeIf { '|' in it }?.substringBefore('|')?.takeIf { it.isNotEmpty() } ?: newId()
+        val id = item.mediaId.takeIf { '|' in it }?.substringBefore('|')?.takeIf { it.isNotEmpty() && used.add(it) }
+            ?: newId().also { used += it }
         return build(context, root, resolved, id)
+    }
+
+    /** [items] with a new ID for every entry whose ID an earlier entry already has (queues saved before IDs were checked). */
+    fun withUniqueIds(items: List<StoredItem>): List<StoredItem> {
+        val seen = HashSet<String>()
+        return items.map { item -> if (seen.add(item.id)) item else item.copy(id = newId()).also { seen += it.id } }
     }
 }
 

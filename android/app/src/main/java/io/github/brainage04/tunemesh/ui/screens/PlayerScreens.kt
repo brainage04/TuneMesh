@@ -231,14 +231,15 @@ fun QueueScreen() {
             val upcoming = ui.queue.withIndex().drop(current + 1)
             if (upcoming.isNotEmpty()) {
                 item { QueueHeader("Next up") }
-                itemsIndexed(upcoming, key = { _, entry -> entry.value.mediaId }) { _, entry ->
+                // Keyed by position too: Compose crashes on a repeated key, and IDs come from other apps' controllers.
+                itemsIndexed(upcoming, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
                     QueueRow(entry.value, library.index.byPath[QueueItems.path(entry.value)], entry.index, isCurrent = false, last = ui.queue.lastIndex)
                 }
             }
             val played = ui.queue.withIndex().take(current.coerceAtLeast(0))
             if (played.isNotEmpty()) {
                 item { QueueHeader("Played") }
-                itemsIndexed(played, key = { _, entry -> entry.value.mediaId }) { _, entry ->
+                itemsIndexed(played, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
                     QueueRow(entry.value, library.index.byPath[QueueItems.path(entry.value)], entry.index, isCurrent = false, last = ui.queue.lastIndex)
                 }
             }

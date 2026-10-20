@@ -146,6 +146,58 @@ class DeviceTest {
         assertNull(QueueItems.resolve(context, MediaItem.fromUri("https://tracker.example/a.mp3"), root, app.repository::track))
     }
 
+    /** R1-opus-b-3: a controller cannot queue repeated entry IDs (they crashed the queue screen). */
+    @Test
+    fun controllerItemsGetUniqueQueueIds() {
+        val path = "Artist/Album/Song [abc].wav"
+        writeWav(File(root, path), seconds = 1)
+        val dup = MediaItem.Builder().setMediaId("dup|x").setUri(Uri.fromFile(File(root, path))).build()
+        val used = hashSetOf("taken")
+        val ids = listOf(dup, dup, dup, dup.buildUpon().setMediaId("taken|x").build(), dup.buildUpon().setMediaId("fresh|x").build())
+            .map { QueueItems.id(QueueItems.resolve(context, it, root, app.repository::track, used)!!) }
+        assertEquals("dup", ids[0])
+        assertEquals("fresh", ids[4])
+        assertEquals(ids.size, ids.toSet().size)
+        assertTrue("taken" !in ids)
+        assertEquals(used, ids.toSet() + "taken")
+
+        // Through the real session, as another app's controller would send them.
+        val main = Handler(Looper.getMainLooper())
+        val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
+        val controller = MediaController.Builder(context, token).setApplicationLooper(Looper.getMainLooper()).buildAsync().get(10, TimeUnit.SECONDS)
+        try {
+            val done = CountDownLatch(1)
+            var queued = emptyList<String>()
+            main.post {
+                controller.setMediaItems(listOf(dup, dup, dup))
+                controller.addMediaItems(listOf(dup))
+                main.postDelayed({
+                    queued = (0 until controller.mediaItemCount).map { controller.getMediaItemAt(it).mediaId }
+                    done.countDown()
+                }, 1_000)
+            }
+            assertTrue(done.await(10, TimeUnit.SECONDS))
+            assertEquals(4, queued.size)
+            assertEquals(queued.toString(), 4, queued.toSet().size)
+            assertTrue(queued.all { it.endsWith("|$path") })
+        } finally {
+            main.post {
+                controller.stop()
+                controller.clearMediaItems()
+                controller.release()
+            }
+        }
+    }
+
+    @Test
+    fun savedQueuesWithRepeatedIdsAreMadeUnique() {
+        val item = io.github.brainage04.tunemesh.playback.StoredItem("same", "a.wav", "file:///a.wav", "A", "B", "C")
+        val ids = QueueItems.withUniqueIds(listOf(item, item, item.copy(id = "other"), item)).map { it.id }
+        assertEquals("same", ids[0])
+        assertEquals("other", ids[2])
+        assertEquals(4, ids.toSet().size)
+    }
+
     @Test
     fun playbackServicePlaysAQueuedFileWithLibraryMetadata() {
         val path = "Test Artist/Test Album/Long Tone [def456].wav"
