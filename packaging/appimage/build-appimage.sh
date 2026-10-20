@@ -46,13 +46,18 @@ trap 'rm -rf "$tools" "$(dirname "$appdir")"' EXIT
 linuxdeploy_tag=1-alpha-20251107-1
 plugin_appimage_tag=1-alpha-20250213-1
 plugin_gtk_commit=7a3fbc31a9e5075073ff8790f26effbac5f84453
+# The AppImage runtime (the AppImage's executable header); appimagetool would
+# otherwise download the moving "continuous" build at packaging time.
+runtime_tag=20251108
 case $arch in
     x86_64)
         linuxdeploy_sha=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
-        plugin_appimage_sha=992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3 ;;
+        plugin_appimage_sha=992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3
+        runtime_sha=2fca8b443c92510f1483a883f60061ad09b46b978b2631c807cd873a47ec260d ;;
     aarch64)
         linuxdeploy_sha=620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
-        plugin_appimage_sha=83c292149274965a865dcd44c135cfca8ba28c6b7de3eb628d4b8b5f248af17c ;;
+        plugin_appimage_sha=83c292149274965a865dcd44c135cfca8ba28c6b7de3eb628d4b8b5f248af17c
+        runtime_sha=00cbdfcf917cc6c0ff6d3347d59e0ca1f7f45a6df1a428a0d6d8a78664d87444 ;;
     *) echo "build-appimage.sh: unsupported architecture $arch" >&2; exit 1 ;;
 esac
 plugin_gtk_sha=b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171
@@ -67,6 +72,9 @@ fetch linuxdeploy-plugin-appimage "$plugin_appimage_sha" \
     "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/$plugin_appimage_tag/linuxdeploy-plugin-appimage-$arch.AppImage"
 fetch linuxdeploy-plugin-gtk.sh "$plugin_gtk_sha" \
     "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/$plugin_gtk_commit/linuxdeploy-plugin-gtk.sh"
+fetch runtime "$runtime_sha" \
+    "https://github.com/AppImage/type2-runtime/releases/download/$runtime_tag/runtime-$arch"
+export LDAI_RUNTIME_FILE="$tools/runtime"
 export PATH=$tools:$PATH
 # CI runners and containers have no FUSE.
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -145,15 +153,16 @@ EOF
 
 ## AppImage tooling
 
-The AppImage runtime (MIT) and the GTK start-up hook come from these tools,
-used as downloaded for this build:
+The AppImage runtime and the GTK start-up hook come from these tools (MIT
+licence), used as downloaded for this build:
 
 EOF
-    for tool in linuxdeploy linuxdeploy-plugin-appimage linuxdeploy-plugin-gtk.sh; do
+    for tool in runtime linuxdeploy linuxdeploy-plugin-appimage linuxdeploy-plugin-gtk.sh; do
         echo "- $tool, SHA-256 $(sha256sum "$tools/$tool" | cut -d' ' -f1)"
     done
     echo "  (https://github.com/linuxdeploy: linuxdeploy $linuxdeploy_tag, linuxdeploy-plugin-appimage"
-    echo "  $plugin_appimage_tag, linuxdeploy-plugin-gtk commit $plugin_gtk_commit; MIT licence)"
+    echo "  $plugin_appimage_tag, linuxdeploy-plugin-gtk commit $plugin_gtk_commit;"
+    echo "  https://github.com/AppImage/type2-runtime release $runtime_tag)"
 } >>"$appdir/sources.tmp"
 install -Dm644 "$appdir/sources.tmp" "$sources"
 rm "$appdir/sources.tmp"
