@@ -523,7 +523,15 @@ fn finish(job: &mut Job, r: SourceResult) {
                     "[{id}] added {} track(s) to playlist {name:?}",
                     s.tracks.len()
                 ),
-                Err(e) => notes.push(format!("Could not update playlist “{name}”: {e}")),
+                Err(e) => {
+                    // Too large (contract: "Playlists"): the playlist is
+                    // left unchanged and the warning says so.
+                    let warning = format!("Could not update playlist “{name}”: {e}");
+                    if playlist::is_too_large(&e) {
+                        s.warnings.push(warning.clone());
+                    }
+                    notes.push(warning);
+                }
             }
         } else if job.req.playlist_from_source && job.req.playlist.is_none() {
             notes.push(
@@ -750,7 +758,7 @@ pub mod tests {
         let order: Vec<_> = liked
             .entries
             .iter()
-            .map(|e| e.track.clone().unwrap())
+            .map(|e| e.track().unwrap().to_owned())
             .collect();
         assert_eq!(
             order,
@@ -806,6 +814,30 @@ pub mod tests {
                 .unwrap()
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    /// A playlist over the contract's limits is not appended to, and the
+    /// error says why.
+    #[test]
+    fn too_large_playlists_are_left_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Playlists")).unwrap();
+        let text = format!(
+            "#EXTM3U\n{}",
+            "../a.mp3\n".repeat(playlist::MAX_ENTRIES + 1)
+        );
+        fs::write(root.join("Playlists/Big.m3u8"), &text).unwrap();
+        let err = add_to_playlist(root, "Big", &["b.mp3".to_owned()]).unwrap_err();
+        assert!(playlist::is_too_large(&err));
+        assert!(
+            err.to_string()
+                .contains("too large (more than 250,000 entries)")
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("Playlists/Big.m3u8")).unwrap(),
+            text
         );
     }
 }
