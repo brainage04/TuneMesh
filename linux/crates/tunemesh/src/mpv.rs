@@ -46,6 +46,28 @@ const FORMAT_STRING: c_int = 1;
 const FORMAT_FLAG: c_int = 3;
 const FORMAT_INT64: c_int = 4;
 const FORMAT_DOUBLE: c_int = 5;
+const FORMAT_NODE_MAP: c_int = 8;
+
+/// `mpv_node` from mpv/client.h (only the string and map forms are built).
+#[repr(C)]
+struct Node {
+    u: NodeValue,
+    format: c_int,
+}
+
+#[repr(C)]
+union NodeValue {
+    string: *const c_char,
+    list: *mut NodeList,
+    int64: i64,
+}
+
+#[repr(C)]
+struct NodeList {
+    num: c_int,
+    values: *mut Node,
+    keys: *mut *const c_char,
+}
 
 const EVENT_SHUTDOWN: c_int = 1;
 const EVENT_START_FILE: c_int = 6;
@@ -64,6 +86,8 @@ unsafe extern "C" {
         data: *const c_char,
     ) -> c_int;
     fn mpv_command(ctx: *mut MpvHandle, args: *mut *const c_char) -> c_int;
+    fn mpv_command_node(ctx: *mut MpvHandle, args: *mut Node, result: *mut Node) -> c_int;
+    fn mpv_free_node_contents(node: *mut Node);
     fn mpv_set_property(
         ctx: *mut MpvHandle,
         name: *const c_char,
@@ -248,6 +272,62 @@ impl Mpv {
         }
     }
 
+    /// Runs a command given by named arguments (`{"name": .., key: value}`).
+    /// Named arguments keep working when mpv inserts positional ones: mpv
+    /// 0.38 added `index` before `options` in `loadfile`, so the positional
+    /// form that works there fails on 0.37 (Ubuntu 24.04).
+    pub fn command_named(&self, name: &str, args: &[(&str, &str)]) -> Result<(), String> {
+        let owned: Vec<(CString, CString)> = std::iter::once(("name", name))
+            .chain(args.iter().copied())
+            .map(|(k, v)| (cstr(k), cstr(v)))
+            .collect();
+        let mut keys: Vec<*const c_char> = owned.iter().map(|(k, _)| k.as_ptr()).collect();
+        let mut values: Vec<Node> = owned
+            .iter()
+            .map(|(_, v)| Node {
+                u: NodeValue { string: v.as_ptr() },
+                format: FORMAT_STRING,
+            })
+            .collect();
+        let mut list = NodeList {
+            num: values.len() as c_int,
+            values: values.as_mut_ptr(),
+            keys: keys.as_mut_ptr(),
+        };
+        let mut arg = Node {
+            u: NodeValue { list: &mut list },
+            format: FORMAT_NODE_MAP,
+        };
+        let mut result = Node {
+            u: NodeValue { int64: 0 },
+            format: 0,
+        };
+        // SAFETY: the map and its strings outlive the call; mpv only reads
+        // `arg` and fills `result`, which is freed with mpv's own function.
+        let rc = unsafe {
+            let rc = mpv_command_node(self.handle, &mut arg, &mut result);
+            if rc >= 0 {
+                mpv_free_node_contents(&mut result);
+            }
+            rc
+        };
+        if rc < 0 {
+            let shown: Vec<String> = args.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            Err(format!("{name} {}: {}", shown.join(" "), error_string(rc)))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// `loadfile` with `flags` (`replace`, `append`, ...) and optional
+    /// per-file options, compatible with libmpv 0.37 and newer.
+    pub fn loadfile(&self, url: &str, flags: &str, options: Option<&str>) -> Result<(), String> {
+        match options {
+            Some(o) => self.command_named("loadfile", &[("url", url), ("flags", flags), ("options", o)]),
+            None => self.command_named("loadfile", &[("url", url), ("flags", flags)]),
+        }
+    }
+
     pub fn set_flag(&self, name: &str, value: bool) {
         let name = cstr(name);
         let mut v: c_int = value.into();
@@ -408,7 +488,7 @@ mod tests {
             .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
             .collect();
         let mpv = Mpv::create(&base, required).unwrap();
-        mpv.command(&["loadfile", file.to_str().unwrap()]).unwrap();
+        mpv.loadfile(file.to_str().unwrap(), "replace", None).unwrap();
         let start = Instant::now();
         let mut connected = false;
         while start.elapsed() < Duration::from_secs(4) {
@@ -486,7 +566,7 @@ mod tests {
             ])
             .collect();
         let mpv = Mpv::create(&base_opts, LOCAL_ONLY).unwrap();
-        mpv.command(&["loadfile", &track.mpv_path]).unwrap();
+        mpv.loadfile(&track.mpv_path, "replace", None).unwrap();
         let start = Instant::now();
         let mut duration = None;
         while start.elapsed() < Duration::from_secs(4) && duration.is_none() {
@@ -524,9 +604,8 @@ mod tests {
             .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
             .collect();
         let mpv = Mpv::create(&base, LOCAL_ONLY).unwrap();
-        mpv.command(&["loadfile", &first.mpv_path]).unwrap();
-        mpv.command(&["loadfile", &next.mpv_path, "append"])
-            .unwrap();
+        mpv.loadfile(&first.mpv_path, "replace", None).unwrap();
+        mpv.loadfile(&next.mpv_path, "append", None).unwrap();
         let start = Instant::now();
         let mut reached = None;
         while start.elapsed() < Duration::from_secs(6) {
@@ -543,5 +622,55 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         let d = reached.expect("playback did not continue after the first track");
         assert!((d - 2.0).abs() < 0.1, "played a {d} s file, not c (2 s)");
+    }
+
+    /// The app's exact load call: replace with a start time, then append the
+    /// next track. Run against libmpv 0.37 (Ubuntu 24.04) and newer.
+    #[test]
+    fn loadfile_replace_with_start_and_append_play() {
+        let root = std::env::temp_dir().join(format!("tunemesh-load-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.wav"), wav(3)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(2)).unwrap();
+        let a = crate::player::open_track(&root, "a.wav").unwrap();
+        let b = crate::player::open_track(&root, "b.wav").unwrap();
+        let base: Vec<_> = BASE_OPTIONS
+            .iter()
+            .copied()
+            .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
+            .collect();
+        let mpv = Mpv::create(&base, LOCAL_ONLY).unwrap();
+        mpv.loadfile(&a.mpv_path, "replace", Some("start=1.500")).unwrap();
+        mpv.loadfile(&b.mpv_path, "append", None).unwrap();
+        let start = Instant::now();
+        let mut first_pos = None;
+        let mut reached_b = false;
+        while start.elapsed() < Duration::from_secs(8) {
+            if first_pos.is_none()
+                && mpv.get_i64("playlist-pos") == Some(0)
+                && let Some(t) = mpv.get_f64("time-pos")
+            {
+                first_pos = Some(t);
+            }
+            if mpv.get_i64("playlist-pos") == Some(1) && mpv.get_f64("time-pos").is_some_and(|t| t > 0.2) {
+                reached_b = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        mpv.quit();
+        drop((a, b));
+        std::fs::remove_dir_all(&root).unwrap();
+        let t = first_pos.expect("the first track never started");
+        assert!((1.4..2.5).contains(&t), "started at {t} s, not at 1.5 s");
+        assert!(reached_b, "playback did not continue into the appended track");
+    }
+
+    #[test]
+    fn a_failing_named_command_reports_the_error() {
+        let mpv = Mpv::create(BASE_OPTIONS, LOCAL_ONLY).unwrap();
+        let e = mpv.command_named("loadfile", &[("url", "/x"), ("flags", "no-such-flag")]);
+        mpv.quit();
+        assert!(e.is_err());
     }
 }

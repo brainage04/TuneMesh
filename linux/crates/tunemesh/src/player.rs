@@ -424,7 +424,7 @@ impl Player {
             ]);
             return;
         };
-        if let Err(e) = mpv.command(&["loadfile", &track.mpv_path, "replace", "-1", &start_opt]) {
+        if let Err(e) = mpv.loadfile(&track.mpv_path, "replace", Some(&start_opt)) {
             eprintln!("tunemesh: {e}");
         }
         self.files.borrow_mut().current = Some(track.into_file());
@@ -465,10 +465,8 @@ impl Player {
         let Some((index, path, track)) = first_playable(&self.root.borrow(), candidates) else {
             return;
         };
-        if mpv
-            .command(&["loadfile", &track.mpv_path, "append"])
-            .is_err()
-        {
+        if let Err(e) = mpv.loadfile(&track.mpv_path, "append", None) {
+            eprintln!("tunemesh: {e}");
             return;
         }
         self.files.borrow_mut().next = Some(track.into_file());
