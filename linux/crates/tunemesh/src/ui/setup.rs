@@ -506,9 +506,9 @@ impl Setup {
                         "Adding the folder to Syncthing…",
                         move || {
                             let c = Client::new(ep2.clone());
-                            let r = syncthing::ensure_stignore(&root)
+                            let r = tunemesh_core::stignore::ensure(&root)
                                 .map_err(|e| format!("Could not write .stignore: {e}"))
-                                .and_then(|()| {
+                                .and_then(|_| {
                                     c.create_folder(&root, &id).map_err(|e| e.to_string())
                                 });
                             (r, syncthing::probe(Some(ep2)))

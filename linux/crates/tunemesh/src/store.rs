@@ -84,6 +84,15 @@ impl Store {
     /// Loads the cache and playlists for the current root, then watches and rescans.
     fn open(&self) {
         let root = self.root();
+        // Syncthing must never sync TuneMesh's temporary files; add the
+        // contract's rules to the library's .stignore (never through a
+        // symlink, keeping the user's own rules). A missing folder is left
+        // alone.
+        if root.is_dir()
+            && let Err(e) = tunemesh_core::stignore::ensure(&root)
+        {
+            eprintln!("tunemesh: cannot update {}/.stignore: {e}", root.display());
+        }
         let cached = fs::read(cache_file())
             .ok()
             .and_then(|b| serde_json::from_slice::<Cache>(&b).ok())
@@ -527,6 +536,42 @@ mod tests {
             !root.join("Artist").exists(),
             "the real track and its empty folders are gone"
         );
+        fs::remove_dir_all(&base).unwrap();
+    }
+
+    #[test]
+    fn opening_a_library_adds_missing_stignore_rules() {
+        let ctx = glib::MainContext::default();
+        let _owner = ctx.acquire().expect("main context");
+        let base =
+            std::env::temp_dir().join(format!("tunemesh-stignore-test-{}", std::process::id()));
+        let (lib, other) = (base.join("lib"), base.join("other"));
+        fs::create_dir_all(&lib).unwrap();
+        fs::create_dir_all(&other).unwrap();
+        fs::write(lib.join(".stignore"), "// mine\n*.tmp\n").unwrap();
+        let store = Store::new(lib.clone());
+        let text = fs::read_to_string(lib.join(".stignore")).unwrap();
+        assert!(
+            text.starts_with("// mine\n*.tmp\n"),
+            "user rules kept: {text:?}"
+        );
+        assert!(
+            text.lines().any(|l| l.trim() == "(?d).~tunemesh-*"),
+            "{text:?}"
+        );
+
+        // A symlinked .stignore is neither followed nor replaced.
+        fs::write(other.join("target"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(other.join("target"), other.join(".stignore")).unwrap();
+        store.set_root(other.clone());
+        assert_eq!(fs::read_to_string(other.join("target")).unwrap(), "keep\n");
+        assert!(
+            fs::symlink_metadata(other.join(".stignore"))
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        drop(store);
         fs::remove_dir_all(&base).unwrap();
     }
 }

@@ -444,16 +444,6 @@ pub fn probe(manual: Option<Endpoint>) -> Probe {
     }
 }
 
-/// Writes `<root>/.stignore` with the TuneMesh rules when it is missing
-/// (contract: "`.stignore`").
-pub fn ensure_stignore(root: &Path) -> std::io::Result<()> {
-    let path = root.join(".stignore");
-    if std::fs::symlink_metadata(&path).is_ok() {
-        return Ok(());
-    }
-    tunemesh_core::atomic::write(&path, b"// TuneMesh\n(?d).~tunemesh-*\n")
-}
-
 /// Install hints, the user's distribution first (from `/etc/os-release`).
 pub fn install_hints() -> Vec<(&'static str, &'static str)> {
     let hints = [
