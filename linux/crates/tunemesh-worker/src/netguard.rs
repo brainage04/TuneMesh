@@ -62,8 +62,67 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
-/// Addresses assigned to this host's network interfaces (any scope).
-pub fn own_addresses() -> Vec<IpAddr> {
+/// A network of this host: an interface address and its on-link prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Net {
+    pub addr: IpAddr,
+    pub prefix: u8,
+}
+
+/// Prefixes shorter than these are treated as the single address: an
+/// interface configured with a huge or default-route netmask (some VPNs)
+/// must not make the whole internet "local".
+const MIN_PREFIX_V4: u8 = 8;
+const MIN_PREFIX_V6: u8 = 32;
+
+impl Net {
+    /// Just this one address.
+    #[cfg(test)]
+    pub fn host(addr: IpAddr) -> Self {
+        let addr = canonical(addr);
+        let prefix = if addr.is_ipv4() { 32 } else { 128 };
+        Self { addr, prefix }
+    }
+
+    fn new(addr: IpAddr, prefix: u8) -> Self {
+        let addr = canonical(addr);
+        let (min, max) = if addr.is_ipv4() {
+            (MIN_PREFIX_V4, 32)
+        } else {
+            (MIN_PREFIX_V6, 128)
+        };
+        let prefix = if prefix < min { max } else { prefix.min(max) };
+        Self { addr, prefix }
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        match (self.addr, canonical(ip)) {
+            (IpAddr::V4(net), IpAddr::V4(ip)) => {
+                let mask = u32::MAX
+                    .checked_shl(32 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u32::from(net) & mask == u32::from(ip) & mask
+            }
+            (IpAddr::V6(net), IpAddr::V6(ip)) => {
+                let mask = u128::MAX
+                    .checked_shl(128 - u32::from(self.prefix))
+                    .unwrap_or(0);
+                u128::from(net) & mask == u128::from(ip) & mask
+            }
+            _ => false,
+        }
+    }
+}
+
+fn prefix_len(bytes: &[u8]) -> u8 {
+    bytes.iter().map(|b| b.count_ones() as u8).sum()
+}
+
+/// The addresses and on-link prefixes of this host's network interfaces
+/// (any scope). Neighbours on these networks may have globally routable
+/// addresses (a home router's or NAS's IPv6 address) that a firewall hides
+/// from the internet but not from this host.
+pub fn own_networks() -> Vec<Net> {
     let mut out = Vec::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills `head` with a list we only read and then free.
@@ -74,17 +133,30 @@ pub fn own_addresses() -> Vec<IpAddr> {
         let mut cur = head;
         while !cur.is_null() {
             let addr = (*cur).ifa_addr;
+            let mask = (*cur).ifa_netmask;
             if !addr.is_null() {
                 match i32::from((*addr).sa_family) {
                     libc::AF_INET => {
                         let sin = &*(addr as *const libc::sockaddr_in);
-                        out.push(IpAddr::V4(Ipv4Addr::from(u32::from_be(
-                            sin.sin_addr.s_addr,
-                        ))));
+                        let ip = IpAddr::V4(Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)));
+                        let prefix = if mask.is_null() {
+                            32
+                        } else {
+                            let m = &*(mask as *const libc::sockaddr_in);
+                            prefix_len(&m.sin_addr.s_addr.to_ne_bytes())
+                        };
+                        out.push(Net::new(ip, prefix));
                     }
                     libc::AF_INET6 => {
                         let sin6 = &*(addr as *const libc::sockaddr_in6);
-                        out.push(IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr)));
+                        let ip = IpAddr::V6(Ipv6Addr::from(sin6.sin6_addr.s6_addr));
+                        let prefix = if mask.is_null() {
+                            128
+                        } else {
+                            let m = &*(mask as *const libc::sockaddr_in6);
+                            prefix_len(&m.sin6_addr.s6_addr)
+                        };
+                        out.push(Net::new(ip, prefix));
                     }
                     _ => {}
                 }
@@ -104,27 +176,34 @@ fn canonical(ip: IpAddr) -> IpAddr {
     }
 }
 
-/// Why `ip` may not be reached, if it may not.
-pub fn refusal(ip: IpAddr, own: &[IpAddr]) -> Option<&'static str> {
+/// Why `ip` may not be reached, if it may not (for the local log only).
+pub fn refusal(ip: IpAddr, own: &[Net]) -> Option<&'static str> {
     if !is_public(ip) {
-        Some("it is a local or private network address")
-    } else if own.iter().any(|o| canonical(*o) == canonical(ip)) {
-        Some("it is this computer's own address")
+        Some("a local or private network address")
+    } else if own.iter().any(|n| n.contains(ip)) {
+        Some("on one of this computer's own networks")
     } else {
         None
     }
 }
 
+/// The message requests see for every refused or unresolvable host. It is
+/// the same in each case and names no address: status files sync to every
+/// device, and must not tell them what internal names resolve to.
+fn refused_message(host: &str) -> String {
+    format!("Refusing {host}: it does not resolve to a public internet address")
+}
+
 /// Resolves `host` once and returns its addresses if every one of them may
 /// be reached. Callers connect to these addresses, never to the name again.
 pub fn resolve_checked(host: &str, port: u16) -> Result<Vec<SocketAddr>, String> {
-    resolve_checked_with(host, port, &own_addresses(), system_resolve)
+    resolve_checked_with(host, port, &own_networks(), system_resolve)
 }
 
 pub fn resolve_checked_with(
     host: &str,
     port: u16,
-    own: &[IpAddr],
+    own: &[Net],
     resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>,
 ) -> Result<Vec<SocketAddr>, String> {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
@@ -132,21 +211,27 @@ pub fn resolve_checked_with(
         .strip_prefix('[')
         .and_then(|h| h.strip_suffix(']'))
         .unwrap_or(&host);
+    if host.is_empty() {
+        return Err("Empty host name".to_owned());
+    }
     let addresses = match literal.parse::<IpAddr>() {
         Ok(ip) => vec![ip],
-        Err(_) => {
-            if host.is_empty() {
-                return Err("Empty host name".to_owned());
+        Err(_) => match resolve(&host, port) {
+            Ok(a) => a,
+            Err(e) => {
+                crate::log!("netguard: could not resolve {host}: {e}");
+                return Err(refused_message(&host));
             }
-            resolve(&host, port).map_err(|e| format!("Could not resolve {host}: {e}"))?
-        }
+        },
     };
     if addresses.is_empty() {
-        return Err(format!("Could not resolve {host}"));
+        crate::log!("netguard: {host} has no addresses");
+        return Err(refused_message(&host));
     }
     for ip in &addresses {
         if let Some(why) = refusal(*ip, own) {
-            return Err(format!("Refusing {host}: {why} ({ip})"));
+            crate::log!("netguard: refusing {host}: {ip} is {why}");
+            return Err(refused_message(&host));
         }
     }
     Ok(addresses
@@ -189,12 +274,12 @@ fn system_resolve(host: &str, port: u16) -> io::Result<Vec<IpAddr>> {
 /// Refuses `url` unless it is an http(s) URL whose host resolves only to
 /// addresses that may be reached.
 pub fn check_url(url: &str) -> Result<(), String> {
-    check_url_with(url, &own_addresses(), system_resolve)
+    check_url_with(url, &own_networks(), system_resolve)
 }
 
 pub fn check_url_with(
     url: &str,
-    own: &[IpAddr],
+    own: &[Net],
     resolve: impl Fn(&str, u16) -> io::Result<Vec<IpAddr>>,
 ) -> Result<(), String> {
     let (host, port) = host_port(url).ok_or_else(|| format!("Not a web link: {url}"))?;
@@ -274,7 +359,7 @@ mod tests {
             }
         };
         // 11.22.33.44 stands in for a public address of this host.
-        let own = [ip("11.22.33.44"), ip("::1")];
+        let own = [Net::host(ip("11.22.33.44")), Net::host(ip("::1"))];
         assert!(check_url_with("https://www.youtube.com/watch?v=x", &own, resolve).is_ok());
         for refused in [
             "http://laptop.example.ts.net:8384/",
@@ -292,8 +377,62 @@ mod tests {
     }
 
     #[test]
-    fn lists_own_addresses() {
-        let own = own_addresses();
-        assert!(own.iter().any(|a| a.is_loopback()), "{own:?}");
+    fn lists_own_networks() {
+        let own = own_networks();
+        assert!(
+            own.iter().any(|n| n.addr.is_loopback() && n.prefix == 8),
+            "{own:?}"
+        );
+    }
+
+    /// Review item 1: a LAN neighbour's global IPv6 address (the router at
+    /// `<prefix>::1`, a NAS) is refused like the host's own address.
+    #[test]
+    fn refuses_neighbours_on_own_networks() {
+        let own = [
+            Net::new(ip("2a02:1234:5678:9a00::10"), 64),
+            Net::new(ip("11.22.33.44"), 24),
+            // A VPN interface with a default-route netmask counts as itself only.
+            Net::new(ip("12.0.0.5"), 0),
+        ];
+        let resolve = |host: &str, _: u16| -> io::Result<Vec<IpAddr>> {
+            match host {
+                "nas.example" => Ok(vec![ip("2a02:1234:5678:9a00:211:32ff:fe12:3456")]),
+                _ => Ok(vec![ip("142.250.70.78")]),
+            }
+        };
+        for refused in [
+            "http://[2a02:1234:5678:9a00::1]/",
+            "http://nas.example/",
+            "http://11.22.33.1/",
+            "http://[::ffff:11.22.33.200]/",
+            "http://12.0.0.5/",
+        ] {
+            assert!(check_url_with(refused, &own, resolve).is_err(), "{refused}");
+        }
+        for allowed in [
+            "http://[2a02:1234:5678:9a01::1]/",
+            "http://11.22.34.1/",
+            "http://12.0.0.6/",
+            "https://www.youtube.com/",
+        ] {
+            assert!(check_url_with(allowed, &own, resolve).is_ok(), "{allowed}");
+        }
+    }
+
+    /// Review item 11: the message (it ends up in synced status files) is
+    /// the same for private, own and unresolvable hosts and names no address.
+    #[test]
+    fn refusals_do_not_reveal_addresses() {
+        let resolve = |host: &str, _: u16| -> io::Result<Vec<IpAddr>> {
+            match host {
+                "nas.lan" => Ok(vec![ip("192.168.1.23")]),
+                _ => Err(io::Error::new(io::ErrorKind::NotFound, "no such host")),
+            }
+        };
+        let a = check_url_with("http://nas.lan/", &[], resolve).unwrap_err();
+        let b = check_url_with("http://nothing.lan/", &[], resolve).unwrap_err();
+        assert!(!a.contains("192.168"), "{a}");
+        assert_eq!(a.replace("nas.lan", "x"), b.replace("nothing.lan", "x"));
     }
 }
