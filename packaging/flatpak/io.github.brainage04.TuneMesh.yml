@@ -1,0 +1,141 @@
+# Flatpak manifest for TuneMesh. Build and install locally:
+#
+#   packaging/flatpak/update-cargo-sources.sh      # writes cargo-sources.json
+#   flatpak-builder --user --install --force-clean --install-deps-from=flathub \
+#       build packaging/flatpak/io.github.brainage04.TuneMesh.yml
+#
+# For Flathub, replace the `dir` source of the tunemesh module with the git
+# tag and commit of a release and commit the matching cargo-sources.json.
+id: io.github.brainage04.TuneMesh
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: tunemesh
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Playback through PulseAudio or PipeWire's pulse server.
+  - --socket=pulseaudio
+  # Downloads (yt-dlp, the worker's managed yt-dlp copy) and the local
+  # Syncthing GUI API.
+  - --share=network
+  # The app's default library folder, ~/Music/TuneMesh (not the localised XDG
+  # music folder: the app's default does not follow it either). Other folders:
+  # the folder picker (document portal) or
+  # `flatpak override --user --filesystem=<dir> io.github.brainage04.TuneMesh`.
+  - --filesystem=~/Music/TuneMesh:create
+  # Syncthing's config.xml, read for the GUI API key.
+  - --filesystem=~/.config/syncthing:ro
+  - --filesystem=~/.local/state/syncthing:ro
+  # Media keys and desktop media controls.
+  - --own-name=org.mpris.MediaPlayer2.tunemesh
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+  - /share/doc
+  # share/licenses is kept: flatpak-builder records every module's licence
+  # files there.
+  - '*.la'
+  - '*.a'
+modules:
+  - name: libass
+    config-opts:
+      - --disable-static
+    sources:
+      - type: archive
+        url: https://github.com/libass/libass/releases/download/0.17.5/libass-0.17.5.tar.xz
+        sha256: 2dca25c0e0c837ddf00b52011b3f82cac1e4ddd3ad018227806b0c2288864acc
+
+  - name: libplacebo
+    buildsystem: meson
+    config-opts:
+      - -Dvulkan=disabled
+      - -Dopengl=disabled
+      - -Dd3d11=disabled
+      - -Dshaderc=disabled
+      - -Dglslang=disabled
+      - -Ddemos=false
+      - -Dtests=false
+    sources:
+      - type: git
+        url: https://code.videolan.org/videolan/libplacebo.git
+        tag: v7.360.1
+        commit: cee9b076f2c63104ccfd497fa79c39a867293ec4
+
+  # libmpv for playback; the runtime's FFmpeg (with the codecs-extra
+  # extension Flatpak installs for it) decodes.
+  - name: mpv
+    buildsystem: meson
+    config-opts:
+      - -Dlibmpv=true
+      - -Dcplayer=false
+      - -Dlua=disabled
+      - -Djavascript=disabled
+      - -Dmanpage-build=disabled
+      - -Dhtml-build=disabled
+      - -Dpdf-build=disabled
+      - -Dlibarchive=disabled
+      - -Dvulkan=disabled
+    sources:
+      - type: archive
+        url: https://github.com/mpv-player/mpv/archive/refs/tags/v0.41.0.tar.gz
+        sha256: ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209
+
+  - name: tunemesh
+    buildsystem: simple
+    build-options:
+      append-path: /usr/lib/sdk/rust-stable/bin
+      env:
+        CARGO_HOME: /run/build/tunemesh/cargo
+        # libmpv from the mpv module above.
+        RUSTFLAGS: -L native=/app/lib
+    build-commands:
+      - cargo --offline fetch --manifest-path linux/Cargo.toml --verbose
+      - cargo --offline build --release --locked --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker
+      - packaging/linux/install.sh --prefix /app --bin-dir linux/target/release
+      # No systemd in the sandbox. Licences live under the app ID, one directory
+      # per module (flatpak-builder records each module's licence files there).
+      - rm -r /app/lib/systemd
+      - mkdir -p /app/share/licenses/io.github.brainage04.TuneMesh/tunemesh
+      - mv /app/share/licenses/tunemesh/* /app/share/licenses/io.github.brainage04.TuneMesh/tunemesh/
+      - rmdir /app/share/licenses/tunemesh
+      - packaging/flatpak/third-party-sources.sh > /app/share/licenses/io.github.brainage04.TuneMesh/THIRD-PARTY-SOURCES.md
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - .git
+          - android
+          - linux/target
+          - dist
+          - build
+          - .flatpak-builder
+          - result
+      - cargo-sources.json
+
+  # ffmpeg and ffprobe for yt-dlp (extracting audio, embedding covers). Only
+  # the two programs are installed, linked statically against their own
+  # FFmpeg libraries, so libmpv keeps using the runtime's.
+  - name: ffmpeg-cli
+    config-opts:
+      - --disable-shared
+      - --enable-static
+      - --disable-doc
+      - --disable-debug
+      - --disable-ffplay
+      # No hardware codecs: yt-dlp only remuxes audio and converts covers.
+      - --disable-autodetect
+      - --enable-gnutls
+      - --enable-zlib
+    no-make-install: true
+    post-install:
+      - install -Dm755 -t /app/bin ffmpeg ffprobe
+    sources:
+      - type: archive
+        url: https://ffmpeg.org/releases/ffmpeg-8.1.tar.xz
+        sha256: b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a

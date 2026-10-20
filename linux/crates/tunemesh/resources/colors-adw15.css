@@ -1,0 +1,17 @@
+/* Named colours for libadwaita 1.5 (@define-color); keep in sync with colors.css. */
+
+@define-color accent_bg_color #1ed760;
+@define-color accent_fg_color #000000;
+@define-color accent_color #1ed760;
+@define-color window_bg_color #000000;
+@define-color window_fg_color #ffffff;
+@define-color view_bg_color #121212;
+@define-color view_fg_color #ffffff;
+@define-color headerbar_bg_color #000000;
+@define-color headerbar_fg_color #ffffff;
+@define-color headerbar_shade_color transparent;
+@define-color popover_bg_color #282828;
+@define-color popover_fg_color #ffffff;
+@define-color dialog_bg_color #282828;
+@define-color card_bg_color #181818;
+@define-color sidebar_bg_color #121212;
