@@ -28,6 +28,25 @@ build() {
     # Licence notices of the libraries in the APK (also its assets/NOTICE.txt).
     cp "$repo/android/app/build/generated/notice/NOTICE.txt" "$dist/TuneMesh-$VERSION-android-NOTICE.txt"
     unzip -l "$unsigned" | grep -q ' assets/NOTICE.txt$'
+    check_version "$unsigned"
+}
+
+# The APK must carry the release version: versionName is VERSION (the
+# linux/Cargo.toml version) and versionCode is X*10000 + Y*100 + Z, as
+# android/app/build.gradle.kts derives them.
+check_version() {
+    sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?ANDROID_HOME is not set}}
+    aapt2=$(find -L "$sdk/build-tools" -mindepth 2 -maxdepth 2 -name aapt2 | sort -V | tail -n 1)
+    [ -x "$aapt2" ] || { echo "android-release: no aapt2 in $sdk/build-tools" >&2; exit 1; }
+    badging=$("$aapt2" dump badging "$1" | sed -n 1p)
+    code=$(echo "$VERSION" | awk -F. 'NF == 3 && $2 < 100 && $3 < 100 { print $1 * 10000 + $2 * 100 + $3 }')
+    case $badging in
+        *" versionCode='$code' versionName='$VERSION' "*) echo "APK version $VERSION ($code)" ;;
+        *)
+            echo "android-release: the APK's version does not match $VERSION (versionCode $code):" >&2
+            echo "  $badging" >&2
+            exit 1 ;;
+    esac
 }
 
 sign() {
