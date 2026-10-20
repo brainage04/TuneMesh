@@ -67,6 +67,9 @@ android {
         versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The hostile-library stress test (@Stress) runs only with -Pstress, then alone; see AGENTS.md.
+        val stress = "io.github.brainage04.tunemesh.Stress"
+        testInstrumentationRunnerArguments[if (providers.gradleProperty("stress").isPresent) "annotation" else "notAnnotation"] = stress
     }
 
     signingConfigs {
@@ -173,6 +176,7 @@ dependencies {
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.uiautomator)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     baselineProfile(project(":baselineprofile"))

@@ -90,6 +90,67 @@ class DeviceTest {
         cache.delete()
     }
 
+    /** "Limits": folders deeper than 64 levels are not scanned; tag fields are cut and artists limited. */
+    @Test
+    fun scannerFollowsTheFolderAndTagLimits() {
+        val level64 = (1..64).joinToString("/") { "d%02d".format(it) }
+        File(root, "$level64/ok.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deep", "A", "B", 1))
+        File(root, "$level64/d65/too deep.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deeper", "A", "B", 1))
+        // Android's ID3 reader returns only the first of NUL-separated values, so the limit is checked with `;`.
+        val artists = (1..40).joinToString("; ") { "Artist $it" }
+        File(root, "Huge/Tags/long tag.mp3").apply { parentFile!!.mkdirs() }
+            .writeBytes(HostileLibrary.mp3("t".repeat(5000), artists, "a".repeat(5000), 1))
+        // MediaMetadataRetriever itself drops a 1 MiB frame; either way nothing longer than the limit is kept.
+        File(root, "Huge/Tags/big tag.mp3").writeBytes(HostileLibrary.mp3("t".repeat(1024 * 1024), "A", "a".repeat(1024 * 1024), 1))
+        val cache = File(context.cacheDir, "test-tag-cache.json").apply { delete() }
+        val tracks = LibraryScanner(cache).scan(root).tracks.associateBy { it.path }
+        cache.delete()
+        assertEquals(setOf("$level64/ok.mp3", "Huge/Tags/long tag.mp3", "Huge/Tags/big tag.mp3"), tracks.keys)
+        val long = tracks.getValue("Huge/Tags/long tag.mp3")
+        assertEquals(1024, long.title.length)
+        assertEquals(1024, long.album.length)
+        assertEquals(32, long.artist.split('\u0000', ';').size)
+        val big = tracks.getValue("Huge/Tags/big tag.mp3")
+        assertTrue(big.title.length <= 1024 && big.album.length <= 1024)
+    }
+
+    /** "Limits": a cover over 16 MiB or 5,000 pixels a side is not shown; a normal one is. */
+    @Test
+    fun coversFollowTheLimits() {
+        val loader = io.github.brainage04.tunemesh.data.CoverLoader(File(context.cacheDir, "test-covers").apply { deleteRecursively() })
+        fun track(path: String, bytes: ByteArray): Track {
+            val file = File(root, path).apply { parentFile!!.mkdirs(); writeBytes(bytes) }
+            return Track.fromTags(path, io.github.brainage04.tunemesh.library.RawTags(), file.length(), file.lastModified())
+        }
+        val small = track("S/A/small.mp3", HostileLibrary.mp3("s", "S", "A", 1, picture = HostileLibrary.smallJpeg()))
+        assertNotNull(loader.diskFile(root, small))
+        // Within 16 MiB but stated as 20,000 px a side.
+        val wide = track("W/A/wide.mp3", HostileLibrary.mp3("w", "W", "A", 1, picture = HostileLibrary.hugeJpeg(64 * 1024)))
+        assertNull(loader.diskFile(root, wide))
+        // Over 16 MiB: the embedded picture and the folder cover.
+        val heavy = track("H/A/heavy.mp3", HostileLibrary.mp3("h", "H", "A", 1, picture = HostileLibrary.hugeJpeg(20_000_000)))
+        assertNull(loader.diskFile(root, heavy))
+        File(root, "F/A/cover.jpg").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.hugeJpeg(17 * 1024 * 1024))
+        assertNull(loader.diskFile(root, track("F/A/plain.mp3", HostileLibrary.mp3("p", "F", "A", 1))))
+        File(root, "G/A/cover.jpg").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.smallJpeg())
+        assertNotNull(loader.diskFile(root, track("G/A/plain.mp3", HostileLibrary.mp3("p", "G", "A", 1))))
+        File(context.cacheDir, "test-covers").deleteRecursively()
+    }
+
+    /** R2-opus-5: quick playlist changes run one after another, so none is lost. */
+    @Test
+    fun quickPlaylistChangesAreAllKept() {
+        val tracks = (1..12).map { Track.fromTags("Quick/Album/$it.mp3", io.github.brainage04.tunemesh.library.RawTags(), 1, 1) }
+        tracks.forEach { app.repository.setLiked(it, true) }
+        val store = io.github.brainage04.tunemesh.library.PlaylistStore(root) { null }
+        val end = System.currentTimeMillis() + 20_000
+        while (System.currentTimeMillis() < end && store.likedPaths().size < tracks.size) Thread.sleep(100)
+        Thread.sleep(500)
+        assertEquals(tracks.map { it.path }.toSet(), store.likedPaths())
+        // Liking inserts at the top: the order of the taps is kept.
+        assertEquals(tracks.reversed().map { it.path }, store.read(io.github.brainage04.tunemesh.library.LibraryFormat.LIKED_SONGS)!!.entries.map { it.path })
+    }
+
     /** Audit finding 7: `path` must not reach audio files outside the library. */
     @Test
     fun coverProviderServesLibraryTracksOnly() {
