@@ -26,6 +26,7 @@ fn dim(text: &str) -> gtk::Label {
         .label(text)
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .css_classes(["dim"])
         .build()
 }

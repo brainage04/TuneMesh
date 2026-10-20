@@ -16,6 +16,14 @@ use crate::player::{Change, Player};
 use crate::store::{Store, StoreChange};
 use crate::ui;
 
+/// Longest search text kept; longer input (typed, pasted or sent over
+/// D-Bus) is cut here.
+pub const MAX_SEARCH_CHARS: usize = 200;
+
+pub fn cap_search(text: &str) -> String {
+    text.chars().take(MAX_SEARCH_CHARS).collect()
+}
+
 pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,7 +49,7 @@ impl Route {
         let lib = app.store.library();
         Some(match kind {
             "home" => Route::Home,
-            "search" => Route::Search(arg.to_owned()),
+            "search" => Route::Search(cap_search(arg)),
             "albums" => Route::Albums,
             "artists" => Route::Artists,
             "playlists" => Route::Playlists,
@@ -115,6 +123,7 @@ impl App {
         window.add_css_class("tunemesh");
 
         let search_entry = gtk::SearchEntry::builder()
+            .max_width_chars(40)
             .placeholder_text("Search your library")
             .css_classes(["tm-search"])
             .build();
@@ -432,6 +441,7 @@ impl App {
     }
 
     fn on_search_text(&self, text: String) {
+        let text = cap_search(&text);
         if let Some(id) = self.search_timer.borrow_mut().take() {
             id.remove();
         }
@@ -575,6 +585,9 @@ impl App {
 
     pub fn toast(&self, text: &str) {
         let toast = adw::Toast::new(text);
+        // Toasts are markup by default; messages carry playlist names, paths
+        // and error text from synced files.
+        toast.set_use_markup(false);
         toast.set_timeout(3);
         self.toasts.add_toast(toast);
     }

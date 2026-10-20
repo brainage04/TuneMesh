@@ -52,6 +52,7 @@ pub fn status_label(app: &Rc<App>) -> gtk::Label {
     let l = gtk::Label::builder()
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .css_classes(["dim", "tm-downloader-status"])
         .build();
     apply_status(app, &l);
@@ -403,6 +404,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 .label(m)
                 .xalign(0.0)
                 .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
                 .selectable(true)
                 .css_classes(["tm-small"])
                 .build();
@@ -418,6 +420,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 .label(w)
                 .xalign(0.0)
                 .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
                 .selectable(true)
                 .css_classes(["tm-small", "tm-warning"])
                 .build();
@@ -434,6 +437,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                     .label(format!("{}: {}", f.item, f.error))
                     .xalign(0.0)
                     .wrap(true)
+                    .wrap_mode(gtk::pango::WrapMode::WordChar)
                     .selectable(true)
                     .css_classes(["tm-small", "dim"])
                     .build();
@@ -476,6 +480,7 @@ pub fn page(app: &Rc<App>) -> Page {
         .label("Paste YouTube, YouTube Music, SoundCloud, Bandcamp or Spotify links (songs, albums or playlists), one per line, or type what to search for. The downloader fetches them and the songs sync to all your devices.")
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .css_classes(["dim"])
         .build();
     card.append(&hint);

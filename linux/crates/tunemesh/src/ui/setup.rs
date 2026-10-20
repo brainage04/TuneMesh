@@ -63,6 +63,7 @@ fn body_text(text: &str) -> gtk::Label {
         .label(text)
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .build()
 }
 
@@ -78,6 +79,7 @@ fn command_row(text: &str) -> gtk::Label {
         .label(text)
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .selectable(true)
         .css_classes(["monospace"])
         .build()
@@ -133,6 +135,7 @@ fn heading(text: &str) -> gtk::Label {
         .label(text)
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .css_classes(["title-2"])
         .build()
 }
@@ -177,6 +180,8 @@ fn qr_texture(text: &str, scale: usize) -> Option<gdk::MemoryTexture> {
 impl Setup {
     fn toast(&self, text: &str) {
         let t = adw::Toast::new(text);
+        // Toasts are markup by default; messages carry server and file text.
+        t.set_use_markup(false);
         t.set_timeout(5);
         self.toasts.add_toast(t);
     }
@@ -403,8 +408,11 @@ impl Setup {
             Probe::NeedKey { reason, address } => {
                 let group = adw::PreferencesGroup::builder()
                     .title("Connect to Syncthing")
+                    // Group descriptions are Pango markup; `reason` may hold
+                    // text from the Syncthing server.
                     .description(format!(
-                        "{reason}. Open the Syncthing web interface (usually http://127.0.0.1:8384), go to Actions → Settings → General and copy the API key here."
+                        "{}. Open the Syncthing web interface (usually http://127.0.0.1:8384), go to Actions → Settings → General and copy the API key here.",
+                        glib::markup_escape_text(&reason)
                     ))
                     .build();
                 b.append(&group);
@@ -471,12 +479,14 @@ impl Setup {
             .title("Library folder")
             .description(format!(
                 "Connected to Syncthing {} at {}.",
-                o.version,
-                client.endpoint().base
+                glib::markup_escape_text(&o.version),
+                glib::markup_escape_text(&client.endpoint().base)
             ))
             .build();
+        // Rows show paths and names from Syncthing: plain text, not markup.
         let row = adw::ActionRow::builder()
             .title(format!("Folder ID “{}”", syncthing::FOLDER_ID))
+            .use_markup(false)
             .build();
         match &o.folder {
             None => {
@@ -600,6 +610,7 @@ impl Setup {
                 d.name.clone()
             };
             let r = adw::ActionRow::builder()
+                .use_markup(false)
                 .title(title)
                 .subtitle(&d.device_id)
                 .subtitle_selectable(true)

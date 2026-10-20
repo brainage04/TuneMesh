@@ -571,6 +571,7 @@ fn hero(app: &App, art: HeroArt, kind: &str, title: &str, meta: &gtk::Widget) ->
         .label(title)
         .xalign(0.0)
         .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
         .lines(2)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .css_classes(["tm-hero-title"])
