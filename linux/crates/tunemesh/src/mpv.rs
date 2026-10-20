@@ -323,7 +323,10 @@ impl Mpv {
     /// per-file options, compatible with libmpv 0.37 and newer.
     pub fn loadfile(&self, url: &str, flags: &str, options: Option<&str>) -> Result<(), String> {
         match options {
-            Some(o) => self.command_named("loadfile", &[("url", url), ("flags", flags), ("options", o)]),
+            Some(o) => self.command_named(
+                "loadfile",
+                &[("url", url), ("flags", flags), ("options", o)],
+            ),
             None => self.command_named("loadfile", &[("url", url), ("flags", flags)]),
         }
     }
@@ -488,7 +491,8 @@ mod tests {
             .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
             .collect();
         let mpv = Mpv::create(&base, required).unwrap();
-        mpv.loadfile(file.to_str().unwrap(), "replace", None).unwrap();
+        mpv.loadfile(file.to_str().unwrap(), "replace", None)
+            .unwrap();
         let start = Instant::now();
         let mut connected = false;
         while start.elapsed() < Duration::from_secs(4) {
@@ -640,7 +644,8 @@ mod tests {
             .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
             .collect();
         let mpv = Mpv::create(&base, LOCAL_ONLY).unwrap();
-        mpv.loadfile(&a.mpv_path, "replace", Some("start=1.500")).unwrap();
+        mpv.loadfile(&a.mpv_path, "replace", Some("start=1.500"))
+            .unwrap();
         mpv.loadfile(&b.mpv_path, "append", None).unwrap();
         let start = Instant::now();
         let mut first_pos = None;
@@ -652,7 +657,9 @@ mod tests {
             {
                 first_pos = Some(t);
             }
-            if mpv.get_i64("playlist-pos") == Some(1) && mpv.get_f64("time-pos").is_some_and(|t| t > 0.2) {
+            if mpv.get_i64("playlist-pos") == Some(1)
+                && mpv.get_f64("time-pos").is_some_and(|t| t > 0.2)
+            {
                 reached_b = true;
                 break;
             }
@@ -663,7 +670,10 @@ mod tests {
         std::fs::remove_dir_all(&root).unwrap();
         let t = first_pos.expect("the first track never started");
         assert!((1.4..2.5).contains(&t), "started at {t} s, not at 1.5 s");
-        assert!(reached_b, "playback did not continue into the appended track");
+        assert!(
+            reached_b,
+            "playback did not continue into the appended track"
+        );
     }
 
     #[test]

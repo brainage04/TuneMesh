@@ -338,7 +338,10 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                 let ctx = MenuCtx {
                     paths,
                     playlist: pl.clone().map(|name| {
-                        (name, targets.iter().filter_map(|&t| sh.entry_ref(t)).collect())
+                        (
+                            name,
+                            targets.iter().filter_map(|&t| sh.entry_ref(t)).collect(),
+                        )
                     }),
                     queue_index: None,
                 };
