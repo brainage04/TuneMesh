@@ -26,6 +26,23 @@ pub enum Kind {
     Other,
 }
 
+/// Raises the open-file soft limit to the hard limit (often 1024 against
+/// 524288), so library walks and the app's other files never compete for
+/// the last descriptors. Call once at startup; errors are ignored.
+pub fn raise_fd_limit() {
+    use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+    let limit = getrlimit(Resource::Nofile);
+    if limit.current != limit.maximum {
+        let _ = setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: limit.maximum,
+                maximum: limit.maximum,
+            },
+        );
+    }
+}
+
 impl Kind {
     fn from_type(t: FileType) -> Self {
         match t {

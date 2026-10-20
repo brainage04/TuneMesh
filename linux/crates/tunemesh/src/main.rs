@@ -36,6 +36,7 @@ fn main() -> glib::ExitCode {
     // measurable cost for an app this size.
     // SAFETY: called before any other thread exists.
     unsafe { libc::mallopt(libc::M_ARENA_MAX, 2) };
+    tunemesh_core::fsx::raise_fd_limit();
     let mut library = None;
     let mut setup = false;
     let mut args = std::env::args().skip(1);

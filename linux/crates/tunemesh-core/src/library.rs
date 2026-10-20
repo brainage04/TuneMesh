@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use std::rc::Rc;
 use std::time::UNIX_EPOCH;
 
 use lofty::prelude::*;
@@ -297,52 +296,82 @@ pub fn make_track(
     }
 }
 
+/// Deepest directory level the walk descends to (the root is level 0).
+/// Each level keeps one directory handle open, so the walk never holds more
+/// than `MAX_DEPTH + 1` descriptors.
+pub const MAX_DEPTH: usize = 64;
+
 /// Walks the library below `root` through directory handles: every
 /// subdirectory is opened with `O_NOFOLLOW` relative to its parent, so a
 /// directory swapped for a symlink while the walk runs is skipped, never
 /// followed. Hidden names, conflict copies, `Playlists/` and `.tunemesh/`
 /// are left out. `visit` gets each directory's handle, its root-relative
-/// path ("" for the root) and its regular files.
+/// path ("" for the root) and its regular files. Directories deeper than
+/// `MAX_DEPTH` are skipped with a log line.
 fn walk(root: &Path, mut visit: impl FnMut(&Dir, &str, Vec<String>)) {
+    struct Frame {
+        dir: Dir,
+        rel: String,
+        /// Subdirectory names not walked yet.
+        pending: Vec<String>,
+    }
+    // Reads `dir`, hands its files to `visit`, and returns its frame.
+    let mut enter = |dir: Dir, rel: String| -> Frame {
+        let mut files = Vec::new();
+        let mut pending = Vec::new();
+        for (name, kind) in dir.entries().unwrap_or_default() {
+            if is_ignored_name(&name) {
+                continue;
+            }
+            match kind {
+                Kind::Dir
+                    if !(rel.is_empty() && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) =>
+                {
+                    pending.push(name)
+                }
+                // Symlinks are never followed (docs/library-format.md).
+                Kind::File => files.push(name),
+                _ => {}
+            }
+        }
+        visit(&dir, &rel, files);
+        pending.reverse(); // popped in directory order
+        Frame { dir, rel, pending }
+    };
     let Ok(root_dir) = Dir::open(root) else {
         return;
     };
-    // Depth first; a parent stays open only while its children are pending.
-    let mut stack: Vec<(Rc<Dir>, String, String)> = Vec::new();
-    let mut current = Some((Rc::new(root_dir), String::new()));
+    // Depth first, keeping open only the directories on the current path.
+    let mut path = vec![enter(root_dir, String::new())];
+    let mut too_deep = 0usize;
     loop {
-        if let Some((dir, rel_dir)) = current.take() {
-            let Ok(entries) = dir.entries() else { continue };
-            let mut files = Vec::new();
-            for (name, kind) in entries {
-                if is_ignored_name(&name) {
-                    continue;
-                }
-                match kind {
-                    Kind::Dir
-                        if !(rel_dir.is_empty()
-                            && (name == PLAYLISTS_DIR || name == TUNEMESH_DIR)) =>
-                    {
-                        let rel = if rel_dir.is_empty() {
-                            name.clone()
-                        } else {
-                            format!("{rel_dir}/{name}")
-                        };
-                        stack.push((dir.clone(), name, rel));
-                    }
-                    // Symlinks are never followed (docs/library-format.md).
-                    Kind::File => files.push(name),
-                    _ => {}
-                }
-            }
-            visit(&dir, &rel_dir, files);
-        }
-        let Some((parent, name, rel)) = stack.pop() else {
-            break;
+        let depth = path.len();
+        let Some(top) = path.last_mut() else { break };
+        let Some(name) = top.pending.pop() else {
+            path.pop();
+            continue;
         };
-        if let Ok(child) = parent.child(&name) {
-            current = Some((Rc::new(child), rel));
+        let rel = if top.rel.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{name}", top.rel)
+        };
+        if depth > MAX_DEPTH {
+            if too_deep == 0 {
+                eprintln!(
+                    "tunemesh: not scanning {rel}: the library is read at most {MAX_DEPTH} directories deep"
+                );
+            }
+            too_deep += 1;
+            continue;
         }
+        if let Ok(child) = top.dir.child(&name) {
+            let frame = enter(child, rel);
+            path.push(frame);
+        }
+    }
+    if too_deep > 1 {
+        eprintln!("tunemesh: {too_deep} directories deeper than {MAX_DEPTH} levels were skipped");
     }
 }
 
@@ -885,6 +914,82 @@ mod tests {
         }
         stop.store(true, Ordering::Relaxed);
         assert!(swapper.join().unwrap() > 100);
+    }
+
+    /// A 1500-level tree with two branches, scanned with an open-file
+    /// limit of 64: the walk stops at `MAX_DEPTH` with a log line, holds at
+    /// most one descriptor per level, finds the shallow tracks, and leaves
+    /// descriptors for everything else. Runs in a child process because
+    /// the limit is per process.
+    #[test]
+    fn deep_trees_never_exhaust_descriptors() {
+        const CHILD: &str = "TUNEMESH_DEEP_TREE_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let out = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "library::tests::deep_trees_never_exhaust_descriptors",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "{stderr}{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(stderr.contains("directories deep"), "{stderr}");
+            return;
+        }
+        use rustix::process::{Resource, Rlimit, getrlimit, setrlimit};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Built through handles: whole paths would exceed PATH_MAX.
+        for branch in ["a", "b"] {
+            let mut d = Dir::open(root).unwrap();
+            for level in 0..1500 {
+                if level == 10 {
+                    d.write_atomic(&format!("{branch}.mp3"), b"x").unwrap();
+                }
+                d = d.sub(&format!("{branch}{level}"), true).unwrap();
+            }
+            d.write_atomic("deep.mp3", b"x").unwrap();
+        }
+        let limit = getrlimit(Resource::Nofile);
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: Some(MAX_DEPTH as u64 + 30),
+                maximum: limit.maximum,
+            },
+        )
+        .unwrap();
+        let tracks = scan(root, &HashMap::new());
+        let names: Vec<_> = tracks
+            .iter()
+            .map(|t| t.path.rsplit('/').next().unwrap())
+            .collect();
+        assert_eq!(names, ["a.mp3", "b.mp3"]);
+        assert_eq!(source_id_index(root).len(), 0);
+        // Descriptors are all back: another 20 files open fine.
+        let open: Vec<_> = (0..20)
+            .map(|_| std::fs::File::open(root).unwrap())
+            .collect();
+        assert_eq!(open.len(), 20);
+        // Removing the tree takes one descriptor per level.
+        drop(open);
+        setrlimit(
+            Resource::Nofile,
+            Rlimit {
+                current: limit.maximum,
+                maximum: limit.maximum,
+            },
+        )
+        .unwrap();
+        dir.close().unwrap();
     }
 
     #[test]
