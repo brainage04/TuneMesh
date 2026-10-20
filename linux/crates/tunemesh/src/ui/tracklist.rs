@@ -8,7 +8,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-use tunemesh_core::Playlist;
+use tunemesh_core::{Playlist, limits};
 
 use crate::app::App;
 use crate::covers::Source;
@@ -202,10 +202,10 @@ impl Shared {
         r.index.set_label(&(i + 1).to_string());
         match track {
             Some(t) => {
-                r.title.set_label(&t.title);
-                r.artist.set_label(&t.artist);
+                r.title.set_label(&limits::clip_line(&t.title));
+                r.artist.set_label(&limits::clip_line(&t.artist));
                 if let Some(a) = &r.album {
-                    a.set_label(&t.album);
+                    a.set_label(&limits::clip_line(&t.album));
                 }
                 r.duration
                     .set_label(&t.duration_secs().map(fmt_duration).unwrap_or_default());
@@ -238,7 +238,7 @@ impl Shared {
             }
             None => {
                 let label = self.entries.label(i);
-                r.title.set_label(&label);
+                r.title.set_label(&limits::clip_line(&label));
                 r.artist.set_label("Unavailable on this device");
                 if let Some(a) = &r.album {
                     a.set_label("");

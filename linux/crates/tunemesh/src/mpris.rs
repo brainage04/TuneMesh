@@ -22,6 +22,11 @@ fn track_id(path: &str) -> TrackId {
     .unwrap_or(TrackId::NO_TRACK)
 }
 
+/// Text for other apps (desktop shells show it): cut to the display limit.
+fn clip(s: &str) -> String {
+    tunemesh_core::limits::clip_line(s).into_owned()
+}
+
 fn metadata(app: &App) -> Metadata {
     let lib = app.store.library();
     let Some(path) = app.player.current_path() else {
@@ -30,15 +35,15 @@ fn metadata(app: &App) -> Metadata {
     let Some(t) = lib.track(&path) else {
         let mut m = Metadata::new();
         m.set_trackid(Some(track_id(&path)));
-        m.set_title(Some(path.rsplit('/').next().unwrap_or(&path).to_owned()));
+        m.set_title(Some(clip(path.rsplit('/').next().unwrap_or(&path))));
         return m;
     };
     let root = app.store.root();
     let mut b = Metadata::builder()
         .trackid(track_id(&path))
-        .title(t.title.clone())
-        .artist([t.artist.clone()])
-        .album(t.album.clone())
+        .title(clip(&t.title))
+        .artist([clip(&t.artist)])
+        .album(clip(&t.album))
         .length(Time::from_millis(t.duration_ms as i64))
         .url(
             glib::filename_to_uri(root.join(&t.path), None)
@@ -46,7 +51,7 @@ fn metadata(app: &App) -> Metadata {
                 .unwrap_or_default(),
         );
     if let Some(aa) = &t.album_artist {
-        b = b.album_artist([aa.clone()]);
+        b = b.album_artist([clip(aa)]);
     }
     if let Some(n) = t.track_number {
         b = b.track_number(n as i32);

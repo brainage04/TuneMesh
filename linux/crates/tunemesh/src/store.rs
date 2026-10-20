@@ -461,13 +461,9 @@ impl Store {
         // Re-read first so likes made on other devices are not overwritten.
         let mut liked = Playlist::read(&self.root(), LIKED_SONGS)?;
         if like {
-            for p in paths.iter().rev() {
-                liked.like(p);
-            }
+            liked.like_all(paths.iter().map(String::as_str));
         } else {
-            for p in paths {
-                liked.unlike(p);
-            }
+            liked.unlike_all(paths.iter().map(String::as_str));
         }
         self.write_playlist(&liked)?;
         self.set_liked(liked);
@@ -779,22 +775,39 @@ pub fn entry_key(e: &tunemesh_core::playlist::PlaylistEntry) -> &str {
 /// it still holds the same entry, else the first unclaimed entry with that
 /// identity. Fails when one is gone, so nothing wrong is changed.
 fn locate(p: &Playlist, refs: &[EntryRef]) -> io::Result<Vec<usize>> {
+    let changed = || {
+        io::Error::other("The playlist changed on another device. Nothing was changed; try again.")
+    };
     let mut found: Vec<usize> = Vec::with_capacity(refs.len());
+    let mut taken: HashSet<usize> = HashSet::with_capacity(refs.len());
+    // Positions of each identity, built once, only when an entry moved.
+    let mut by_key: Option<HashMap<&str, std::collections::VecDeque<usize>>> = None;
     for (pos, key) in refs {
-        let same = |i: usize| p.entries.get(i).is_some_and(|e| entry_key(e) == key);
-        let at = if same(*pos) && !found.contains(pos) {
+        let in_place = p.entries.get(*pos).is_some_and(|e| entry_key(e) == key);
+        let at = if in_place && !taken.contains(pos) {
             Some(*pos)
         } else {
-            (0..p.entries.len()).find(|&i| !found.contains(&i) && same(i))
+            let index = by_key.get_or_insert_with(|| {
+                let mut m: HashMap<&str, std::collections::VecDeque<usize>> = HashMap::new();
+                for (i, e) in p.entries.iter().enumerate() {
+                    m.entry(entry_key(e)).or_default().push_back(i);
+                }
+                m
+            });
+            index.get_mut(key.as_str()).and_then(|q| {
+                while let Some(&i) = q.front() {
+                    if taken.contains(&i) {
+                        q.pop_front();
+                    } else {
+                        return Some(i);
+                    }
+                }
+                None
+            })
         };
-        match at {
-            Some(i) => found.push(i),
-            None => {
-                return Err(io::Error::other(
-                    "The playlist changed on another device. Nothing was changed; try again.",
-                ));
-            }
-        }
+        let i = at.ok_or_else(changed)?;
+        taken.insert(i);
+        found.push(i);
     }
     Ok(found)
 }
@@ -1140,5 +1153,29 @@ mod tests {
             drop(store);
             fs::remove_dir_all(&base).unwrap();
         });
+    }
+
+    #[test]
+    fn locating_many_moved_entries_is_linear() {
+        use tunemesh_core::playlist::PlaylistEntry;
+        let n = 100_000;
+        let names: Vec<String> = (0..n).map(|i| format!("A/{i}.opus")).collect();
+        // Shown in this order; the file now has every entry one place later.
+        let mut entries: Vec<PlaylistEntry> = vec![PlaylistEntry::for_track("A/new.opus")];
+        entries.extend(names.iter().map(|t| PlaylistEntry::for_track(t)));
+        let p = Playlist {
+            name: "P".into(),
+            entries,
+        };
+        let refs: Vec<EntryRef> = names.iter().cloned().enumerate().collect();
+        let start = std::time::Instant::now();
+        let found = locate(&p, &refs).unwrap();
+        assert!(
+            start.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            start.elapsed()
+        );
+        assert_eq!(found[0], 1);
+        assert_eq!(found[n - 1], n);
     }
 }

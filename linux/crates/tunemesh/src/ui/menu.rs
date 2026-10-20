@@ -73,7 +73,7 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
             // Menu labels treat `_` as a mnemonic marker; double it so a
             // name like "lo_fi" shows as written.
             lists.append(
-                Some(&name.replace('_', "__")),
+                Some(&tunemesh_core::limits::clip_line(&name).replace('_', "__")),
                 Some(&format!("tm.{action_name}")),
             );
             let (a, p) = (app.clone(), paths.clone());

@@ -584,7 +584,7 @@ impl App {
     }
 
     pub fn toast(&self, text: &str) {
-        let toast = adw::Toast::new(text);
+        let toast = adw::Toast::new(&tunemesh_core::limits::clip_line(text));
         // Toasts are markup by default; messages carry playlist names, paths
         // and error text from synced files.
         toast.set_use_markup(false);

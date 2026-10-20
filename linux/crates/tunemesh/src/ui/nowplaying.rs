@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
+use tunemesh_core::limits;
 
 use crate::app::{App, Route};
 use crate::covers::Source;
@@ -286,8 +287,8 @@ impl NowPlaying {
         self.heart.set_visible(track.is_some());
         match track {
             Some(t) => {
-                self.title.set_label(&t.title);
-                self.artist.set_label(&t.artist);
+                self.title.set_label(&limits::clip_line(&t.title));
+                self.artist.set_label(&limits::clip_line(&t.artist));
                 app.covers.apply(&self.cover, Source::for_track(t), 56);
                 let liked = app.store.is_liked(&t.path);
                 self.heart.set_icon_name(if liked {
@@ -305,8 +306,10 @@ impl NowPlaying {
                 } else {
                     self.heart.remove_css_class("liked")
                 }
-                app.window
-                    .set_title(Some(&format!("{} • {}", t.title, t.artist)));
+                app.window.set_title(Some(&limits::clip_line(&format!(
+                    "{} • {}",
+                    t.title, t.artist
+                ))));
             }
             None => {
                 self.title.set_label(

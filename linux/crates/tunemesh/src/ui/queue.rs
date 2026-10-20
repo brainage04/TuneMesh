@@ -6,6 +6,7 @@ use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
+use tunemesh_core::limits;
 
 use crate::app::App;
 use crate::covers::Source;
@@ -197,7 +198,7 @@ impl QueuePanel {
             };
             match &*item.borrow::<QItem>() {
                 QItem::Heading(text) => {
-                    q.heading.set_label(text);
+                    q.heading.set_label(&limits::clip_line(text));
                     q.heading.set_visible(true);
                     q.row.set_visible(false);
                     q.index.set(None);
@@ -224,12 +225,14 @@ impl QueuePanel {
                     let lib = app.store.library();
                     match lib.track(path) {
                         Some(t) => {
-                            q.title.set_label(&t.title);
-                            q.artist.set_label(&t.artist);
+                            q.title.set_label(&limits::clip_line(&t.title));
+                            q.artist.set_label(&limits::clip_line(&t.artist));
                             app.covers.apply(&q.cover, Source::for_track(t), 40);
                         }
                         None => {
-                            q.title.set_label(path.rsplit('/').next().unwrap_or(path));
+                            q.title.set_label(&limits::clip_line(
+                                path.rsplit('/').next().unwrap_or(path),
+                            ));
                             q.artist.set_label("Unavailable");
                             app.covers
                                 .apply(&q.cover, Source::Placeholder(path.clone()), 40);

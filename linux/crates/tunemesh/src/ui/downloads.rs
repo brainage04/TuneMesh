@@ -5,6 +5,7 @@ use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
+use tunemesh_core::limits;
 use tunemesh_core::request::{self, Request, RequestState, Status};
 
 use crate::app::{App, Page, Route};
@@ -23,6 +24,9 @@ thread_local! {
 struct ListState {
     app: Weak<App>,
     container: gtk::Box,
+    /// Request and status files are read on a thread, one load at a time.
+    loading: Cell<bool>,
+    again: Cell<bool>,
 }
 
 /// Re-renders the request list if the Downloads page is open (called when
@@ -206,44 +210,73 @@ struct Row {
     status: Option<Status>,
 }
 
+/// The newest requests with their status (at most `MAX_LISTED_REQUESTS`,
+/// contents already cut by core), and how many there are in all.
+fn load_rows(root: &std::path::Path) -> (Vec<Row>, usize) {
+    let (recent, total) = request::recent(root);
+    let rows = recent
+        .into_iter()
+        .map(|r| Row {
+            id: r.id,
+            request: r.request,
+            status: r.status,
+        })
+        .collect();
+    (rows, total)
+}
+
 impl ListState {
-    fn render(&self) {
+    fn render(self: &Rc<Self>) {
+        if self.loading.replace(true) {
+            self.again.set(true);
+            return;
+        }
         let Some(app) = self.app.upgrade() else {
             return;
         };
+        let root = app.store.root();
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("downloads".into())
+            .spawn(move || {
+                let _ = tx.send_blocking(load_rows(&root));
+            })
+            .expect("spawn downloads thread");
+        let state = self.clone();
+        glib::spawn_future_local(async move {
+            let loaded = rx.recv().await;
+            state.loading.set(false);
+            if let (Ok((rows, total)), Some(app)) = (loaded, state.app.upgrade()) {
+                state.show(&app, rows, total);
+            }
+            if state.again.replace(false) {
+                state.render();
+            }
+        });
+    }
+
+    fn show(&self, app: &Rc<App>, rows: Vec<Row>, total: usize) {
         while let Some(c) = self.container.first_child() {
             self.container.remove(&c);
         }
-        let root = app.store.root();
-        let (requests, _) = request::list_requests(&root);
-        let statuses = request::list_statuses(&root);
-        let mut rows: Vec<Row> = Vec::new();
-        for r in requests {
-            rows.push(Row {
-                id: r.id.clone(),
-                request: Some(r),
-                status: None,
-            });
-        }
-        for s in statuses {
-            match rows.iter_mut().find(|r| r.id == s.id) {
-                Some(r) => r.status = Some(s),
-                None => rows.push(Row {
-                    id: s.id.clone(),
-                    request: None,
-                    status: Some(s),
-                }),
-            }
-        }
-        rows.sort_by(|a, b| request::order_key(&b.id).cmp(&request::order_key(&a.id)));
         if rows.is_empty() {
             self.container.append(&widgets::empty(
                 "No downloads yet. Paste links or type a song above.",
             ));
             return;
         }
+        let shown = rows.len();
         for row in rows {
-            self.container.append(&request_row(&app, row));
+            self.container.append(&request_row(app, row));
+        }
+        if total > shown {
+            self.container.append(&label(
+                &format!(
+                    "…and {} older",
+                    plural(total - shown, "request", "requests")
+                ),
+                &["dim", "tm-small"],
+            ));
         }
     }
 }
@@ -327,19 +360,19 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         .spacing(2)
         .hexpand(true)
         .build();
-    let t = label(&title, &["title"]);
+    let t = label(&limits::clip_line(&title), &["title"]);
     t.add_css_class("heading");
     text.append(&t);
     let mut sub = Vec::new();
     if title != input {
-        sub.push(input.clone());
+        sub.push(limits::clip_line(&input).into_owned());
     }
     if let Some(r) = &row.request {
         if !r.requested_by.is_empty() {
-            sub.push(format!("from {}", r.requested_by));
+            sub.push(format!("from {}", limits::clip_line(&r.requested_by)));
         }
         if let Some(p) = &r.playlist {
-            sub.push(format!("→ {p}"));
+            sub.push(format!("→ {}", limits::clip_line(p)));
         } else if r.playlist_from_source {
             sub.push("saved as a playlist".to_owned());
         }
@@ -432,7 +465,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         // The final message repeats the warnings, which are listed below.
         if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
             let l = gtk::Label::builder()
-                .label(m)
+                .label(limits::clip_text(m))
                 .xalign(0.0)
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -446,9 +479,9 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
             });
             b.append(&l);
         }
-        for w in &s.warnings {
+        for w in s.warnings.iter().take(limits::MAX_SHOWN_ROWS) {
             let l = gtk::Label::builder()
-                .label(w)
+                .label(limits::clip_text(w))
                 .xalign(0.0)
                 .wrap(true)
                 .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -457,15 +490,32 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 .build();
             b.append(&l);
         }
+        if s.warnings.len() > limits::MAX_SHOWN_ROWS {
+            b.append(&label(
+                &format!(
+                    "…and {} more",
+                    plural(
+                        s.warnings.len() - limits::MAX_SHOWN_ROWS,
+                        "warning",
+                        "warnings"
+                    )
+                ),
+                &["tm-small", "tm-warning"],
+            ));
+        }
         if !s.failures.is_empty() {
             let list = gtk::Box::builder()
                 .orientation(gtk::Orientation::Vertical)
                 .spacing(4)
                 .margin_start(18)
                 .build();
-            for f in &s.failures {
+            for f in s.failures.iter().take(limits::MAX_SHOWN_ROWS) {
                 let l = gtk::Label::builder()
-                    .label(format!("{}: {}", f.item, f.error))
+                    .label(limits::clip_text(&format!(
+                        "{}: {}",
+                        limits::clip_line(&f.item),
+                        f.error
+                    )))
                     .xalign(0.0)
                     .wrap(true)
                     .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -473,6 +523,12 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                     .css_classes(["tm-small", "dim"])
                     .build();
                 list.append(&l);
+            }
+            if s.failures.len() > limits::MAX_SHOWN_ROWS {
+                list.append(&label(
+                    &format!("…and {} more", s.failures.len() - limits::MAX_SHOWN_ROWS),
+                    &["tm-small", "dim"],
+                ));
             }
             let exp = gtk::Expander::builder()
                 .label(format!(
@@ -553,7 +609,11 @@ pub fn page(app: &Rc<App>) -> Page {
     let names = app.store.playlist_names();
     let mut choices: Vec<String> = vec!["None".to_owned(), tunemesh_core::LIKED_SONGS.to_owned()];
     choices.extend(names);
-    let refs: Vec<&str> = choices.iter().map(String::as_str).collect();
+    let shown: Vec<String> = choices
+        .iter()
+        .map(|c| limits::clip_line(c).into_owned())
+        .collect();
+    let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
     let dropdown = gtk::DropDown::from_strings(&refs);
     dropdown.set_valign(gtk::Align::Center);
     options.append(&dropdown);
@@ -729,6 +789,8 @@ pub fn page(app: &Rc<App>) -> Page {
     let state = Rc::new(ListState {
         app: Rc::downgrade(app),
         container: container.clone(),
+        loading: Cell::new(false),
+        again: Cell::new(false),
     });
     state.render();
     LIST.with(|l| *l.borrow_mut() = Rc::downgrade(&state));

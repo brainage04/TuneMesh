@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use gtk::{gdk, glib, prelude::*};
 use tunemesh_core::fsx::Dir;
-use tunemesh_core::{CoverSource, Library, Track};
+use tunemesh_core::{CoverSource, Library, Track, limits};
 
 /// Upper bound for cached thumbnail pixels.
 const CACHE_BYTES: usize = 24 * 1024 * 1024;
@@ -138,9 +138,6 @@ fn placeholder(seed: &str, size: u32) -> Vec<u8> {
     out
 }
 
-/// Largest cover file read.
-const MAX_COVER_BYTES: u64 = 32 << 20;
-
 /// The picture embedded in, or stored as, a root-relative file. Files are
 /// opened below `root` without following symlinks, so a synced symlink
 /// cannot show a file from outside the library.
@@ -151,7 +148,7 @@ fn read_cover(root: &Path, source: &Source) -> Option<Vec<u8>> {
             let mut file = dir.open_file(rel).ok()?;
             tunemesh_core::library::read_embedded_cover_from(&mut file)
         }
-        Source::File(rel) => dir.read(rel, MAX_COVER_BYTES).ok(),
+        Source::File(rel) => dir.read(rel, limits::MAX_COVER_BYTES).ok(),
         Source::Placeholder(_) => None,
     }
 }
@@ -163,7 +160,9 @@ fn decode(job: &Job) -> Vec<u8> {
     };
     // A synced picture is untrusted input: a decoder panic leaves this
     // cover as a placeholder instead of ending the cover thread.
-    let image = bytes.and_then(|b| {
+    // Pictures over the cover limits (bytes, or pixels per side as the
+    // header states) are never decoded: the placeholder is drawn instead.
+    let image = bytes.filter(|b| limits::cover_ok(b)).and_then(|b| {
         tunemesh_core::library::guarded("a cover picture", || image::load_from_memory(&b).ok())
             .flatten()
     });

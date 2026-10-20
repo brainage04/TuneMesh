@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
+use tunemesh_core::limits;
 
 use crate::app::App;
 use crate::covers::Source;
@@ -35,9 +36,11 @@ pub fn plural(n: usize, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
 
+/// A one-line label. Text from the synced folder is cut to the display
+/// limit (`limits::clip_line`) before GTK lays it out.
 pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     let l = gtk::Label::builder()
-        .label(text)
+        .label(limits::clip_line(text))
         .xalign(0.0)
         .ellipsize(gtk::pango::EllipsizeMode::End)
         .build();
@@ -240,9 +243,10 @@ impl Tile {
                 self.liked.set_visible(true);
             }
         }
-        self.title.set_label(title);
-        self.title.set_tooltip_text(Some(title));
-        self.subtitle.set_label(subtitle);
+        let title = limits::clip_line(title);
+        self.title.set_label(&title);
+        self.title.set_tooltip_text(Some(&title));
+        self.subtitle.set_label(&limits::clip_line(subtitle));
         *self.open.borrow_mut() = Some(Rc::new(open));
         *self.play.borrow_mut() = Some(Rc::new(play));
     }
@@ -251,7 +255,7 @@ impl Tile {
 /// An empty-state message.
 pub fn empty(text: &str) -> gtk::Label {
     gtk::Label::builder()
-        .label(text)
+        .label(limits::clip_text(text))
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .max_width_chars(60)
