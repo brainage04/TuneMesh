@@ -40,6 +40,60 @@ impl OpenTrack {
     }
 }
 
+/// Files of entries mpv dropped are kept open at most this long: until
+/// mpv reports progress, and never more than this many.
+const MAX_RETIRED: usize = 2;
+
+/// The open files behind mpv's entries.
+///
+/// mpv opens `/proc/self/fd/N` some time after `loadfile`, so a file of an
+/// entry mpv dropped stays open until mpv has moved on (a file loaded, an
+/// entry ended); otherwise its number could be reused by an unrelated file
+/// before mpv opens it. At most current + next + `MAX_RETIRED` are open.
+#[derive(Default)]
+struct TrackFiles {
+    current: Option<File>,
+    next: Option<File>,
+    retired: std::collections::VecDeque<File>,
+}
+
+impl TrackFiles {
+    fn retire(&mut self, f: Option<File>) {
+        if let Some(f) = f {
+            if self.retired.len() == MAX_RETIRED {
+                self.retired.pop_front();
+            }
+            self.retired.push_back(f);
+        }
+    }
+    fn retire_current(&mut self) {
+        let f = self.current.take();
+        self.retire(f);
+    }
+    fn retire_next(&mut self) {
+        let f = self.next.take();
+        self.retire(f);
+    }
+    /// The preloaded next entry became the current one.
+    fn advance(&mut self) {
+        self.retire_current();
+        self.current = self.next.take();
+    }
+    /// mpv loaded a file or ended an entry: dropped entries are done with.
+    fn mpv_moved_on(&mut self) {
+        self.retired.clear();
+    }
+    /// mpv ended playback (end of queue or a failed load): nothing it
+    /// plays needs a file any more.
+    fn release_all(&mut self) {
+        *self = Self::default();
+    }
+    #[cfg(test)]
+    fn open_count(&self) -> usize {
+        self.retired.len() + usize::from(self.current.is_some()) + usize::from(self.next.is_some())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Repeat {
     #[default]
@@ -160,12 +214,7 @@ pub struct Player {
     st: RefCell<State>,
     listeners: RefCell<Vec<Listener>>,
     tick: RefCell<Option<glib::SourceId>>,
-    /// The open files behind mpv's current and preloaded next entries.
-    current_file: RefCell<Option<File>>,
-    next_file: RefCell<Option<File>>,
-    /// Files of entries mpv no longer plays, kept open until it has loaded a
-    /// newer file (so a descriptor number is never reused under it).
-    retired: RefCell<Vec<File>>,
+    files: RefCell<TrackFiles>,
     save_scheduled: Cell<bool>,
     ticks_since_save: Cell<u32>,
     me: Weak<Player>,
@@ -195,9 +244,7 @@ impl Player {
             }),
             listeners: RefCell::new(Vec::new()),
             tick: RefCell::new(None),
-            current_file: RefCell::new(None),
-            next_file: RefCell::new(None),
-            retired: RefCell::new(Vec::new()),
+            files: RefCell::new(TrackFiles::default()),
             save_scheduled: Cell::new(false),
             ticks_since_save: Cell::new(0),
         });
@@ -258,12 +305,6 @@ impl Player {
                 eprintln!("tunemesh: cannot play {rel:?}: {e}");
                 None
             }
-        }
-    }
-
-    fn retire(&self, slot: &RefCell<Option<File>>) {
-        if let Some(f) = slot.borrow_mut().take() {
-            self.retired.borrow_mut().push(f);
         }
     }
 
@@ -328,8 +369,11 @@ impl Player {
         self.apply_loop();
         mpv.set_flag("pause", !play);
         let start_opt = format!("start={start:.3}");
-        self.retire(&self.current_file);
-        self.retire(&self.next_file);
+        {
+            let mut files = self.files.borrow_mut();
+            files.retire_current();
+            files.retire_next();
+        }
         let Some(track) = self.open(&path) else {
             // Unreadable or not a regular file: show it, stopped.
             let _ = mpv.command(&["stop"]);
@@ -354,7 +398,7 @@ impl Player {
         if let Err(e) = mpv.command(&["loadfile", &track.mpv_path, "replace", "-1", &start_opt]) {
             eprintln!("tunemesh: {e}");
         }
-        *self.current_file.borrow_mut() = Some(track.into_file());
+        self.files.borrow_mut().current = Some(track.into_file());
         {
             let mut st = self.st.borrow_mut();
             st.loaded = true;
@@ -394,7 +438,7 @@ impl Player {
         {
             return;
         }
-        *self.next_file.borrow_mut() = Some(track.into_file());
+        self.files.borrow_mut().next = Some(track.into_file());
         let count = mpv.get_i64("playlist-count").unwrap_or(0);
         if let Some(id) = self.entry_id_at(count - 1) {
             self.st.borrow_mut().next_entry = Some((id, index, path));
@@ -424,7 +468,7 @@ impl Player {
             if let Some(mpv) = &self.mpv {
                 let _ = mpv.command(&["playlist-clear"]);
             }
-            self.retire(&self.next_file);
+            self.files.borrow_mut().retire_next();
             self.st.borrow_mut().next_entry = None;
             self.append_next();
         }
@@ -454,9 +498,7 @@ impl Player {
             st.position = 0.0;
             st.duration = 0.0;
         }
-        self.retire(&self.current_file);
-        let next = self.next_file.borrow_mut().take();
-        *self.current_file.borrow_mut() = next;
+        self.files.borrow_mut().advance();
         if let Some(mpv) = &self.mpv {
             let _ = mpv.command(&["playlist-clear"]);
         }
@@ -478,6 +520,7 @@ impl Player {
                 }
             }
             Event::EndFile { reason, entry_id } => {
+                self.files.borrow_mut().mpv_moved_on();
                 let (is_current, has_next) = {
                     let st = self.st.borrow();
                     (st.current_entry == Some(entry_id), st.next_entry.is_some())
@@ -515,15 +558,16 @@ impl Player {
                 self.emit(&[Change::Position]);
             }
             // mpv has opened its newest file: older ones are done with.
-            Event::FileLoaded => self.retired.borrow_mut().clear(),
+            Event::FileLoaded => self.files.borrow_mut().mpv_moved_on(),
             Event::Shutdown => {}
         }
     }
 
     /// The last track finished: stop at its start, paused.
     fn ended(&self) {
-        self.retire(&self.current_file);
-        self.retire(&self.next_file);
+        // Called on mpv's end-file for the current entry: it is done with
+        // every file, including one that failed to load.
+        self.files.borrow_mut().release_all();
         {
             let mut st = self.st.borrow_mut();
             st.loaded = false;
@@ -904,8 +948,11 @@ impl Player {
                 if loaded && let Some(mpv) = &self.mpv {
                     let _ = mpv.command(&["stop"]);
                 }
-                self.retire(&self.current_file);
-                self.retire(&self.next_file);
+                {
+                    let mut files = self.files.borrow_mut();
+                    files.retire_current();
+                    files.retire_next();
+                }
                 let mut st = self.st.borrow_mut();
                 st.loaded = false;
                 st.playing = false;
@@ -1052,5 +1099,48 @@ mod tests {
         assert!(remove(&mut st, &["a"]));
         assert!(st.items.is_empty());
         assert_eq!(st.current, None);
+    }
+
+    /// Descriptors of this process that point at `path`.
+    fn fds_on(path: &std::path::Path) -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .unwrap()
+            .flatten()
+            .filter(|e| std::fs::read_link(e.path()).is_ok_and(|t| t == path))
+            .count()
+    }
+
+    #[test]
+    fn failed_loads_do_not_pile_up_open_files() {
+        let dir = std::env::temp_dir().join(format!("tunemesh-fd-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bad = dir.join("bad.mp3");
+        std::fs::write(&bad, "not audio").unwrap();
+        let rel = "bad.mp3";
+        let mut files = TrackFiles::default();
+        // Each attempt: load_current retires the old files and opens the
+        // track; mpv answers with end-file (error) and playback ends.
+        for _ in 0..20 {
+            files.retire_current();
+            files.retire_next();
+            files.current = Some(open_track(&dir, rel).unwrap().into_file());
+            assert!(files.open_count() <= 1 + MAX_RETIRED);
+            files.mpv_moved_on();
+            files.release_all();
+        }
+        assert_eq!(files.open_count(), 0);
+        assert_eq!(fds_on(&bad), 0);
+        // Without any answer from mpv, the files stay bounded.
+        for _ in 0..20 {
+            files.retire_current();
+            files.retire_next();
+            files.current = Some(open_track(&dir, rel).unwrap().into_file());
+            files.next = Some(open_track(&dir, rel).unwrap().into_file());
+        }
+        assert_eq!(files.open_count(), 2 + MAX_RETIRED);
+        assert_eq!(fds_on(&bad), 2 + MAX_RETIRED);
+        drop(files);
+        assert_eq!(fds_on(&bad), 0);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
