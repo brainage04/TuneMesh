@@ -11,8 +11,10 @@
 //! those names, the worker execs the real program with, for every input,
 //! `-format_whitelist` (plain audio, video and image containers only, none
 //! that follow references) and `-protocol_whitelist file`, after checking
-//! that every input is a `file:` path inside the job directory. `--postprocessor-args` cannot do this: it does not reach the
-//! ffprobe calls.
+//! that every input is a `file:` path inside the job directory. Only the
+//! options yt-dlp's postprocessing uses are passed on (`OPTIONS`).
+//! `--postprocessor-args` cannot do this: it does not reach the ffprobe
+//! calls.
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
@@ -124,33 +126,145 @@ fn check_input(arg: &OsStr, root: &Path) -> Result<(), String> {
     }
 }
 
-/// The real program's arguments: the confinement options before every
-/// input. Every input must be a `file:` path inside `root`: each `-i` value
-/// for ffmpeg; for ffprobe the last argument, passed on as `-i`, so any other
-/// positional argument makes ffprobe fail ("input already specified").
-/// Any other `file:` argument (outputs, attachments) must be inside `root`
-/// too. An ffprobe call whose arguments are all options (`-version`) has no
-/// input and passes unchanged.
-pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
-    for a in args {
-        if let Some(p) = file_path(a)
-            && !inside(p, root)
-        {
-            return Err(format!(
-                "refusing {}: outside the work directory",
-                p.display()
-            ));
+/// ffmpeg and ffprobe options the shim passes on: those yt-dlp's
+/// postprocessors, the worker's `--postprocessor-args` and `--self-test`
+/// use, with whether they take a value. Lookup is by name without the
+/// leading `-` and without a `:stream` suffix. Anything else is refused:
+/// many options read or write files (`-attach`, `-filter_script`,
+/// `-passlogfile`, `-progress`, `-/opt` ...), and options such as
+/// `-format_whitelist` would undo the confinement.
+const OPTIONS: &[(&str, bool)] = &[
+    // Global and informational.
+    ("y", false),
+    ("n", false),
+    ("hide_banner", false),
+    ("nostdin", false),
+    ("version", false),
+    ("bsfs", false),
+    ("loglevel", true),
+    ("v", true),
+    // Inputs and stream selection.
+    ("i", true),
+    ("f", true),
+    ("pattern_type", true),
+    ("map", true),
+    ("map_metadata", true),
+    ("vn", false),
+    ("an", false),
+    ("dn", false),
+    ("sn", false),
+    ("ss", true),
+    ("t", true),
+    // Codecs and filters.
+    ("c", true),
+    ("codec", true),
+    ("acodec", true),
+    ("vcodec", true),
+    ("b", true),
+    ("q", true),
+    ("qmin", true),
+    ("qmax", true),
+    ("vbr", true),
+    ("bsf", true),
+    ("vf", true),
+    ("aspect", true),
+    ("vtag", true),
+    ("force_key_frames", true),
+    ("strict", true),
+    // Metadata and muxing.
+    ("metadata", true),
+    ("disposition", true),
+    ("ignore_unknown", false),
+    ("id3v2_version", true),
+    ("write_id3v1", true),
+    ("movflags", true),
+    ("update", true),
+    ("attach", true),
+    // ffprobe output.
+    ("show_format", false),
+    ("show_streams", false),
+    ("show_entries", true),
+    ("select_streams", true),
+    ("print_format", true),
+    ("of", true),
+];
+
+/// Options whose value is a file the program opens.
+const FILE_OPTIONS: &[&str] = &["i", "attach"];
+
+/// The option name of `arg` (`-c:v` -> `c`), if it is an option.
+fn option_name(arg: &OsStr) -> Option<&[u8]> {
+    let b = arg.as_bytes().strip_prefix(b"-")?;
+    if b.is_empty() {
+        return None; // "-": stdin/stdout
+    }
+    Some(b.split(|c| *c == b':').next().unwrap_or(b))
+}
+
+/// Checks every argument and returns how many positional arguments
+/// (outputs, ffprobe's input) there are:
+/// unknown options are refused, every value of a file-taking option and
+/// every positional argument (outputs, ffprobe's input) must be a `file:`
+/// path inside `root`.
+fn check_args(args: &[OsString], root: &Path) -> Result<usize, String> {
+    let mut positional = 0;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match option_name(a) {
+            Some(name) => {
+                let known = OPTIONS.iter().find(|(o, _)| o.as_bytes() == name);
+                let Some((name, takes_value)) = known else {
+                    return Err(format!(
+                        "refusing option {}: not one yt-dlp's postprocessing uses",
+                        a.to_string_lossy()
+                    ));
+                };
+                if *takes_value {
+                    let value = it
+                        .next()
+                        .ok_or_else(|| format!("-{name} without a value"))?;
+                    if FILE_OPTIONS.contains(name) {
+                        check_input(value, root)?;
+                    }
+                }
+            }
+            None if a == "-" => positional += 1,
+            None => {
+                check_input(a, root)?;
+                positional += 1;
+            }
         }
     }
+    Ok(positional)
+}
+
+/// The real program's arguments, after `check_args`. ffmpeg gets the
+/// confinement options right before every `-i`, so they come after any
+/// option the caller gave for that input. ffprobe gets the caller's
+/// options, then the confinement options, then `-i <input>` (its input is
+/// the last argument). A call with no input (`-version`) passes unchanged.
+pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
+    let positional = check_args(args, root)?;
     let mut out: Vec<OsString> = Vec::with_capacity(args.len() + 8);
     if program == "ffprobe" {
-        if args.iter().all(|a| a.as_bytes().starts_with(b"-")) {
-            return Ok(args.to_vec());
+        if args.iter().any(|a| a == "-i") {
+            return Err("ffprobe takes its input as the last argument, not -i".to_owned());
+        }
+        if positional == 0 {
+            return Ok(args.to_vec()); // -version
         }
         let (input, rest) = args.split_last().ok_or("no arguments")?;
-        check_input(input, root)?;
-        out.extend(CONFINE.iter().map(OsString::from));
+        if positional > 1
+            || option_name(input).is_some()
+            || rest
+                .last()
+                .and_then(|o| option_name(o))
+                .is_some_and(|name| OPTIONS.iter().any(|(o, v)| *v && o.as_bytes() == name))
+        {
+            return Err("ffprobe takes exactly one input, as the last argument".to_owned());
+        }
         out.extend(rest.iter().cloned());
+        out.extend(CONFINE.iter().map(OsString::from));
         out.push("-i".into());
         out.push(input.clone());
     } else {
@@ -158,7 +272,6 @@ pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsSt
         while let Some(a) = it.next() {
             if a == "-i" {
                 let input = it.next().ok_or("-i without a value")?;
-                check_input(input, root)?;
                 out.extend(CONFINE.iter().map(OsString::from));
                 out.push(a.clone());
                 out.push(input.clone());
@@ -223,8 +336,23 @@ mod tests {
         assert_eq!(s[first_i - 4], "-format_whitelist");
         assert_eq!(s[first_i - 1], "file");
         let out = rewrite("ffprobe", &os(&["-show_streams", &a]), &r).unwrap();
-        assert_eq!(out[0], "-format_whitelist");
-        assert_eq!(out[4..], os(&["-show_streams", "-i", &a])[..]);
+        // Caller options first, then the shim's (the last value wins).
+        assert_eq!(
+            out,
+            os(&[
+                "-show_streams",
+                "-format_whitelist",
+                FORMATS,
+                "-protocol_whitelist",
+                "file",
+                "-i",
+                &a
+            ])
+        );
+        // `-v error`: "error" is a value, not the input.
+        let out = rewrite("ffprobe", &os(&["-v", "error", "-show_streams", &a]), &r).unwrap();
+        assert_eq!(out[..3], os(&["-v", "error", "-show_streams"])[..]);
+        assert_eq!(out.last().unwrap(), a.as_str());
         assert_eq!(
             rewrite("ffprobe", &os(&["-version"]), &r).unwrap(),
             os(&["-version"])
@@ -274,6 +402,73 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// Only options yt-dlp's postprocessing uses pass; `-attach` and
+    /// outputs must be in the job directory.
+    #[test]
+    fn allows_only_known_options() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path().canonicalize().unwrap();
+        let a = format!("file:{}/a.m4a", r.display());
+        let out = format!("file:{}/b.m4a", r.display());
+        let thumb = format!("file:{}/a.jpg", r.display());
+        // What EmbedThumbnail, FFmpegMetadata and ThumbnailsConvertor run.
+        let ok = os(&[
+            "-y",
+            "-loglevel",
+            "repeat+info",
+            "-i",
+            &a,
+            "-i",
+            &thumb,
+            "-map",
+            "0",
+            "-map",
+            "1",
+            "-dn",
+            "-ignore_unknown",
+            "-c",
+            "copy",
+            "-disposition:v:0",
+            "attached_pic",
+            "-metadata:s:v",
+            "comment=Cover (front)",
+            "-map",
+            "-0:s",
+            "-c:v",
+            "mjpeg",
+            "-qmin",
+            "1",
+            "-q:v",
+            "2",
+            "-vf",
+            "crop=1:1",
+            "-movflags",
+            "+faststart",
+            "-attach",
+            &thumb,
+            &out,
+        ]);
+        assert!(
+            rewrite("ffmpeg", &ok, &r).is_ok(),
+            "{:?}",
+            rewrite("ffmpeg", &ok, &r)
+        );
+        for bad in [
+            &["-i", &a, "-attach", "/etc/passwd", &out][..],
+            &["-i", &a, "-attach", "file:/etc/passwd", &out],
+            &["-i", &a, "-filter_script", "/etc/passwd", &out],
+            &["-i", &a, "-/af", "/etc/passwd", &out],
+            &["-i", &a, "-passlogfile", "/tmp/x", &out],
+            &["-i", &a, "-progress", "/tmp/x", &out],
+            &["-format_whitelist", "hls", "-i", &a, &out],
+            &["-i", &a, "/tmp/out.m4a"],
+        ] {
+            assert!(rewrite("ffmpeg", &os(bad), &r).is_err(), "{bad:?}");
+        }
+        assert!(rewrite("ffprobe", &os(&["-format_whitelist", "hls", &a]), &r).is_err());
+        assert!(rewrite("ffprobe", &os(&["-show_streams", "-i", &a]), &r).is_err());
     }
 
     /// Review item 3: after an upgrade `/proc/self/exe` ends in

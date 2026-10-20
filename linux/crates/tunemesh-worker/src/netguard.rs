@@ -123,6 +123,17 @@ fn prefix_len(bytes: &[u8]) -> u8 {
 /// addresses (a home router's or NAS's IPv6 address) that a firewall hides
 /// from the internet but not from this host.
 pub fn own_networks() -> Vec<Net> {
+    let mut out = interface_networks();
+    let read = |p: &str| std::fs::read_to_string(p).unwrap_or_default();
+    out.extend(routes_v4(&read("/proc/net/route")));
+    out.extend(routes_v6(&read("/proc/net/ipv6_route")));
+    out
+}
+
+/// Interface addresses with their netmasks. A global IPv6 address with a
+/// /128 mask (DHCPv6) counts with its /64: IPv6 subnets are /64, and the
+/// router may announce the prefix without an on-link route.
+fn interface_networks() -> Vec<Net> {
     let mut out = Vec::new();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills `head` with a list we only read and then free.
@@ -156,7 +167,7 @@ pub fn own_networks() -> Vec<Net> {
                             let m = &*(mask as *const libc::sockaddr_in6);
                             prefix_len(&m.sin6_addr.s6_addr)
                         };
-                        out.push(Net::new(ip, prefix));
+                        out.push(Net::new(ip, if prefix == 128 { 64 } else { prefix }));
                     }
                     _ => {}
                 }
@@ -168,12 +179,78 @@ pub fn own_networks() -> Vec<Net> {
     out
 }
 
-/// Normalises IPv4-mapped IPv6 addresses so they compare equal to IPv4.
+/// Normalises IPv6 addresses that reach an IPv4 address (IPv4-mapped
+/// `::ffff:0:0/96`, NAT64 `64:ff9b::/96`) to that address, so they compare
+/// equal to it.
 fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return IpAddr::V4(v4);
+            }
+            let s = v6.segments();
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let o = v6.octets();
+                return IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+            }
+            ip
+        }
         v4 => v4,
     }
+}
+
+/// `RTF_GATEWAY` in the kernel's route flags.
+const RTF_GATEWAY: u32 = 0x2;
+
+/// On-link networks from `/proc/net/route`: routes without a gateway,
+/// other than on `lo`.
+fn routes_v4(table: &str) -> Vec<Net> {
+    let mut out = Vec::new();
+    for line in table.lines().skip(1) {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let [iface, dest, gateway, flags, _, _, _, mask, ..] = f[..] else {
+            continue;
+        };
+        let hex = |s: &str| u32::from_str_radix(s, 16).ok();
+        let (Some(dest), Some(gateway), Some(flags), Some(mask)) =
+            (hex(dest), hex(gateway), hex(flags), hex(mask))
+        else {
+            continue;
+        };
+        if iface == "lo" || gateway != 0 || flags & RTF_GATEWAY != 0 {
+            continue;
+        }
+        // The file holds the addresses in host byte order of a big-endian
+        // value read as little-endian: the bytes are in memory order.
+        let addr = Ipv4Addr::from(dest.to_le_bytes());
+        out.push(Net::new(IpAddr::V4(addr), mask.count_ones() as u8));
+    }
+    out
+}
+
+/// On-link networks from `/proc/net/ipv6_route`: routes without a next hop,
+/// other than on `lo`.
+fn routes_v6(table: &str) -> Vec<Net> {
+    let mut out = Vec::new();
+    for line in table.lines() {
+        let f: Vec<&str> = line.split_whitespace().collect();
+        let [dest, prefix, _, _, next_hop, _, _, _, flags, iface] = f[..] else {
+            continue;
+        };
+        let (Ok(dest), Ok(prefix), Ok(next_hop), Ok(flags)) = (
+            u128::from_str_radix(dest, 16),
+            u8::from_str_radix(prefix, 16),
+            u128::from_str_radix(next_hop, 16),
+            u32::from_str_radix(flags, 16),
+        ) else {
+            continue;
+        };
+        if iface == "lo" || next_hop != 0 || flags & RTF_GATEWAY != 0 {
+            continue;
+        }
+        out.push(Net::new(IpAddr::V6(Ipv6Addr::from(dest)), prefix));
+    }
+    out
 }
 
 /// Why `ip` may not be reached, if it may not (for the local log only).
@@ -434,5 +511,55 @@ mod tests {
         let b = check_url_with("http://nothing.lan/", &[], resolve).unwrap_err();
         assert!(!a.contains("192.168"), "{a}");
         assert_eq!(a.replace("nas.lan", "x"), b.replace("nothing.lan", "x"));
+    }
+
+    /// Routes without a gateway are on-link networks; routes through a
+    /// gateway, `lo` and the default route are not.
+    #[test]
+    fn reads_on_link_routes() {
+        let v4 = "Iface\tDestination\tGateway \tFlags\tRefCnt\tUse\tMetric\tMask\t\tMTU\tWindow\tIRTT\n\
+                  eth0\t00000000\t0102A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n\
+                  eth0\t0002A8C0\t00000000\t0001\t0\t0\t100\t00FFFFFF\t0\t0\t0\n\
+                  wg0\t000010AC\t00000000\t0001\t0\t0\t0\t0000F0FF\t0\t0\t0\n\
+                  eth0\t0000000A\t0102A8C0\t0003\t0\t0\t0\t000000FF\t0\t0\t0\n";
+        assert_eq!(
+            routes_v4(v4),
+            [
+                Net::new(ip("192.168.2.0"), 24),
+                Net::new(ip("172.16.0.0"), 12)
+            ]
+        );
+        // 2001:db8:1::/64 on eth0 (from a DHCPv6 network whose address is a
+        // /128), a gateway route, the default route, and lo.
+        let v6 = "\
+            20010db8000100000000000000000000 40 00000000000000000000000000000000 00 00000000000000000000000000000000 00000100 00000001 00000000 00000001     eth0
+            20010db8000200000000000000000000 30 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003     eth0
+            00000000000000000000000000000000 00 00000000000000000000000000000000 00 fe800000000000000000000000000001 00000400 00000001 00000000 00000003     eth0
+            00000000000000000000000000000001 80 00000000000000000000000000000000 00 00000000000000000000000000000000 00000000 00000001 00000000 80200001       lo
+            200106c0000000000000000000000000 00 00000000000000000000000000000000 00 00000000000000000000000000000000 00000400 00000001 00000000 00000001     eth0
+        ";
+        let nets = routes_v6(v6);
+        assert_eq!(nets[0], Net::new(ip("2001:db8:1::"), 64));
+        // A gateway-less route with too short a prefix counts as one address.
+        assert_eq!(nets[1], Net::host(ip("2001:6c0::")));
+        assert_eq!(nets.len(), 2);
+        // A neighbour on that network is refused; it is not public anyway
+        // here (documentation range), so check membership directly.
+        assert!(nets[0].contains(ip("2001:db8:1::abcd")));
+        assert!(!nets[0].contains(ip("2001:db8:2::1")));
+    }
+
+    /// NAT64 addresses reach the embedded IPv4 address, so they match the
+    /// host's own IPv4 networks.
+    #[test]
+    fn nat64_matches_own_ipv4_networks() {
+        let own = [Net::new(ip("11.22.33.44"), 24)];
+        assert_eq!(canonical(ip("64:ff9b::b16:212c")), ip("11.22.33.44"));
+        assert_eq!(
+            refusal(ip("64:ff9b::b16:2101"), &own),
+            Some("on one of this computer's own networks")
+        );
+        assert!(own[0].contains(ip("64:ff9b::b16:21fe")));
+        assert_eq!(refusal(ip("64:ff9b::808:808"), &own), None);
     }
 }
