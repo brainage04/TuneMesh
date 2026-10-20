@@ -9,9 +9,10 @@ name: Release
 # environment `release` (deployment rule: tags matching v* only), which holds
 # the secrets ANDROID_KEYSTORE_B64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS,
 # ANDROID_KEY_PASSWORD and, optionally, ANDROID_LINEAGE_B64; a tag build fails
-# when one of the four required secrets is missing. The APK is built without
-# the secrets first; only apksigner, after the build, sees them. Every other
-# run builds an unsigned APK in the android job and never sees those secrets.
+# when one of the four required secrets is missing. The android job builds the
+# unsigned APK without secrets; android-signed only downloads it and signs it
+# with apksigner. Every other run signs a copy with a throwaway key instead
+# (android-signing-dry-run) and never sees those secrets.
 # Only the publish job may write to the repository (contents: write).
 on:
   push:
@@ -50,8 +51,11 @@ jobs:
   build:
     uses: ./.github/workflows/build.yml
 
+  # Android, in two jobs: `android` builds the unsigned release APK and has no
+  # secrets; the signing job only downloads that artifact and signs it with
+  # apksigner from the pinned build-tools. No Gradle or app build code runs in
+  # a job that holds the key.
   android:
-    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
     needs: build
     runs-on: ubuntu-24.04
     steps:
@@ -65,18 +69,38 @@ jobs:
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: packaging/ci/android-release.sh build
-      # Exercises the tag job's signing step with a throwaway key and lineage;
-      # the signed copy is discarded.
-      - name: Signing dry run (throwaway key)
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-unsigned
+          path: dist/*
+
+  # Non-tag runs: the signing job's steps with a throwaway key and lineage;
+  # the signed copy is discarded, the unsigned APK stays the run's artifact.
+  android-signing-dry-run:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [build, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-unsigned
+          path: dist
+      - name: Sign with a throwaway key
         env:
           VERSION: ${{ needs.build.outputs.version }}
         run: |
           keys=$(mktemp -d)
+          packaging/ci/android-release.sh build-tools "$keys/build-tools"
+          apksigner=$keys/build-tools/apksigner
           for k in old new; do
             keytool -genkeypair -keystore "$keys/$k.jks" -storepass "pass-$k" -keypass "pass-$k" \
               -alias "$k" -keyalg RSA -keysize 2048 -validity 2 -dname "CN=throwaway $k" 2>/dev/null
           done
-          apksigner=$(find -L "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -name apksigner | sort -V | tail -n 1)
           "$apksigner" rotate --out "$keys/lineage" \
             --old-signer --ks "$keys/old.jks" --ks-pass pass:pass-old \
             --new-signer --ks "$keys/new.jks" --ks-pass pass:pass-new
@@ -85,39 +109,32 @@ jobs:
             ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD=pass-new \
             ANDROID_LINEAGE_B64=$(base64 -w0 "$keys/lineage") packaging/ci/android-release.sh sign
           "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep 'CN=throwaway old' >/dev/null
+          cp "$keys/unsigned.apk" "dist/TuneMesh-$VERSION-unsigned.apk"
           # Expected to fail; GITHUB_ACTIONS unset keeps it from annotating the run.
           if env -u GITHUB_ACTIONS ANDROID_KEYSTORE_B64="$(base64 -w0 "$keys/new.jks")" \
               ANDROID_STORE_PASSWORD=pass-new ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD='' \
               packaging/ci/android-release.sh sign; then
             echo "::error::signing without a password must fail"; exit 1
           fi
-          rm "dist/TuneMesh-$VERSION.apk"
-          mv "$keys/unsigned.apk" "dist/TuneMesh-$VERSION-unsigned.apk"
           rm -rf "$keys"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: pkg-android
-          path: dist/*
 
   android-signed:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, android]
     runs-on: ubuntu-24.04
     environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A JDK only to run apksigner; no build runs in this job.
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: 17
-      # No Gradle cache here: a cache written by a job holding the signing
-      # secrets would be restored into untrusted runs.
-      # The build step gets no secrets; the signing step runs no build code.
-      - name: Build the unsigned release APK
-        env:
-          VERSION: ${{ needs.build.outputs.version }}
-        run: packaging/ci/android-release.sh build
-      - name: Sign it with apksigner
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-unsigned
+          path: dist
+      - name: Sign with apksigner
         env:
           VERSION: ${{ needs.build.outputs.version }}
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}

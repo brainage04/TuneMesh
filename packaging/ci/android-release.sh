@@ -1,6 +1,7 @@
 #!/bin/sh
-# Release APK for GitHub releases, in two steps so that no Gradle or plugin
-# code ever runs while the signing key is on disk or in the environment:
+# Release APK for GitHub releases, in two steps that run in separate CI jobs,
+# so that no Gradle, plugin or app build code ever runs where the signing key
+# is (the signing job runs only this script, apksigner and a JDK):
 #
 #   VERSION=<v> packaging/ci/android-release.sh build
 #       Builds the unsigned release APK (no signing secrets needed or read)
@@ -10,7 +11,10 @@
 #   ANDROID_KEY_ALIAS=... ANDROID_KEY_PASSWORD=... [ANDROID_LINEAGE_B64=...] \
 #       packaging/ci/android-release.sh sign
 #       Signs that APK with apksigner into dist/TuneMesh-<v>.apk and removes
-#       the unsigned one. Fails when a required secret is missing. The
+#       the unsigned one. Fails when a required secret is missing. apksigner
+#       comes from Android build-tools downloaded from Google and checked
+#       against the SHA-256 pinned below (APKSIGNER=<path> uses another one,
+#       e.g. a local SDK's). Needs java on PATH. The
 #       signature matches what android/app/build.gradle.kts produces with the
 #       same key: APK Signature Scheme v2 only without a lineage; with one,
 #       v3 only, carrying the rotation lineage (rotation from Android 9,
@@ -18,7 +22,7 @@
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 dist=$repo/dist
-: "${VERSION:?VERSION is not set}"
+[ "${1:-}" = build-tools ] || : "${VERSION:?VERSION is not set}"
 unsigned=$dist/TuneMesh-$VERSION-unsigned.apk
 
 build() {
@@ -49,6 +53,23 @@ check_version() {
     esac
 }
 
+# Android build-tools 36.0.0 for Linux, as listed in Google's SDK repository
+# (https://dl.google.com/android/repository/repository2-3.xml gives SHA-1
+# b0b6376977657e8ad9b969bacf4093601da2c6fb for the same file).
+build_tools_url=https://dl.google.com/android/repository/build-tools_r36_linux.zip
+build_tools_sha256=5d9ac77fb6ff43d9da518a337b4fcf8f9097113df531d99ccefe80ef7ce8250b
+
+# Downloads and unpacks the pinned build-tools into $1 (apksigner at $1/apksigner).
+fetch_build_tools() {
+    mkdir -p "$1"
+    curl -fsSL --retry 3 -o "$1.zip" "$build_tools_url"
+    echo "$build_tools_sha256  $1.zip" | sha256sum -c --quiet -
+    unzip -q "$1.zip" -d "$1.unpacked"
+    mv "$1.unpacked"/*/* "$1/"
+    rm -rf "$1.zip" "$1.unpacked"
+    [ -x "$1/apksigner" ] || { echo "android-release: no apksigner in the build-tools archive" >&2; exit 1; }
+}
+
 sign() {
     missing=
     for var in ANDROID_KEYSTORE_B64 ANDROID_STORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
@@ -63,18 +84,13 @@ sign() {
     fi
     [ -f "$unsigned" ] || { echo "android-release: $unsigned is missing; run build first" >&2; exit 1; }
 
-    # On the CI runner nothing from the build (Gradle or Kotlin daemons) may
-    # still be running. Not elsewhere: it would stop the user's own builds.
-    if [ "${GITHUB_ACTIONS:-}" = true ]; then
-        pkill -u "$(id -u)" -f 'GradleDaemon|KotlinCompileDaemon|GradleWorkerMain' 2>/dev/null || true
-    fi
-
-    sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?ANDROID_HOME is not set}}
-    apksigner=$(find -L "$sdk/build-tools" -mindepth 2 -maxdepth 2 -name apksigner | sort -V | tail -n 1)
-    [ -x "$apksigner" ] || { echo "android-release: no apksigner in $sdk/build-tools" >&2; exit 1; }
-
     keys=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tunemesh-signing.XXXXXX")
     trap 'rm -rf "$keys"' EXIT
+    apksigner=${APKSIGNER:-}
+    if [ -z "$apksigner" ]; then
+        fetch_build_tools "$keys/build-tools"
+        apksigner=$keys/build-tools/apksigner
+    fi
     (
         umask 077
         printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d >"$keys/release.jks"
@@ -100,5 +116,7 @@ sign() {
 case ${1:-} in
     build) build ;;
     sign) sign ;;
-    *) echo "usage: android-release.sh build|sign" >&2; exit 2 ;;
+    # build-tools <dir>: only download the pinned build-tools (for tests).
+    build-tools) fetch_build_tools "${2:?usage: android-release.sh build-tools <dir>}" ;;
+    *) echo "usage: android-release.sh build|sign|build-tools <dir>" >&2; exit 2 ;;
 esac
