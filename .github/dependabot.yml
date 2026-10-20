@@ -1,0 +1,13 @@
+# Keeps the commit-pinned GitHub Actions up to date. The Flatpak builder
+# container image in release.yml is pinned by digest too; Dependabot does not
+# track container images in workflows, so bump that digest by hand when
+# moving to a newer GNOME runtime.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ['*']

@@ -18,10 +18,10 @@ jobs:
     name: Rust (fmt, clippy, test)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
       - name: Cache Cargo
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             ~/.cargo/registry
@@ -40,15 +40,15 @@ jobs:
     name: nix flake check
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
       - run: nix flake check -L
 
   ffmpeg-ubuntu:
     name: ffmpeg confinement (Ubuntu 24.04's ffmpeg 6.1)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
       - name: tests/ffmpeg_confinement.rs against the distribution's ffmpeg
         run: |
@@ -61,8 +61,8 @@ jobs:
     name: Rust crate licences up to date
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
       - run: |
           nix shell --inputs-from . nixpkgs#cargo-about nixpkgs#cargo \
             -c packaging/licenses/update-rust-licenses.sh
@@ -75,7 +75,7 @@ jobs:
     name: Packaging scripts (shellcheck)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
           shellcheck -x --shell=sh packaging/linux/*.sh packaging/deb/*.sh packaging/rpm/*.sh \
             packaging/arch/*.sh packaging/ci/*.sh packaging/flatpak/*.sh packaging/licenses/*.sh \
@@ -89,16 +89,16 @@ jobs:
       run:
         working-directory: android
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
       - name: Licence notices in the APK
         run: unzip -l app/build/outputs/apk/debug/*.apk | grep ' assets/NOTICE.txt$'
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: tunemesh-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
