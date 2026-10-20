@@ -1,48 +1,83 @@
 #!/bin/sh
-# Builds the release APK into dist/ with its licence notice. Signs it when
-# ANDROID_KEYSTORE_B64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS and
-# ANDROID_KEY_PASSWORD are set (plus optional ANDROID_LINEAGE_B64), writing
-# android/.signing/ in the format android/app/build.gradle.kts reads and
-# deleting it afterwards; otherwise the APK is unsigned.
+# Release APK for GitHub releases, in two steps so that no Gradle or plugin
+# code ever runs while the signing key is on disk or in the environment:
 #
-#   VERSION=<version> packaging/ci/android-release.sh
+#   VERSION=<v> packaging/ci/android-release.sh build
+#       Builds the unsigned release APK (no signing secrets needed or read)
+#       into dist/TuneMesh-<v>-unsigned.apk, with dist/TuneMesh-<v>-android-NOTICE.txt.
+#
+#   VERSION=<v> ANDROID_KEYSTORE_B64=... ANDROID_STORE_PASSWORD=... \
+#   ANDROID_KEY_ALIAS=... ANDROID_KEY_PASSWORD=... [ANDROID_LINEAGE_B64=...] \
+#       packaging/ci/android-release.sh sign
+#       Signs that APK with apksigner into dist/TuneMesh-<v>.apk and removes
+#       the unsigned one. Fails when a required secret is missing. The
+#       signature matches what android/app/build.gradle.kts produces with the
+#       same key: APK Signature Scheme v2 only without a lineage; with one,
+#       v3 only, carrying the rotation lineage (rotation from Android 9,
+#       like RotateApkSignature; minSdk is 30, so v2 is not needed).
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-signing=$repo/android/.signing
-trap 'rm -rf "$signing"' EXIT
+dist=$repo/dist
+: "${VERSION:?VERSION is not set}"
+unsigned=$dist/TuneMesh-$VERSION-unsigned.apk
 
-if [ -n "${ANDROID_KEYSTORE_B64:-}" ] && [ -n "${ANDROID_STORE_PASSWORD:-}" ] &&
-    [ -n "${ANDROID_KEY_ALIAS:-}" ] && [ -n "${ANDROID_KEY_PASSWORD:-}" ]; then
-    signed=true
+build() {
+    (cd "$repo/android" && ./gradlew --no-daemon :app:assembleRelease)
+    mkdir -p "$dist"
+    cp "$repo/android/app/build/outputs/apk/release/app-release-unsigned.apk" "$unsigned"
+    # Licence notices of the libraries in the APK (also its assets/NOTICE.txt).
+    cp "$repo/android/app/build/generated/notice/NOTICE.txt" "$dist/TuneMesh-$VERSION-android-NOTICE.txt"
+    unzip -l "$unsigned" | grep -q ' assets/NOTICE.txt$'
+}
+
+sign() {
+    missing=
+    for var in ANDROID_KEYSTORE_B64 ANDROID_STORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+        eval "value=\${$var:-}"
+        [ -n "$value" ] || missing="$missing $var"
+    done
+    if [ -n "$missing" ]; then
+        echo "::error::Android signing secrets missing:$missing (environment 'release')" >&2
+        exit 1
+    fi
+    [ -f "$unsigned" ] || { echo "android-release: $unsigned is missing; run build first" >&2; exit 1; }
+
+    # On the CI runner nothing from the build (Gradle or Kotlin daemons) may
+    # still be running. Not elsewhere: it would stop the user's own builds.
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        pkill -u "$(id -u)" -f 'GradleDaemon|KotlinCompileDaemon|GradleWorkerMain' 2>/dev/null || true
+    fi
+
+    sdk=${ANDROID_HOME:-${ANDROID_SDK_ROOT:?ANDROID_HOME is not set}}
+    apksigner=$(find -L "$sdk/build-tools" -mindepth 2 -maxdepth 2 -name apksigner | sort -V | tail -n 1)
+    [ -x "$apksigner" ] || { echo "android-release: no apksigner in $sdk/build-tools" >&2; exit 1; }
+
+    keys=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tunemesh-signing.XXXXXX")
+    trap 'rm -rf "$keys"' EXIT
     (
         umask 077
-        mkdir -p "$signing"
-        printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d >"$signing/tunemesh.jks"
-        {
-            echo "storeFile=tunemesh.jks"
-            echo "storePassword=$ANDROID_STORE_PASSWORD"
-            echo "keyAlias=$ANDROID_KEY_ALIAS"
-            echo "keyPassword=$ANDROID_KEY_PASSWORD"
-        } >"$signing/signing.properties"
+        printf '%s' "$ANDROID_KEYSTORE_B64" | base64 -d >"$keys/release.jks"
         if [ -n "${ANDROID_LINEAGE_B64:-}" ]; then
-            printf '%s' "$ANDROID_LINEAGE_B64" | base64 -d >"$signing/lineage"
-            echo "lineageFile=lineage" >>"$signing/signing.properties"
+            printf '%s' "$ANDROID_LINEAGE_B64" | base64 -d >"$keys/lineage"
         fi
     )
-else
-    signed=false
-    echo "::notice::Android signing secrets are not available; building an unsigned release APK"
-fi
+    signed=$dist/TuneMesh-$VERSION.apk
+    set -- --ks "$keys/release.jks" --ks-key-alias "$ANDROID_KEY_ALIAS" \
+        --ks-pass env:ANDROID_STORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
+        --v1-signing-enabled false --v4-signing-enabled false
+    if [ -f "$keys/lineage" ]; then
+        set -- "$@" --lineage "$keys/lineage" --rotation-min-sdk-version 28 \
+            --v2-signing-enabled false --v3-signing-enabled true
+    else
+        set -- "$@" --v2-signing-enabled true --v3-signing-enabled false
+    fi
+    "$apksigner" sign "$@" --out "$signed" "$unsigned"
+    "$apksigner" verify --print-certs -v "$signed"
+    rm "$unsigned"
+}
 
-(cd "$repo/android" && ./gradlew --no-daemon :app:assembleRelease)
-
-mkdir -p "$repo/dist"
-apks=$repo/android/app/build/outputs/apk/release
-if $signed; then
-    cp "$apks/app-release.apk" "$repo/dist/TuneMesh-$VERSION.apk"
-else
-    cp "$apks/app-release-unsigned.apk" "$repo/dist/TuneMesh-$VERSION-unsigned.apk"
-fi
-# Licence notices of the libraries in the APK (also its assets/NOTICE.txt).
-cp "$repo/android/app/build/generated/notice/NOTICE.txt" "$repo/dist/TuneMesh-$VERSION-android-NOTICE.txt"
-unzip -l "$repo"/dist/TuneMesh-*.apk | grep -q ' assets/NOTICE.txt$'
+case ${1:-} in
+    build) build ;;
+    sign) sign ;;
+    *) echo "usage: android-release.sh build|sign" >&2; exit 2 ;;
+esac

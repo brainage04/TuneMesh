@@ -8,8 +8,10 @@ name: Release
 # Android signing: the android-signed job runs only for v* tags, in the GitHub
 # environment `release` (deployment rule: tags matching v* only), which holds
 # the secrets ANDROID_KEYSTORE_B64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS,
-# ANDROID_KEY_PASSWORD and, optionally, ANDROID_LINEAGE_B64. Every other run
-# builds an unsigned APK in the android job and never sees those secrets.
+# ANDROID_KEY_PASSWORD and, optionally, ANDROID_LINEAGE_B64; a tag build fails
+# when one of the four required secrets is missing. The APK is built without
+# the secrets first; only apksigner, after the build, sees them. Every other
+# run builds an unsigned APK in the android job and never sees those secrets.
 # Only the publish job may write to the repository (contents: write).
 on:
   push:
@@ -240,7 +242,33 @@ jobs:
       - name: Build the unsigned release APK
         env:
           VERSION: ${{ needs.version.outputs.version }}
-        run: packaging/ci/android-release.sh
+        run: packaging/ci/android-release.sh build
+      # Exercises the tag job's signing step with a throwaway key and lineage;
+      # the signed copy is discarded.
+      - name: Signing dry run (throwaway key)
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          keys=$(mktemp -d)
+          for k in old new; do
+            keytool -genkeypair -keystore "$keys/$k.jks" -storepass "pass-$k" -keypass "pass-$k" \
+              -alias "$k" -keyalg RSA -keysize 2048 -validity 2 -dname "CN=throwaway $k" 2>/dev/null
+          done
+          apksigner=$(find -L "$ANDROID_HOME/build-tools" -mindepth 2 -maxdepth 2 -name apksigner | sort -V | tail -n 1)
+          "$apksigner" rotate --out "$keys/lineage" \
+            --old-signer --ks "$keys/old.jks" --ks-pass pass:pass-old \
+            --new-signer --ks "$keys/new.jks" --ks-pass pass:pass-new
+          cp "dist/TuneMesh-$VERSION-unsigned.apk" "$keys/unsigned.apk"
+          ANDROID_KEYSTORE_B64=$(base64 -w0 "$keys/new.jks") ANDROID_STORE_PASSWORD=pass-new \
+            ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD=pass-new \
+            ANDROID_LINEAGE_B64=$(base64 -w0 "$keys/lineage") packaging/ci/android-release.sh sign
+          "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep -q 'CN=throwaway old'
+          if ANDROID_KEY_PASSWORD='' packaging/ci/android-release.sh sign; then
+            echo "::error::signing without a password must fail"; exit 1
+          fi
+          rm "dist/TuneMesh-$VERSION.apk"
+          mv "$keys/unsigned.apk" "dist/TuneMesh-$VERSION-unsigned.apk"
+          rm -rf "$keys"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-android
@@ -259,7 +287,12 @@ jobs:
           java-version: 17
       # No Gradle cache here: a cache written by a job holding the signing
       # secrets would be restored into untrusted runs.
-      - name: Build and sign the release APK
+      # The build step gets no secrets; the signing step runs no build code.
+      - name: Build the unsigned release APK
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: packaging/ci/android-release.sh build
+      - name: Sign it with apksigner
         env:
           VERSION: ${{ needs.version.outputs.version }}
           ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
@@ -267,7 +300,7 @@ jobs:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_LINEAGE_B64: ${{ secrets.ANDROID_LINEAGE_B64 }}
-        run: packaging/ci/android-release.sh
+        run: packaging/ci/android-release.sh sign
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pkg-android
