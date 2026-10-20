@@ -29,7 +29,7 @@ if $deps; then
     DEBIAN_FRONTEND=noninteractive $sudo apt-get install -yq --no-install-recommends \
         build-essential pkg-config ca-certificates curl file desktop-file-utils \
         libgtk-4-dev libadwaita-1-dev libmpv-dev libglib2.0-dev-bin \
-        ffmpeg librsvg2-common adwaita-icon-theme gdk-pixbuf2.0-bin
+        ffmpeg zsync librsvg2-common adwaita-icon-theme gdk-pixbuf2.0-bin
 fi
 
 ensure_rust
