@@ -263,7 +263,10 @@ jobs:
             ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD=pass-new \
             ANDROID_LINEAGE_B64=$(base64 -w0 "$keys/lineage") packaging/ci/android-release.sh sign
           "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep -q 'CN=throwaway old'
-          if ANDROID_KEY_PASSWORD='' packaging/ci/android-release.sh sign; then
+          # Expected to fail; GITHUB_ACTIONS unset keeps it from annotating the run.
+          if env -u GITHUB_ACTIONS ANDROID_KEYSTORE_B64="$(base64 -w0 "$keys/new.jks")" \
+              ANDROID_STORE_PASSWORD=pass-new ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD='' \
+              packaging/ci/android-release.sh sign; then
             echo "::error::signing without a password must fail"; exit 1
           fi
           rm "dist/TuneMesh-$VERSION.apk"

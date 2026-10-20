@@ -37,7 +37,9 @@ sign() {
         [ -n "$value" ] || missing="$missing $var"
     done
     if [ -n "$missing" ]; then
-        echo "::error::Android signing secrets missing:$missing (environment 'release')" >&2
+        prefix=
+        [ "${GITHUB_ACTIONS:-}" = true ] && prefix=::error::
+        echo "${prefix}Android signing secrets missing:$missing (environment 'release')" >&2
         exit 1
     fi
     [ -f "$unsigned" ] || { echo "android-release: $unsigned is missing; run build first" >&2; exit 1; }
