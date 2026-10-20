@@ -230,17 +230,23 @@ impl Client {
             other => Error::Other(other.to_string()),
         })?;
         let status = resp.status().as_u16();
-        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        // A body cut short (connection closed early) is a failure, never an
+        // empty success.
+        let text = resp.body_mut().read_to_string().map_err(|e| {
+            Error::Other(format!(
+                "Syncthing's answer to {method} {path} was cut short: {e}"
+            ))
+        })?;
         match status {
-            200..=299 => Ok(Some(if text.trim().is_empty() {
-                Value::Null
-            } else {
-                serde_json::from_str(&text).unwrap_or(Value::Null)
-            })),
+            200..=299 if text.trim().is_empty() => Ok(Some(Value::Null)),
+            200..=299 => serde_json::from_str(&text)
+                .map(Some)
+                .map_err(|e| Error::Other(format!("Unexpected answer to {method} {path}: {e}"))),
             300..=399 => Err(Error::Other(format!(
                 "Syncthing answered {status} (a redirect) to {method} {path}; check the address"
             ))),
-            404 => Ok(None),
+            // Only a lookup can find nothing; a write that gets 404 failed.
+            404 if method == "GET" => Ok(None),
             401 | 403 => Err(Error::Forbidden),
             _ => Err(Error::Other(format!(
                 "Syncthing answered {status} to {method} {path}: {}",
@@ -630,5 +636,82 @@ mod tests {
             proxy_seen.lock().unwrap().is_empty(),
             "the proxy was contacted"
         );
+    }
+
+    /// A fake Syncthing answering each request line ("PUT /rest/...") with
+    /// the response `route` gives.
+    fn fake(route: impl Fn(&str) -> String + Send + 'static) -> Client {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = vec![0u8; 16384];
+                let n = s.read(&mut buf).unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = req.lines().next().unwrap_or("").to_owned();
+                let _ = s.write_all(route(&line).as_bytes());
+            }
+        });
+        Client::new(Endpoint {
+            base,
+            api_key: "k".into(),
+        })
+    }
+
+    fn ok(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    const NOT_FOUND: &str =
+        "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    /// Promises 100 bytes, sends 7 and closes.
+    const CUT_SHORT: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\nConnection: close\r\n\r\npartial";
+
+    /// GET answers of a normal Syncthing; writes go to `write`.
+    fn syncthing_with_writes(write: &'static str) -> Client {
+        fake(move |line| {
+            let path = line.split(' ').nth(1).unwrap_or("");
+            if line.starts_with("PUT ") || line.starts_with("PATCH ") {
+                return write.to_owned();
+            }
+            match path {
+                "/rest/system/status" => ok(r#"{"myID":"LOCAL"}"#),
+                p if p.starts_with("/rest/svc/deviceid") => ok(r#"{"id":"REMOTE"}"#),
+                "/rest/config/folders/tunemesh" => {
+                    ok(r#"{"id":"tunemesh","path":"/x","devices":[{"deviceID":"LOCAL"}]}"#)
+                }
+                _ => NOT_FOUND.to_owned(),
+            }
+        })
+    }
+
+    #[test]
+    fn rejected_writes_are_errors() {
+        let c = syncthing_with_writes(NOT_FOUND);
+        assert!(c.create_folder(Path::new("/x"), "LOCAL").is_err());
+        assert!(c.share_with("REMOTE", "phone").is_err());
+    }
+
+    #[test]
+    fn answers_cut_short_are_errors() {
+        let c = syncthing_with_writes(CUT_SHORT);
+        assert!(c.create_folder(Path::new("/x"), "LOCAL").is_err());
+        assert!(c.share_with("REMOTE", "phone").is_err());
+        let c = fake(|_| CUT_SHORT.to_owned());
+        assert!(c.my_id().is_err());
+    }
+
+    #[test]
+    fn empty_successful_writes_still_succeed() {
+        let c = syncthing_with_writes(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        c.create_folder(Path::new("/x"), "LOCAL").unwrap();
+        assert_eq!(c.share_with("REMOTE", "phone").unwrap(), "REMOTE");
     }
 }
