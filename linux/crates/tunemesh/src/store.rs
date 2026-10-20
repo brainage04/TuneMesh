@@ -284,7 +284,7 @@ impl Store {
         *self.liked_set.borrow_mut() = liked
             .entries
             .iter()
-            .filter_map(|e| e.track.clone())
+            .filter_map(|e| e.track().map(str::to_owned))
             .collect();
         *self.liked.borrow_mut() = liked;
     }
@@ -540,7 +540,7 @@ fn summarize(p: &Playlist) -> Summary {
         first_tracks: p
             .entries
             .iter()
-            .filter_map(|e| e.track.clone())
+            .filter_map(|e| e.track().map(str::to_owned))
             .take(SUMMARY_TRACKS)
             .collect(),
     }
@@ -551,7 +551,7 @@ fn summarize(p: &Playlist) -> Summary {
 pub type EntryRef = (usize, String);
 
 pub fn entry_key(e: &tunemesh_core::playlist::PlaylistEntry) -> &str {
-    e.track.as_deref().unwrap_or(&e.raw)
+    e.key()
 }
 
 /// Finds the shown entries in a freshly read playlist: at their position if

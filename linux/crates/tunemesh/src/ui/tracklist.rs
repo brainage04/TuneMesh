@@ -40,7 +40,7 @@ impl Entries {
     fn path(&self, i: usize) -> Option<&str> {
         match self {
             Entries::Tracks(v) => v.get(i).map(String::as_str),
-            Entries::Playlist(p) => p.entries.get(i)?.track.as_deref(),
+            Entries::Playlist(p) => p.entries.get(i)?.track(),
         }
     }
 
@@ -58,8 +58,8 @@ impl Entries {
         match self {
             Entries::Tracks(_) => String::new(),
             Entries::Playlist(p) => p.entries.get(i).map_or_else(String::new, |e| {
-                e.label.clone().unwrap_or_else(|| {
-                    let raw = e.track.as_deref().unwrap_or(&e.raw);
+                e.label().map(str::to_owned).unwrap_or_else(|| {
+                    let raw = e.key();
                     tunemesh_core::library::title_from_file_name(
                         raw.rsplit('/').next().unwrap_or(raw),
                     )

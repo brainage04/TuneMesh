@@ -81,7 +81,7 @@ fn album_paths(lib: &Library, album: usize) -> Vec<String> {
 fn available_paths(lib: &Library, p: &Playlist) -> Vec<String> {
     p.entries
         .iter()
-        .filter_map(|e| e.track.clone())
+        .filter_map(|e| e.track().map(str::to_owned))
         .filter(|t| lib.track_index(t).is_some())
         .collect()
 }
@@ -790,7 +790,7 @@ fn playlist(app: &Rc<App>, name: &str) -> Page {
     } else {
         HeroArt::Cover(Source::for_paths(
             &lib,
-            p.entries.iter().filter_map(|e| e.track.as_deref()),
+            p.entries.iter().filter_map(|e| e.track()),
             name,
         ))
     };
