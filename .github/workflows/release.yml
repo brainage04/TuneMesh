@@ -158,13 +158,15 @@ jobs:
         run: |
           apt-get update -q
           DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
-            ./dist/tunemesh_*.deb xvfb xauth dbus
+            ./dist/tunemesh_*.deb xvfb xauth dbus libglib2.0-bin pulseaudio pulseaudio-utils
           dpkg -L tunemesh >installed.txt
           cat installed.txt
       - name: Licence notices
         run: packaging/ci/check-licences.sh deb /
       - name: Smoke test
         run: packaging/ci/smoke.sh
+      - name: Playback through the packaged libmpv
+        run: dbus-run-session -- packaging/ci/playback.sh
       - name: Uninstall
         run: |
           apt-get purge -yq tunemesh
@@ -315,12 +317,14 @@ jobs:
           if command -v dnf >/dev/null; then
             dnf install -y tar gzip /usr/bin/xvfb-run /usr/bin/xauth /usr/bin/dbus-run-session \
               mesa-libGL mesa-libEGL mesa-libgbm libX11 libX11-xcb libxcb libdrm libwayland-client \
-              fontconfig freetype harfbuzz fribidi alsa-lib pipewire-libs libusb1 shared-mime-info
+              fontconfig freetype harfbuzz fribidi alsa-lib pipewire-libs libusb1 shared-mime-info \
+              glib2 pulseaudio pulseaudio-utils
           else
             sudo apt-get update -q
             sudo apt-get install -yq xvfb libgl1 libegl1 libgbm1 libx11-6 libx11-xcb1 libxcb1 \
               libxcb-dri3-0 libdrm2 libwayland-client0 libfontconfig1 libfreetype6 libharfbuzz0b \
-              libfribidi0 libasound2t64 libpipewire-0.3-0t64 libusb-1.0-0 shared-mime-info
+              libfribidi0 libasound2t64 libpipewire-0.3-0t64 libusb-1.0-0 shared-mime-info \
+              libglib2.0-bin dbus pulseaudio pulseaudio-utils
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -332,6 +336,8 @@ jobs:
           appimage=$(ls "$PWD"/dist/TuneMesh-*.AppImage)
           chmod +x "$appimage"
           APP="$appimage" WORKER="$appimage worker" packaging/ci/smoke.sh
+      - name: Playback through the bundled libmpv
+        run: APP="$(ls "$PWD"/dist/TuneMesh-*.AppImage)" dbus-run-session -- packaging/ci/playback.sh
       - name: Licence notices
         env:
           ARCH: ${{ matrix.arch }}
@@ -354,7 +360,7 @@ jobs:
           path: dist
       - name: Install
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq flatpak xvfb
+          sudo apt-get update -q && sudo apt-get install -yq flatpak xvfb pulseaudio pulseaudio-utils
           flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
           flatpak install --user -y --noninteractive dist/TuneMesh-*.flatpak
           flatpak info --user "$APP_ID"
@@ -367,6 +373,10 @@ jobs:
         run: |
           APP="flatpak run $APP_ID" WORKER="flatpak run --command=tunemesh-worker $APP_ID" \
             LIB_PARENT="$HOME/Music/TuneMesh" packaging/ci/smoke.sh
+      - name: Playback
+        run: |
+          APP="flatpak run $APP_ID" LIB_PARENT="$HOME/Music/TuneMesh" \
+            CONFIG_HOME="$HOME/.var/app/$APP_ID/config" dbus-run-session -- packaging/ci/playback.sh
       - name: Uninstall
         run: |
           flatpak uninstall --user -y --noninteractive --delete-data "$APP_ID"
@@ -392,7 +402,7 @@ jobs:
           path: dist
       - name: Install
         run: |
-          sudo apt-get update -q && sudo apt-get install -yq xvfb
+          sudo apt-get update -q && sudo apt-get install -yq xvfb pulseaudio pulseaudio-utils
           sudo snap install --dangerous dist/tunemesh_*.snap
           sudo snap connect tunemesh:syncthing-config
           snap connections tunemesh
@@ -408,6 +418,8 @@ jobs:
           for _ in $(seq 30); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
           APP=/snap/bin/tunemesh WORKER=/snap/bin/tunemesh.worker SESSION_BUS=user \
             LIB_PARENT="$HOME/Music" packaging/ci/smoke.sh
+          APP=/snap/bin/tunemesh LIB_PARENT="$HOME/Music" \
+            CONFIG_HOME="$HOME/snap/tunemesh/current/.config" packaging/ci/playback.sh
       - name: Uninstall
         run: |
           sudo snap remove --purge tunemesh
