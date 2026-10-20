@@ -34,6 +34,22 @@ pub fn open_track(root: &Path, rel: &str) -> std::io::Result<OpenTrack> {
     Ok(OpenTrack { file, mpv_path })
 }
 
+/// The first of `candidates` (queue index, path) that opens safely.
+pub(crate) fn first_playable(
+    root: &Path,
+    candidates: Vec<(usize, String)>,
+) -> Option<(usize, String, OpenTrack)> {
+    candidates
+        .into_iter()
+        .find_map(|(i, path)| match open_track(root, &path) {
+            Ok(t) => Some((i, path, t)),
+            Err(e) => {
+                eprintln!("tunemesh: skipping {path:?}: {e}");
+                None
+            }
+        })
+}
+
 impl OpenTrack {
     fn into_file(self) -> File {
         self.file
@@ -154,6 +170,19 @@ struct State {
 }
 
 impl State {
+    /// Queue indices that may follow the current track, in play order:
+    /// the rest of the queue, then (with repeat all) from the start again.
+    fn upcoming(&self) -> Vec<usize> {
+        let Some(cur) = self.current else {
+            return Vec::new();
+        };
+        let mut v: Vec<usize> = (cur + 1..self.items.len()).collect();
+        if self.repeat == Repeat::All {
+            v.extend(0..=cur.min(self.items.len().saturating_sub(1)));
+        }
+        v
+    }
+
     fn next_index(&self) -> Option<usize> {
         let cur = self.current?;
         if cur + 1 < self.items.len() {
@@ -424,12 +453,16 @@ impl Player {
     /// track at this point).
     fn append_next(&self) {
         let Some(mpv) = self.mpv.clone() else { return };
-        let want = {
+        let candidates: Vec<(usize, String)> = {
             let st = self.st.borrow();
-            st.next_index().map(|i| (i, st.items[i].path.clone()))
+            st.upcoming()
+                .into_iter()
+                .map(|i| (i, st.items[i].path.clone()))
+                .collect()
         };
-        let Some((index, path)) = want else { return };
-        let Some(track) = self.open(&path) else {
+        // Tracks deleted or replaced since the scan are skipped, so
+        // playback goes on with the next one that opens.
+        let Some((index, path, track)) = first_playable(&self.root.borrow(), candidates) else {
             return;
         };
         if mpv
@@ -1142,5 +1175,15 @@ mod tests {
         drop(files);
         assert_eq!(fds_on(&bad), 0);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn upcoming_follows_the_queue_and_repeat() {
+        let st = state(&["a", "b", "c", "d"], 1, Repeat::Off);
+        assert_eq!(st.upcoming(), vec![2, 3]);
+        let st = state(&["a", "b", "c", "d"], 1, Repeat::All);
+        assert_eq!(st.upcoming(), vec![2, 3, 0, 1]);
+        let st = state(&["a", "b"], 1, Repeat::Off);
+        assert!(st.upcoming().is_empty());
     }
 }

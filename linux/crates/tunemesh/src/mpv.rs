@@ -502,4 +502,46 @@ mod tests {
             "played a {d} s file, not the 1 s original"
         );
     }
+
+    #[test]
+    fn playback_skips_a_queued_track_deleted_after_the_scan() {
+        let root = std::env::temp_dir().join(format!("tunemesh-skip-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.wav"), wav(1)).unwrap();
+        std::fs::write(root.join("b.wav"), wav(3)).unwrap();
+        std::fs::write(root.join("c.wav"), wav(2)).unwrap();
+        // b goes away while a plays.
+        std::fs::remove_file(root.join("b.wav")).unwrap();
+        let first = crate::player::open_track(&root, "a.wav").unwrap();
+        let (index, path, next) =
+            crate::player::first_playable(&root, vec![(1, "b.wav".into()), (2, "c.wav".into())])
+                .expect("c is playable");
+        assert_eq!((index, path.as_str()), (2, "c.wav"));
+
+        let base: Vec<_> = BASE_OPTIONS
+            .iter()
+            .copied()
+            .chain([("ao", "null"), ("audio-fallback-to-null", "yes")])
+            .collect();
+        let mpv = Mpv::create(&base, LOCAL_ONLY).unwrap();
+        mpv.command(&["loadfile", &first.mpv_path]).unwrap();
+        mpv.command(&["loadfile", &next.mpv_path, "append"])
+            .unwrap();
+        let start = Instant::now();
+        let mut reached = None;
+        while start.elapsed() < Duration::from_secs(6) {
+            if mpv.get_i64("playlist-pos") == Some(1)
+                && let Some(d) = mpv.get_f64("duration")
+            {
+                reached = Some(d);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        mpv.quit();
+        drop((first, next));
+        std::fs::remove_dir_all(&root).unwrap();
+        let d = reached.expect("playback did not continue after the first track");
+        assert!((d - 2.0).abs() < 0.1, "played a {d} s file, not c (2 s)");
+    }
 }
