@@ -3,6 +3,7 @@ package io.github.brainage04.tunemesh.data
 import android.media.MediaMetadataRetriever
 import io.github.brainage04.tunemesh.library.AtomicFiles
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.RawTags
 import io.github.brainage04.tunemesh.library.Track
 import kotlinx.serialization.Serializable
@@ -47,23 +48,46 @@ class LibraryScanner(private val cacheFile: File) {
         val found = HashMap<String, Pair<Long, Long>>()
         val directories = mutableListOf<File>()
         if (root.isDirectory) {
+            // Entries seen so far in each open directory, innermost last (Limits.MAX_FOLDER_ENTRIES).
+            val seen = ArrayDeque<IntArray>()
+
+            /** Counts one entry of the current directory; false once the rest of it must be skipped. */
+            fun count(): Boolean {
+                val counter = seen.lastOrNull() ?: return true
+                return ++counter[0] <= Limits.MAX_FOLDER_ENTRIES
+            }
+
             Files.walkFileTree(rootPath, object : SimpleFileVisitor<Path>() {
                 override fun preVisitDirectory(dir: Path, attrs: BasicFileAttributes): FileVisitResult {
-                    val relative = rootPath.relativize(dir).toString()
+                    if (!count()) return FileVisitResult.SKIP_SIBLINGS
+                    val relativePath = rootPath.relativize(dir)
+                    val relative = relativePath.toString()
                     if (relative.isNotEmpty() && LibraryFormat.isExcludedDirectory(relative)) return FileVisitResult.SKIP_SUBTREE
+                    if (relative.isNotEmpty() && relativePath.nameCount > Limits.MAX_DEPTH) return FileVisitResult.SKIP_SUBTREE
                     directories += dir.toFile()
+                    seen.addLast(IntArray(1))
+                    return FileVisitResult.CONTINUE
+                }
+
+                override fun postVisitDirectory(dir: Path, exc: IOException?): FileVisitResult {
+                    seen.removeLastOrNull()
                     return FileVisitResult.CONTINUE
                 }
 
                 override fun visitFile(file: Path, attrs: BasicFileAttributes): FileVisitResult {
+                    if (!count()) return FileVisitResult.SKIP_SIBLINGS
                     if (attrs.isRegularFile) {
                         val relative = rootPath.relativize(file).toString()
-                        if (LibraryFormat.isAudioPath(relative)) found[relative] = attrs.size() to attrs.lastModifiedTime().toMillis()
+                        if (LibraryFormat.isAudioPath(relative)) {
+                            found[relative] = attrs.size() to attrs.lastModifiedTime().toMillis()
+                            if (found.size >= Limits.MAX_AUDIO_FILES) return FileVisitResult.TERMINATE
+                        }
                     }
                     return FileVisitResult.CONTINUE
                 }
 
-                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult = FileVisitResult.CONTINUE
+                override fun visitFileFailed(file: Path, exc: IOException): FileVisitResult =
+                    if (count()) FileVisitResult.CONTINUE else FileVisitResult.SKIP_SIBLINGS
             })
         }
 
@@ -110,7 +134,10 @@ class LibraryScanner(private val cacheFile: File) {
             val retriever = MediaMetadataRetriever()
             return try {
                 retriever.setDataSource(file.absolutePath)
-                fun text(key: Int) = retriever.extractMetadata(key)?.trim()?.takeIf { it.isNotEmpty() }
+                // A text item over Limits.MAX_TAG_ITEM_BYTES is not used; the others are cut to MAX_TAG_TEXT_BYTES.
+                fun text(key: Int) = retriever.extractMetadata(key)
+                    ?.takeUnless { it.length > Limits.MAX_TAG_ITEM_BYTES / 4 && Limits.utf8Length(it) > Limits.MAX_TAG_ITEM_BYTES }
+                    ?.let { RawTags.boundedText(it) }?.takeIf { it.isNotEmpty() }
                 RawTags(
                     title = text(MediaMetadataRetriever.METADATA_KEY_TITLE),
                     artist = text(MediaMetadataRetriever.METADATA_KEY_ARTIST),

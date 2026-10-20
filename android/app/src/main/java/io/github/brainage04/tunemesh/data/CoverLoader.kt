@@ -6,6 +6,7 @@ import android.media.MediaMetadataRetriever
 import android.util.LruCache
 import io.github.brainage04.tunemesh.library.AtomicFiles
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Track
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -66,6 +67,11 @@ class CoverLoader(private val directory: File) {
         }
     }
 
+    /**
+     * The embedded picture, else the first folder cover. A picture over [Limits.MAX_COVER_BYTES] counts as none.
+     * MediaMetadataRetriever hands over the whole embedded picture, so a huge one is loaded once to see its size;
+     * a folder cover is checked before it is read.
+     */
     private fun extract(audio: File): ByteArray? {
         val retriever = MediaMetadataRetriever()
         val embedded = try {
@@ -76,11 +82,17 @@ class CoverLoader(private val directory: File) {
         } finally {
             retriever.release()
         }
-        if (embedded != null) return embedded
+        // An embedded picture over the limit is not shown; the folder cover does not stand in for it.
+        if (embedded != null) return embedded.takeIf { it.size <= Limits.MAX_COVER_BYTES }
         val folder = audio.parentFile ?: return null
         for (name in LibraryFormat.COVER_FILE_NAMES) {
             val candidate = File(folder, name)
-            if (candidate.isFile) return runCatching { candidate.readBytes() }.getOrNull()
+            if (!candidate.isFile) continue
+            return try {
+                Limits.readBytes(candidate, Limits.MAX_COVER_BYTES, followLinks = false)
+            } catch (_: IOException) {
+                null
+            }
         }
         return null
     }
@@ -88,7 +100,9 @@ class CoverLoader(private val directory: File) {
     private fun scaleToJpeg(bytes: ByteArray): ByteArray? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        // A size that cannot be read from the header, or a side over the limit, is not shown.
         if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        if (bounds.outWidth > Limits.MAX_COVER_SIDE || bounds.outHeight > Limits.MAX_COVER_SIDE) return null
         val options = BitmapFactory.Options().apply { inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, DISK_SIZE) }
         val decoded = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options) ?: return null
         val side = minOf(decoded.width, decoded.height)

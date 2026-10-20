@@ -31,6 +31,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import io.github.brainage04.tunemesh.library.EntryRef
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.CoverArt
@@ -209,14 +210,20 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                             context = RowContext(playlistName = playlist.name, index = index),
                         )
                     } else {
-                        UnavailableRow(entry.raw, onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, index, entry.path) })
+                        UnavailableRow(entry.raw, onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, EntryRef(index, entry.key)) })
                     }
                 }
                 if (editing) {
-                    IconButton(onClick = { viewModel.repository.movePlaylistEntry(playlist.name, index, index - 1) }, enabled = index > 0) {
+                    IconButton(
+                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index - 1, entries[index - 1].key)) },
+                        enabled = index > 0,
+                    ) {
                         Icon(AppIcons.Up, "Move up")
                     }
-                    IconButton(onClick = { viewModel.repository.movePlaylistEntry(playlist.name, index, index + 1) }, enabled = index < entries.lastIndex) {
+                    IconButton(
+                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index + 1, entries[index + 1].key)) },
+                        enabled = index < entries.lastIndex,
+                    ) {
                         Icon(AppIcons.DownArrow, "Move down")
                     }
                 }

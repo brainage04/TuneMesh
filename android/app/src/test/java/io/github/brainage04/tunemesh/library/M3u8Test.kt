@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class M3u8Test {
@@ -158,7 +159,7 @@ class M3u8Test {
 
     @Test
     fun limitsRefuseInsteadOfTruncating() {
-        fun read(text: String, maxBytes: Long = M3u8.MAX_BYTES, maxEntries: Int = M3u8.MAX_ENTRIES): Int {
+        fun read(text: String, maxBytes: Long = Limits.MAX_PLAYLIST_BYTES, maxEntries: Int = Limits.MAX_PLAYLIST_ENTRIES): Int {
             var count = 0
             M3u8.read(text.byteInputStream(), root, keepExtinf = false, maxBytes = maxBytes, maxEntries = maxEntries) { count++ }
             return count
@@ -168,7 +169,7 @@ class M3u8Test {
         assertThrows(PlaylistTooLargeException::class.java) { read(three, maxEntries = 2) }
         assertEquals(3, read(three, maxBytes = three.length.toLong()))
         assertThrows(PlaylistTooLargeException::class.java) { read(three, maxBytes = three.length - 1L) }
-        val longLine = "../" + "x".repeat(M3u8.MAX_LINE_BYTES - 3)
+        val longLine = "../" + "x".repeat(Limits.MAX_PLAYLIST_LINE_BYTES - 3)
         assertEquals(1, read("$longLine\n"))
         assertThrows(PlaylistTooLargeException::class.java) { read("${longLine}y\n") }
     }
@@ -196,8 +197,8 @@ class M3u8Test {
             M3u8.read(text.byteInputStream(), root, keepExtinf = false) { n++ }
             return n
         }
-        val full = "../" + "é".repeat((M3u8.MAX_LINE_BYTES - 3) / 2) + "x".repeat((M3u8.MAX_LINE_BYTES - 3) % 2)
-        assertEquals(M3u8.MAX_LINE_BYTES, full.toByteArray().size)
+        val full = "../" + "é".repeat((Limits.MAX_PLAYLIST_LINE_BYTES - 3) / 2) + "x".repeat((Limits.MAX_PLAYLIST_LINE_BYTES - 3) % 2)
+        assertEquals(Limits.MAX_PLAYLIST_LINE_BYTES, full.toByteArray().size)
         assertEquals(1, count("$full\n"))
         assertEquals(1, count("$full\r\n"))
         assertEquals(2, count("$full\r\r\r\n../b.mp3"))
@@ -228,7 +229,7 @@ class M3u8Test {
         val long = track("A/x.mp3", "é".repeat(600), "A", 1_000)
         val line = M3u8.extinf(long)
         val label = line.substringAfter(',')
-        assertEquals(M3u8.MAX_LABEL_BYTES, label.toByteArray().size)
+        assertEquals(Limits.MAX_LABEL_BYTES, label.toByteArray().size)
         assertEquals("A - " + "é".repeat(510), label)
         assertEquals("A - " + "é".repeat(510), M3u8.cleanLabel("A - " + "é".repeat(511)))
         assertEquals("ab" + "é".repeat(511), M3u8.cleanLabel("ab" + "é".repeat(512)))
@@ -242,13 +243,36 @@ class M3u8Test {
     @Test
     fun overLimitPlaylistsAreNotWritten() {
         val entry = M3u8.entryFor(track("A/x.mp3", "x", "A", 1_000))
-        assertEquals(M3u8.MAX_ENTRIES, M3u8.write(List(M3u8.MAX_ENTRIES) { entry }) { null }.lines().count { it == "../A/x.mp3" })
-        assertThrows(PlaylistTooLargeException::class.java) { M3u8.write(List(M3u8.MAX_ENTRIES + 1) { entry }) { null } }
-        val longPath = "A/" + "x".repeat(M3u8.MAX_LINE_BYTES - 5)
-        assertEquals(M3u8.MAX_LINE_BYTES, M3u8.entryLine(longPath).toByteArray().size)
+        assertEquals(Limits.MAX_PLAYLIST_ENTRIES, M3u8.write(List(Limits.MAX_PLAYLIST_ENTRIES) { entry }) { null }.lines().count { it == "../A/x.mp3" })
+        assertThrows(PlaylistTooLargeException::class.java) { M3u8.write(List(Limits.MAX_PLAYLIST_ENTRIES + 1) { entry }) { null } }
+        val longPath = "A/" + "x".repeat(Limits.MAX_PLAYLIST_LINE_BYTES - 5)
+        assertEquals(Limits.MAX_PLAYLIST_LINE_BYTES, M3u8.entryLine(longPath).toByteArray().size)
         M3u8.write(listOf(PlaylistEntry(longPath, M3u8.entryLine(longPath)))) { null }
         assertThrows(PlaylistTooLargeException::class.java) {
             M3u8.write(listOf(PlaylistEntry(longPath + "x", M3u8.entryLine(longPath + "x")))) { null }
         }
+    }
+
+    /** R2-astra-1: a long entry without metadata gets a fallback label cut like any other, so it reads back. */
+    @Test
+    fun longEntriesWithoutMetadataRoundTrip() {
+        val line = "../" + "x".repeat(32765)
+        val entries = M3u8.parse("$line\n", "/r")
+        assertEquals(1, entries.size)
+        val written = M3u8.write(entries) { null }
+        assertTrue(written.lines().all { it.toByteArray().size <= Limits.MAX_PLAYLIST_LINE_BYTES })
+        assertEquals("#EXTINF:-1,${"x".repeat(Limits.MAX_LABEL_BYTES)}", written.lines()[1])
+        var reread = 0
+        M3u8.read(written.byteInputStream(), "/r", keepExtinf = true) { assertEquals(line, it.raw); reread++ }
+        assertEquals(1, reread)
+    }
+
+    @Test
+    fun everyWrittenLineIsCheckedAgainstTheLimit() {
+        val outside = "/elsewhere/" + "y".repeat(Limits.MAX_PLAYLIST_LINE_BYTES)
+        val entry = PlaylistEntry(null, outside)
+        assertThrows(PlaylistTooLargeException::class.java) { M3u8.write(listOf(entry)) { null } }
+        val fits = PlaylistEntry(null, outside.take(Limits.MAX_PLAYLIST_LINE_BYTES))
+        assertEquals(outside.take(Limits.MAX_PLAYLIST_LINE_BYTES), M3u8.write(listOf(fits)) { null }.lines()[2])
     }
 }

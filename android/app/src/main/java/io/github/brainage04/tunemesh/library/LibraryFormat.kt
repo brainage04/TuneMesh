@@ -16,7 +16,6 @@ object LibraryFormat {
     val AUDIO_EXTENSIONS = setOf("opus", "ogg", "oga", "m4a", "mp4", "aac", "mp3", "flac", "wav", "webm")
     val COVER_FILE_NAMES = listOf("cover.jpg", "cover.png", "folder.jpg", "folder.png")
 
-    private val trailingSourceId = Regex("""\s*\[[^\[\]]+]$""")
 
     fun isConflictCopy(name: String): Boolean = name.contains(".sync-conflict-")
 
@@ -45,11 +44,17 @@ object LibraryFormat {
         return parts.any { isHidden(it) || hasLineBreak(it) } || parts.firstOrNull() == PLAYLISTS_DIR
     }
 
-    /** File name without extension and without a trailing ` [<id>]`. */
+    /** File name without extension and without a trailing ` [<id>]`: tunemesh-core's `title_from_file_name`. */
     fun titleFromFileName(name: String): String {
-        val stem = if (name.contains('.')) name.substringBeforeLast('.') else name
-        val stripped = stem.replace(trailingSourceId, "")
-        return stripped.ifBlank { stem }
+        val stem = name.substringBeforeLast('.', "").ifEmpty { name }
+        if (stem.endsWith(']')) {
+            val open = stem.lastIndexOf('[', stem.length - 2)
+            if (open >= 0 && open + 1 < stem.length - 1 && ']' !in stem.substring(open + 1, stem.length - 1)) {
+                val title = stem.substring(0, open).trimEnd(::isWhiteSpace)
+                if (title.isNotEmpty()) return title
+            }
+        }
+        return stem
     }
 
     fun fallbackAlbum(relativePath: String): String {

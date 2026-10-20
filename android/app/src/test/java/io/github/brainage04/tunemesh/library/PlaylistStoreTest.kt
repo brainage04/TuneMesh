@@ -22,7 +22,7 @@ class PlaylistStoreTest {
     private val c = track("Artist/Album/C [3].opus")
     private val tracks = listOf(a, b, c).associateBy { it.path }
 
-    private fun store(root: File = temp.root) = PlaylistStore(root, tracks::get)
+    private fun store(root: File = temp.root) = PlaylistStore(root, lookup = tracks::get)
 
     private fun liked(root: File = temp.root) = File(root, "Playlists/Liked Songs.m3u8").readText()
 
@@ -60,19 +60,66 @@ class PlaylistStoreTest {
         val store = store()
         val name = store.create("Road trip")
         store.add(name, listOf(a, b, c, a))
-        store.move(name, 0, 2)
-        store.removeAt(name, 1, c.path)
+        store.move(name, EntryRef(0, a.path), EntryRef(2, c.path))
+        store.remove(name, EntryRef(1, c.path))
         assertEquals(listOf(b.path, a.path, a.path), store.read(name)!!.entries.map { it.path })
         assertEquals(listOf("Road trip.m3u8"), File(temp.root, "Playlists").list()!!.toList())
     }
 
     @Test
-    fun removeAtFallsBackToPathWhenIndexIsStale() {
+    fun removeFallsBackToTheKeyWhenThePositionIsStale() {
         val store = store()
         val name = store.create("List")
         store.add(name, listOf(a, b, c))
-        store.removeAt(name, 0, c.path)
+        store.remove(name, EntryRef(0, c.path))
         assertEquals(listOf(a.path, b.path), store.read(name)!!.entries.map { it.path })
+    }
+
+    /** R2-astra-2, first case: another device reordered the playlist between showing and "Move up". */
+    @Test
+    fun moveFindsTheShownEntriesInTheChangedFile() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val file = File(dir, "Mix.m3u8")
+        file.writeText("../A.wav\n../B.wav\n../C.wav\n")
+        val store = store()
+        val shown = store.contents("Mix")!!.entries
+        file.writeText("../C.wav\n../A.wav\n../B.wav\n")
+        store.move("Mix", EntryRef(2, shown[2].key), EntryRef(1, shown[1].key)) // "Move up" on C
+        // C (now first) moves to where B is now, as on the desktop; B is not the one moved.
+        assertEquals(listOf("A.wav", "B.wav", "C.wav"), store.read("Mix")!!.entries.map { it.path })
+    }
+
+    /** R2-astra-2, second case: entries outside the library are told apart by their line, not a shared null. */
+    @Test
+    fun removeTellsOutsideEntriesApartByTheirLine() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val file = File(dir, "Mix.m3u8")
+        file.writeText("/outside/A.wav\n/outside/B.wav\n")
+        val store = store()
+        val shown = store.contents("Mix")!!.entries
+        assertEquals(listOf(null, null), shown.map { it.path })
+        file.writeText("/outside/B.wav\n/outside/A.wav\n")
+        store.remove("Mix", EntryRef(1, shown[1].key))
+        assertEquals(listOf("/outside/A.wav"), store.read("Mix")!!.entries.map { it.raw })
+    }
+
+    @Test
+    fun changesToEntriesThatAreGoneFailWithoutWriting() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val file = File(dir, "Mix.m3u8")
+        file.writeText("../A.wav\n../B.wav\n")
+        val store = store()
+        val shown = store.contents("Mix")!!.entries
+        file.writeText("../B.wav\n")
+        val before = file.readText()
+        assertThrows(PlaylistException::class.java) { store.remove("Mix", EntryRef(0, shown[0].key)) }
+        assertThrows(PlaylistException::class.java) { store.move("Mix", EntryRef(1, shown[1].key), EntryRef(0, shown[0].key)) }
+        assertEquals(before, file.readText())
+        // Two shown rows with the same key are two different entries.
+        file.writeText("../A.wav\n../A.wav\n../B.wav\n")
+        store.move("Mix", EntryRef(2, "B.wav"), EntryRef(0, "A.wav"))
+        assertEquals(listOf("B.wav", "A.wav", "A.wav"), store.read("Mix")!!.entries.map { it.path })
+        assertEquals(listOf(1, 2), PlaylistStore.locate(store.read("Mix")!!.entries, listOf(EntryRef(1, "A.wav"), EntryRef(1, "A.wav"))))
     }
 
     @Test
@@ -171,17 +218,17 @@ class PlaylistStoreTest {
         val huge = File(dir, "Huge.m3u8")
         huge.outputStream().buffered().use { out ->
             out.write("#EXTM3U\n".toByteArray())
-            repeat(M3u8.MAX_ENTRIES + 1) { out.write("../missing.wav\n".toByteArray()) }
+            repeat(Limits.MAX_PLAYLIST_ENTRIES + 1) { out.write("../missing.wav\n".toByteArray()) }
         }
         val before = huge.readBytes()
         val store = store()
         val listed = store.list().single()
         assertEquals("Huge", listed.name)
-        assertTrue(listed.problem!!.contains("more than ${M3u8.MAX_ENTRIES} entries"))
+        assertTrue(listed.problem!!.contains("more than ${Limits.MAX_PLAYLIST_ENTRIES} entries"))
         assertThrows(PlaylistTooLargeException::class.java) { store.contents("Huge") }
         assertThrows(PlaylistException::class.java) { store.add("Huge", listOf(a)) }
-        assertThrows(PlaylistException::class.java) { store.removeAt("Huge", 0, null) }
-        assertThrows(PlaylistException::class.java) { store.move("Huge", 0, 1) }
+        assertThrows(PlaylistException::class.java) { store.remove("Huge", EntryRef(0, "missing.wav")) }
+        assertThrows(PlaylistException::class.java) { store.move("Huge", EntryRef(0, "missing.wav"), EntryRef(1, "missing.wav")) }
         assertTrue(before.contentEquals(huge.readBytes()))
 
         File(dir, "Liked Songs.m3u8").writeBytes(before)
@@ -193,7 +240,7 @@ class PlaylistStoreTest {
     @Test
     fun aFileLargerThanTheByteLimitIsNotRead() {
         val dir = File(temp.root, "Playlists").apply { mkdirs() }
-        java.io.RandomAccessFile(File(dir, "Sparse.m3u8"), "rw").use { it.setLength(M3u8.MAX_BYTES + 1) }
+        java.io.RandomAccessFile(File(dir, "Sparse.m3u8"), "rw").use { it.setLength(Limits.MAX_PLAYLIST_BYTES + 1) }
         assertTrue(store().list().single().problem!!.contains("larger than 32 MiB"))
     }
 
@@ -214,15 +261,54 @@ class PlaylistStoreTest {
         val full = File(dir, "Full.m3u8")
         full.outputStream().buffered().use { out ->
             out.write("#EXTM3U\n".toByteArray())
-            repeat(M3u8.MAX_ENTRIES) { out.write("../missing.wav\n".toByteArray()) }
+            repeat(Limits.MAX_PLAYLIST_ENTRIES) { out.write("../missing.wav\n".toByteArray()) }
         }
         val before = full.readBytes()
         val store = store()
-        assertEquals(M3u8.MAX_ENTRIES, store.list().single().size)
+        assertEquals(Limits.MAX_PLAYLIST_ENTRIES, store.list().single().size)
         val error = assertThrows(PlaylistException::class.java) { store.add("Full", listOf(a)) }
         assertTrue(error.message!!.contains("would be too large"))
         assertTrue(before.contentEquals(full.readBytes()))
-        store.removeAt("Full", 0, "missing.wav")
-        assertEquals(M3u8.MAX_ENTRIES - 1, store.list().single().size)
+        store.remove("Full", EntryRef(0, "missing.wav"))
+        assertEquals(Limits.MAX_PLAYLIST_ENTRIES - 1, store.list().single().size)
+    }
+
+    /** "Limits": Liked Songs and the first 1,000 other playlists by name; the rest are not read. */
+    @Test
+    fun listsLikedSongsAndTheFirstThousandByName() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        for (n in 0 until Limits.MAX_PLAYLISTS_LISTED + 50) File(dir, "p%04d.m3u8".format(n)).writeText("../A.wav\n")
+        File(dir, "Liked Songs.m3u8").writeText("../A.wav\n")
+        File(dir, "Zzz.m3u8").writeText("../A.wav\n")
+        File(dir, "aaa.m3u8").writeText("../A.wav\n")
+        val listed = store().list()
+        assertEquals(Limits.MAX_PLAYLISTS_LISTED + 1, listed.size)
+        assertEquals(listOf("Liked Songs", "aaa", "p0000"), listed.take(3).map { it.name })
+        assertEquals("p0998", listed.last().name)
+        assertFalse(listed.any { it.name == "Zzz" })
+    }
+
+    @Test
+    fun unchangedPlaylistsAreNotReadAgain() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val file = File(dir, "Mix.m3u8").apply { writeText("../A.wav\n") }
+        val summaries = PlaylistSummaries()
+        var reads = 0
+        val lookup: (String) -> Track? = { reads++; null }
+        val store = PlaylistStore(temp.root, summaries, lookup)
+        fun readsFor(block: () -> Unit): Int {
+            val before = reads
+            block()
+            return reads - before
+        }
+        assertTrue(readsFor { assertEquals(1, store.list().single().size) } > 0)
+        assertEquals(0, readsFor { assertEquals(1, store.list().single().size) })
+        file.writeText("../A.wav\n../B.wav\n")
+        assertTrue(readsFor { assertEquals(2, store.list().single().size) } > 0)
+        assertEquals(0, readsFor { store.list() })
+        // Another lookup (a new library index) reads again, and so does everything after clear().
+        assertTrue(readsFor { PlaylistStore(temp.root, summaries) { reads++; null }.list() } > 0)
+        summaries.clear()
+        assertTrue(readsFor { store.list() } > 0)
     }
 }

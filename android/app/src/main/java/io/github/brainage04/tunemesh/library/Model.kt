@@ -12,7 +12,21 @@ data class RawTags(
     val trackNumber: Int? = null,
     val discNumber: Int? = null,
     val durationMs: Long = 0,
-)
+) {
+    companion object {
+        /** A tag text field as kept: trimmed and cut to [Limits.MAX_TAG_TEXT_BYTES]. */
+        fun boundedText(value: String): String = LibraryFormat.trimWhiteSpace(Limits.cutUtf8(LibraryFormat.trimWhiteSpace(value), Limits.MAX_TAG_TEXT_BYTES))
+
+        /** An artist field with at most [Limits.MAX_ARTISTS] artists (`;` or NUL separated); the rest is dropped. */
+        fun boundedArtists(value: String): String {
+            var count = 0
+            for (i in value.indices) {
+                if ((value[i] == ';' || value[i] == '\u0000') && ++count == Limits.MAX_ARTISTS) return value.substring(0, i)
+            }
+            return value
+        }
+    }
+}
 
 @Serializable
 data class Track(
@@ -35,11 +49,13 @@ data class Track(
         fun albumKey(albumArtist: String, album: String): String = "$albumArtist\u0000$album"
 
         fun fromTags(path: String, tags: RawTags, size: Long, modifiedMs: Long): Track {
-            val title = tags.title?.takeIf { it.isNotBlank() }?.trim()
-                ?: LibraryFormat.titleFromFileName(path.substringAfterLast('/'))
-            val artist = tags.artist?.takeIf { it.isNotBlank() }?.trim() ?: LibraryFormat.fallbackArtist(path)
-            val album = tags.album?.takeIf { it.isNotBlank() }?.trim() ?: LibraryFormat.fallbackAlbum(path)
-            val albumArtist = tags.albumArtist?.takeIf { it.isNotBlank() }?.trim()
+            // Bounded here too, so tags cached by an older version follow the limits as well.
+            fun text(value: String?) = value?.let(RawTags::boundedText)?.takeIf { it.isNotEmpty() }
+            val title = text(tags.title) ?: LibraryFormat.titleFromFileName(path.substringAfterLast('/'))
+            val artist = text(tags.artist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() }
+                ?: LibraryFormat.fallbackArtist(path)
+            val album = text(tags.album) ?: LibraryFormat.fallbackAlbum(path)
+            val albumArtist = text(tags.albumArtist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() }
                 ?: LibraryFormat.firstArtist(artist)
             return Track(
                 path = path,
@@ -77,6 +93,12 @@ data class Artist(
  * playlist can hold hundreds of thousands of them: the entry line is stored only when it is not the canonical
  * `../<path>` that [raw] derives, and [extinf] only when the reader asked for it.
  */
+/**
+ * A playlist entry as a screen showed it: its [position] then and its [PlaylistEntry.key]. Changes find the entry
+ * again in the file as it is now (tunemesh-core's desktop `EntryRef`).
+ */
+data class EntryRef(val position: Int, val key: String)
+
 class PlaylistEntry private constructor(
     val path: String?,
     private val line: String?,
@@ -84,6 +106,9 @@ class PlaylistEntry private constructor(
 ) {
     /** The entry line as read or written, relative to `Playlists/` unless absolute. */
     val raw: String get() = line ?: M3u8.entryLine(path!!)
+
+    /** What identifies the entry when the file changes: its library path, or the line as written when it points outside. */
+    val key: String get() = path ?: raw
 
     override fun equals(other: Any?): Boolean =
         other is PlaylistEntry && path == other.path && raw == other.raw && extinf == other.extinf

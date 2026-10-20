@@ -67,7 +67,7 @@ class DownloadStoreTest {
             """{"version":1,"id":"3000-deadbeef","input":"third","state":"failed","title":null,"progress":null,"message":"Video unavailable","tracks":[],"updatedAt":"2026-10-06T05:01:52Z"}""",
         )
         File(status, "broken.json").writeText("{")
-        val items = store.list()
+        val items = store.list().items
         assertEquals(listOf("3000-deadbeef", running.id, waiting.id), items.map { it.id })
         assertEquals(null, items[2].status)
         assertTrue(items[2].canCancel)
@@ -78,7 +78,7 @@ class DownloadStoreTest {
 
         store.cancel(waiting.id)
         store.clearFinished()
-        assertEquals(listOf(running.id), store.list().map { it.id })
+        assertEquals(listOf(running.id), store.list().items.map { it.id })
         assertTrue(File(status, "${running.id}.json").exists())
     }
 
@@ -90,7 +90,7 @@ class DownloadStoreTest {
                 """"failures":[{"item":"Artist - Title","error":"Video unavailable"}],"warnings":["Imported the first 100 tracks"]}""",
         )
         File(status, "2000-bbbbbbbb.json").writeText("""{"version":1,"id":"2000-bbbbbbbb","state":"queued"}""")
-        val items = DownloadStore(temp.root).list().associateBy { it.id }
+        val items = DownloadStore(temp.root).list().items.associateBy { it.id }
         val counted = items.getValue("1000-aaaaaaaa").status!!
         assertEquals(3, counted.itemsDone)
         assertEquals(12, counted.itemsTotal)
@@ -124,7 +124,7 @@ class DownloadStoreTest {
         )
         assertEquals(listOf(true, false, true), requests.map { it.playlistFromSource })
         // Newest first in the list, so paste order reversed; IDs order the worker's queue.
-        assertEquals(requests.map { it.id }.reversed(), store.list().map { it.id })
+        assertEquals(requests.map { it.id }.reversed(), store.list().items.map { it.id })
         assertTrue(requests.zipWithNext().all { (a, b) -> a.id.substringBefore('-').toLong() < b.id.substringBefore('-').toLong() })
 
         val targeted = store.submitAll("https://open.spotify.com/playlist/x\nartist - song", "Road trip", saveAsPlaylists = true, requestedBy = "x", now = now)
@@ -173,5 +173,83 @@ class DownloadStoreTest {
         assertEquals("alexs-pixel-8", DownloadStore.deviceSlug("Alex’s Pixel 8"))
         assertEquals("sm-s921b", DownloadStore.deviceSlug("SM-S921B"))
         assertEquals("android", DownloadStore.deviceSlug("  "))
+    }
+
+    /** R2-opus-1: a request, status or worker file over 1 MiB is skipped, without reading it whole. */
+    @Test
+    fun filesOverTheJsonLimitAreSkipped() {
+        val state = File(temp.root, ".tunemesh").apply { mkdirs() }
+        val status = File(state, "status").apply { mkdirs() }
+        val requests = File(state, "requests").apply { mkdirs() }
+        File(status, "1000-aaaaaaaa.json").writeText("""{"version":1,"id":"1000-aaaaaaaa","state":"done"}""")
+        // Sparse, so the test does not need the memory: larger than any heap the JVM test gets.
+        java.io.RandomAccessFile(File(status, "2000-bbbbbbbb.json"), "rw").use { it.setLength(4L * 1024 * 1024 * 1024) }
+        val padded = """{"version":1,"id":"3000-cccccccc","input":"x","note":"${"x".repeat(Limits.MAX_JSON_BYTES)}"}"""
+        File(requests, "3000-cccccccc.json").writeText(padded)
+        val exact = """{"version":1,"id":"4000-dddddddd","input":"y","requestedBy":"x","requestedAt":"2026-10-06T05:01:37Z"}"""
+        File(requests, "4000-dddddddd.json").writeText(exact + " ".repeat(Limits.MAX_JSON_BYTES - exact.length))
+        assertEquals(listOf("4000-dddddddd", "1000-aaaaaaaa"), DownloadStore(temp.root).list().items.map { it.id })
+        java.io.RandomAccessFile(File(state, "worker.json"), "rw").use { it.setLength(Limits.MAX_JSON_BYTES + 1L) }
+        assertEquals(null, DownloadStore(temp.root).worker())
+    }
+
+    /** R2-opus-4 and "Limits": statuses are cut when read, and what the Downloads tab shows is bounded again. */
+    @Test
+    fun statusTextsAreCutWhenReadAndShown() {
+        val status = DownloadStore.bounded(
+            DownloadStatus(
+                id = "1-a",
+                input = "i".repeat(10_000),
+                state = "done",
+                title = "t".repeat(10_000),
+                message = "Imported the first 100 tracks.\n" + "m\n".repeat(250_000),
+                tracks = List(20_000) { "A/$it.mp3" },
+                failures = List(300) { DownloadFailure("Item $it", "é".repeat(5_000)) },
+                warnings = listOf("Imported the first 100 tracks") + List(55_000) { "w$it" },
+            ),
+        )
+        assertEquals(Limits.MAX_REQUEST_INPUT_BYTES, status.input.length)
+        assertEquals(Limits.MAX_STATUS_TEXT_BYTES, status.title!!.length)
+        assertEquals(Limits.MAX_STATUS_MESSAGE_BYTES, status.message!!.toByteArray().size)
+        assertEquals(Limits.MAX_STATUS_TRACKS, status.tracks.size)
+        assertEquals(Limits.MAX_STATUS_FAILURES, status.failures.size)
+        assertEquals("é".repeat(Limits.MAX_STATUS_TEXT_BYTES / 2), status.failures[0].error)
+        assertEquals(Limits.MAX_STATUS_WARNINGS, status.warnings.size)
+
+        val shown = ShownDownload.of(status.input, status)
+        assertEquals(Limits.MAX_STATUS_FAILURES, shown.failedCount)
+        assertEquals(Limits.MAX_STATUS_WARNINGS - 1, shown.warningCount) // the message repeats the first one
+        assertEquals(Limits.SHOWN_LIST_ROWS, shown.lines.size)
+        assertTrue(shown.lines.all { it.length <= Limits.SHOWN_MESSAGE_CHARS })
+        assertEquals(Limits.SHOWN_MESSAGE_LINES, shown.message!!.lines().size)
+        assertTrue(shown.message.endsWith("…"))
+        assertEquals(Limits.SHOWN_LINE_CHARS, shown.title!!.length)
+        assertTrue(shown.title.endsWith("…"))
+        assertEquals(Limits.SHOWN_LINE_CHARS, shown.input.length)
+
+        val few = ShownDownload.of("x", status.copy(failures = listOf(DownloadFailure("A", "gone")), warnings = listOf("Imported the first 100 tracks", "w")))
+        assertEquals(1, few.warningCount)
+        assertEquals(listOf("A: gone", "w"), few.lines)
+        val emoji = Limits.shownLine("a" + "🎵".repeat(Limits.SHOWN_LINE_CHARS))
+        assertFalse(Character.isHighSurrogate(emoji.dropLast(1).last()))
+        assertEquals("a b", Limits.shownLine("a\nb"))
+    }
+
+    /** "Limits": only the newest 200 ids are read; a request with its status counts once; older are counted. */
+    @Test
+    fun onlyTheNewestRequestsAreRead() {
+        val requests = File(temp.root, ".tunemesh/requests").apply { mkdirs() }
+        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        for (n in 1..250) {
+            val id = "${1000 + n}-aaaaaaaa"
+            File(requests, "$id.json").writeText("""{"version":1,"id":"$id","input":"x","requestedBy":"p","requestedAt":"2026-10-06T05:01:37Z"}""")
+            if (n % 2 == 0) File(statuses, "$id.json").writeText("""{"version":1,"id":"$id","state":"queued"}""")
+        }
+        val list = DownloadStore(temp.root).list()
+        assertEquals(Limits.MAX_DOWNLOADS_READ, list.items.size)
+        assertEquals(50, list.older)
+        assertEquals("1250-aaaaaaaa", list.items.first().id)
+        assertEquals("1051-aaaaaaaa", list.items.last().id)
+        assertTrue(list.items.first().status != null && list.items.first().request != null)
     }
 }

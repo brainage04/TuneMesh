@@ -58,6 +58,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.github.brainage04.tunemesh.data.LibraryState
+import io.github.brainage04.tunemesh.library.EntryRef
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.playback.PlayerUiState
@@ -247,7 +248,7 @@ fun TrackMenu(track: Track, context: RowContext, expanded: Boolean, onDismiss: (
         MenuItem("Add to playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(listOf(track)); onDismiss() }
         if (context.playlistName != null && context.playlistName != LibraryFormat.LIKED_SONGS) {
             MenuItem("Remove from this playlist", AppIcons.Close) {
-                viewModel.repository.removeFromPlaylist(context.playlistName, context.index, track.path); onDismiss()
+                viewModel.repository.removeFromPlaylist(context.playlistName, EntryRef(context.index, track.path)); onDismiss()
             }
         }
         if (context.showAlbum) MenuItem("Go to album", AppIcons.Album) { viewModel.openAlbum(track); onDismiss() }

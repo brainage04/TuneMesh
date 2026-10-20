@@ -15,10 +15,11 @@ data class DownloadRequest(
     val version: Int = 1,
     val id: String,
     val input: String,
-    val playlist: String?,
-    val playlistFromSource: Boolean,
-    val requestedBy: String,
-    val requestedAt: String,
+    // Optional when read, as in tunemesh-core (`#[serde(default)]`); always written.
+    val playlist: String? = null,
+    val playlistFromSource: Boolean = false,
+    val requestedBy: String = "",
+    val requestedAt: String = "",
 )
 
 @Serializable
@@ -65,7 +66,58 @@ data class DownloadItem(
     val canCancel: Boolean get() = request != null && !isFinal
 
     /** Numeric `id` prefix, used for ordering. */
-    val sortKey: Long get() = id.substringBefore('-').toLongOrNull() ?: 0L
+    val sortKey: Long get() = DownloadStore.sortKey(id)
+
+    /** What the Downloads tab shows, worked out once here (off the main thread), bounded whatever the files hold. */
+    val shown: ShownDownload = ShownDownload.of(input, status)
+}
+
+/**
+ * The texts of one request as the Downloads tab shows them ([Limits] "Display"): single-line texts and each
+ * message, failure and warning cut, at most [Limits.SHOWN_LIST_ROWS] rows; the counts cover all that was read.
+ */
+data class ShownDownload(
+    val input: String,
+    val title: String?,
+    val message: String?,
+    val failedCount: Int,
+    val warningCount: Int,
+    /** `item: error` per failure, then the warnings the message does not already say. */
+    val lines: List<String>,
+) {
+    companion object {
+        fun of(input: String, status: DownloadStatus?): ShownDownload {
+            val message = status?.message?.takeIf { it.isNotBlank() }
+            val failures = status?.failures.orEmpty()
+            // The final message repeats the warnings; list only what it does not already say. Both are bounded
+            // when read (Limits.MAX_STATUS_*), so this costs at most 50 searches of 4 KiB.
+            val warnings = status?.warnings.orEmpty().filterNot { message != null && it.isNotEmpty() && message.contains(it) }
+            val lines = ArrayList<String>(minOf(failures.size + warnings.size, Limits.SHOWN_LIST_ROWS))
+            for (failure in failures) {
+                if (lines.size == Limits.SHOWN_LIST_ROWS) break
+                lines += Limits.shownMessage(listOf(failure.item, failure.error).filter { it.isNotBlank() }.joinToString(": "))
+            }
+            for (warning in warnings) {
+                if (lines.size == Limits.SHOWN_LIST_ROWS) break
+                lines += Limits.shownMessage(warning)
+            }
+            return ShownDownload(
+                input = Limits.shownLine(input),
+                title = status?.title?.let(Limits::shownLine),
+                message = message?.let(Limits::shownMessage),
+                failedCount = failures.size,
+                warningCount = warnings.size,
+                lines = lines,
+            )
+        }
+    }
+}
+
+/** The requests read ([Limits.MAX_DOWNLOADS_READ] newest), newest first, and how many older ones were not read. */
+data class DownloadList(val items: List<DownloadItem>, val older: Int) {
+    companion object {
+        val EMPTY = DownloadList(emptyList(), 0)
+    }
 }
 
 /**
@@ -86,7 +138,7 @@ sealed interface Downloader {
 
     val description: String
         get() = when (this) {
-            is Active -> "Downloads are handled by $device"
+            is Active -> "Downloads are handled by ${Limits.shownLine(device)}"
             None -> "No device is downloading right now"
         }
 
@@ -137,20 +189,30 @@ class DownloadStore(private val root: File) {
         }
     }
 
-    fun list(): List<DownloadItem> {
-        val requestMap = readAll(requests) { json.decodeFromString<DownloadRequest>(it) }
-        val statusMap = readAll(statuses) { json.decodeFromString<DownloadStatus>(it) }
-        return (requestMap.keys + statusMap.keys)
-            .map { DownloadItem(it, requestMap[it], statusMap[it]) }
-            .sortedByDescending { it.sortKey }
+    /**
+     * The newest [Limits.MAX_DOWNLOADS_READ] requests by id (a request and its status file count once), each file
+     * read only when it is at most [Limits.MAX_JSON_BYTES] and its texts cut to the status limits. Older ones are
+     * only counted.
+     */
+    fun list(): DownloadList {
+        val requestIds = jsonIds(requests)
+        val statusIds = jsonIds(statuses)
+        val all = (requestIds + statusIds).sortedWith(compareByDescending<String> { sortKey(it) }.thenByDescending { it })
+        val newest = all.take(Limits.MAX_DOWNLOADS_READ)
+        val items = newest.mapNotNull { id ->
+            val request = if (id in requestIds) read(File(requests, "$id.json")) { bounded(json.decodeFromString<DownloadRequest>(it)) } else null
+            val status = if (id in statusIds) read(File(statuses, "$id.json")) { bounded(json.decodeFromString<DownloadStatus>(it)) } else null
+            if (request == null && status == null) null else DownloadItem(id, request, status)
+        }
+        return DownloadList(items, all.size - newest.size)
     }
 
-    /** The current `worker.json`, or null when it is missing or not valid JSON. */
+    /** The current `worker.json`, or null when it is missing, over [Limits.MAX_JSON_BYTES] or not valid JSON. */
     fun worker(): WorkerInfo? {
         val file = workerFile
         if (!file.isFile) return null
         return try {
-            json.decodeFromString<WorkerInfo>(file.readText(Charsets.UTF_8))
+            json.decodeFromString<WorkerInfo>(Limits.readText(file, Limits.MAX_JSON_BYTES))
         } catch (_: IOException) {
             null
         } catch (_: IllegalArgumentException) {
@@ -163,28 +225,27 @@ class DownloadStore(private val root: File) {
         File(requests, "$id.json").delete()
     }
 
-    /** Deletes status files in a final state. */
+    /** Deletes status files in a final state (of those [list] reads). */
     fun clearFinished() {
-        list().filter { it.isFinal }.forEach { item ->
+        list().items.filter { it.isFinal }.forEach { item ->
             File(statuses, "${item.id}.json").delete()
         }
     }
 
-    private fun <T> readAll(directory: File, decode: (String) -> T): Map<String, T> {
-        val files = directory.listFiles { file ->
-            file.isFile && file.name.endsWith(".json") && !LibraryFormat.isHidden(file.name) &&
-                !LibraryFormat.isConflictCopy(file.name)
-        } ?: return emptyMap()
-        val result = HashMap<String, T>()
-        for (file in files) {
-            try {
-                result[file.name.removeSuffix(".json")] = decode(file.readText(Charsets.UTF_8))
-            } catch (_: IOException) {
-            } catch (_: IllegalArgumentException) {
-                // Half-synced or foreign JSON; it is picked up again on the next refresh.
-            }
-        }
-        return result
+    /** Ids of the request or status files in [directory] (names only; nothing is read). */
+    private fun jsonIds(directory: File): Set<String> =
+        directory.list()?.filterTo(HashSet()) { name ->
+            name.endsWith(".json") && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
+        }?.mapTo(HashSet()) { it.removeSuffix(".json") } ?: emptySet()
+
+    private fun <T> read(file: File, decode: (String) -> T): T? = try {
+        decode(Limits.readText(file, Limits.MAX_JSON_BYTES))
+    } catch (_: IOException) {
+        // Over Limits.MAX_JSON_BYTES, gone or unreadable: skipped.
+        null
+    } catch (_: IllegalArgumentException) {
+        // Half-synced or foreign JSON; it is picked up again on the next refresh.
+        null
     }
 
     companion object {
@@ -194,6 +255,29 @@ class DownloadStore(private val root: File) {
             prettyPrintIndent = "  "
             encodeDefaults = true
             explicitNulls = true
+        }
+
+        /** Numeric `id` prefix, used for ordering. */
+        fun sortKey(id: String): Long = id.substringBefore('-').toLongOrNull() ?: 0L
+
+        /** [request] with its texts cut to [Limits]. */
+        fun bounded(request: DownloadRequest): DownloadRequest = request.copy(
+            input = Limits.cutUtf8(request.input, Limits.MAX_REQUEST_INPUT_BYTES),
+            playlist = request.playlist?.let { Limits.cutUtf8(it, Limits.MAX_REQUEST_PLAYLIST_BYTES) },
+        )
+
+        /** [status] with its texts cut and its lists shortened to [Limits]. */
+        fun bounded(status: DownloadStatus): DownloadStatus {
+            fun text(value: String) = Limits.cutUtf8(value, Limits.MAX_STATUS_TEXT_BYTES)
+            return status.copy(
+                input = Limits.cutUtf8(status.input, Limits.MAX_REQUEST_INPUT_BYTES),
+                state = text(status.state),
+                title = status.title?.let(::text),
+                message = status.message?.let { Limits.cutUtf8(it, Limits.MAX_STATUS_MESSAGE_BYTES) },
+                tracks = status.tracks.take(Limits.MAX_STATUS_TRACKS),
+                failures = status.failures.take(Limits.MAX_STATUS_FAILURES).map { DownloadFailure(text(it.item), text(it.error)) },
+                warnings = status.warnings.take(Limits.MAX_STATUS_WARNINGS).map(::text),
+            )
         }
 
         fun newId(now: Instant): String = "${now.toEpochMilli()}-${AtomicFiles.randomHex(8)}"

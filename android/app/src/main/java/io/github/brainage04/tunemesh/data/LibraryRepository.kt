@@ -3,15 +3,17 @@ package io.github.brainage04.tunemesh.data
 import android.os.Environment
 import android.os.FileObserver
 import android.util.Log
-import io.github.brainage04.tunemesh.library.DownloadItem
+import io.github.brainage04.tunemesh.library.DownloadList
 import io.github.brainage04.tunemesh.library.DownloadStore
 import io.github.brainage04.tunemesh.library.Downloader
+import io.github.brainage04.tunemesh.library.EntryRef
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.library.PlaylistContents
 import io.github.brainage04.tunemesh.library.PlaylistStore
+import io.github.brainage04.tunemesh.library.PlaylistSummaries
 import io.github.brainage04.tunemesh.library.RawTags
 import io.github.brainage04.tunemesh.library.Stignore
 import io.github.brainage04.tunemesh.library.Track
@@ -32,7 +34,6 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.IOException
-import java.util.concurrent.atomic.AtomicBoolean
 
 data class LibraryState(
     val root: File,
@@ -44,7 +45,7 @@ data class LibraryState(
     val liked: Set<String> = emptySet(),
     /** Entries of the playlist screen that is open (see [LibraryRepository.openPlaylist]); only that one is held. */
     val openPlaylist: PlaylistContents? = null,
-    val downloads: List<DownloadItem> = emptyList(),
+    val downloads: DownloadList = DownloadList.EMPTY,
     /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
     val error: String? = null,
@@ -71,15 +72,29 @@ class LibraryRepository(
     private var foregroundJob: Job? = null
     @Volatile private var foreground = false
     private var pendingRefresh: Job? = null
-    /** A refresh is waiting for [scanMutex] and has not started reading yet; further requests join it. */
-    private val refreshQueued = AtomicBoolean(false)
+    private val refreshGate = RefreshGate(scanMutex)
     @Volatile private var openedPlaylist: String? = null
     /** `lastModified` and length of the files behind [LibraryState.liked] and [LibraryState.openPlaylist]. */
     private var likedStamp: Pair<Long, Long>? = null
     private var openStamp: Pair<Long, Long>? = null
 
     val root: File get() = _state.value.root
-    private val playlistStore get() = PlaylistStore(root) { _state.value.index.byPath[it] }
+    private val summaries = PlaylistSummaries()
+    private var storeFor: Pair<File, LibraryIndex>? = null
+    private var store: PlaylistStore? = null
+
+    /** One store per root and index, so [summaries] can tell that its track lookup did not change. */
+    private val playlistStore: PlaylistStore
+        @Synchronized get() {
+            val state = _state.value
+            val key = state.root to state.index
+            if (key != storeFor || store == null) {
+                val index = state.index
+                store = PlaylistStore(state.root, summaries) { index.byPath[it] }
+                storeFor = key
+            }
+            return store!!
+        }
     private val downloadStore get() = DownloadStore(root)
 
     fun hasAccess(): Boolean = Environment.isExternalStorageManager()
@@ -137,11 +152,7 @@ class LibraryRepository(
      * it (start-up, the activity coming to the foreground and file events otherwise queue one full rescan each).
      */
     suspend fun refresh() {
-        if (!refreshQueued.compareAndSet(false, true)) return
-        scanMutex.withLock {
-            refreshQueued.set(false)
-            refreshLocked()
-        }
+        refreshGate.run(::refreshLocked)
     }
 
     private fun refreshLocked() {
@@ -183,6 +194,7 @@ class LibraryRepository(
      * after this app changed one). Unchanged files are not read again, so a large one is never held twice.
      */
     private fun reloadPlaylists(force: Boolean = false) {
+        if (force) summaries.clear()
         val store = playlistStore
         val playlists = store.list()
         _state.update { it.copy(playlists = playlists) }
@@ -215,7 +227,7 @@ class LibraryRepository(
         val stamp = stamp(store.file(name))
         if (!force && stamp == openStamp && _state.value.openPlaylist?.name == name) return
         openStamp = stamp
-        // The old entries stay on screen while the new ones load (both are bounded by M3u8.MAX_ENTRIES).
+        // The old entries stay on screen while the new ones load (both are bounded by Limits.MAX_PLAYLIST_ENTRIES).
         val contents = try {
             store.contents(name)
         } catch (error: IOException) {
@@ -296,8 +308,14 @@ class LibraryRepository(
         start()
     }
 
+    /**
+     * Playlist changes run one at a time, in the order they were asked for, so each one reads the file the one
+     * before it wrote (two quick taps would otherwise both read the old file and the later write drop the other).
+     */
+    private val mutations = Dispatchers.IO.limitedParallelism(1)
+
     private fun mutate(action: () -> Unit) {
-        scope.launch {
+        scope.launch(mutations) {
             try {
                 action()
             } catch (error: Exception) {
@@ -327,9 +345,9 @@ class LibraryRepository(
         _messages.tryEmit("Added to \"$name\"")
     }
 
-    fun removeFromPlaylist(name: String, index: Int, path: String?) = mutate { playlistStore.removeAt(name, index, path) }
+    fun removeFromPlaylist(name: String, entry: EntryRef) = mutate { playlistStore.remove(name, entry) }
 
-    fun movePlaylistEntry(name: String, from: Int, to: Int) = mutate { playlistStore.move(name, from, to) }
+    fun movePlaylistEntry(name: String, from: EntryRef, to: EntryRef) = mutate { playlistStore.move(name, from, to) }
 
     fun deleteTrack(track: Track, onDeleted: () -> Unit) {
         scope.launch {

@@ -47,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import io.github.brainage04.tunemesh.library.DownloadInputs
 import io.github.brainage04.tunemesh.library.DownloadItem
 import io.github.brainage04.tunemesh.library.Downloader
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.ClearFocusWhenImeHidden
@@ -96,12 +97,12 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
         item {
             Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 24.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("Requests", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (library.downloads.any { it.isFinal }) {
+                if (library.downloads.items.any { it.isFinal }) {
                     TextButton(onClick = { viewModel.repository.clearFinishedDownloads() }) { Text("Clear finished") }
                 }
             }
         }
-        if (library.downloads.isEmpty()) {
+        if (library.downloads.items.isEmpty()) {
             item {
                 Text(
                     "Nothing requested yet. Paste YouTube, YouTube Music or Spotify links (one per line), or type what you " +
@@ -111,8 +112,18 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
                 )
             }
         }
-        items(library.downloads, key = { it.id }) { item ->
+        items(library.downloads.items, key = { it.id }) { item ->
             DownloadCard(item, onCancel = { viewModel.repository.cancelDownload(item.id) })
+        }
+        if (library.downloads.older > 0) {
+            item {
+                Text(
+                    "and ${library.downloads.older} older ${if (library.downloads.older == 1) "request" else "requests"}",
+                    color = TextSecondary,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                )
+            }
         }
     }
 }
@@ -219,6 +230,7 @@ fun RequestForm(
 @Composable
 private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
     val status = item.status
+    val shown = item.shown
     val count = status?.itemsTotal?.takeIf { it > 1 }?.let { total -> "${(status.itemsDone ?: 0).coerceIn(0, total)} of $total" }
     val (label, color) = when (status?.state) {
         null -> "Waiting for the downloader" to TextSecondary
@@ -231,7 +243,7 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
         "done" -> "Done" + (if (status.tracks.isNotEmpty()) " • ${status.tracks.size} ${if (status.tracks.size == 1) "song" else "songs"}" else "") to Accent
         "failed" -> "Failed" + (count?.let { " • $it done" } ?: "") to MaterialTheme.colorScheme.error
         "cancelled" -> "Cancelled" + (count?.let { " • $it done" } ?: "") to TextSecondary
-        else -> status.state to TextSecondary
+        else -> Limits.shownLine(status.state) to TextSecondary
     }
     var problemsOpen by remember { mutableStateOf(false) }
     Column(
@@ -244,14 +256,14 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(status?.title ?: item.input, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (status?.title != null) {
-                    Text(item.input, color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(shown.title ?: shown.input, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (shown.title != null) {
+                    Text(shown.input, color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(label, color = color, style = MaterialTheme.typography.bodyMedium)
                 val target = item.request?.playlist
-                if (target != null) Text("→ $target", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+                if (target != null) Text("→ ${Limits.shownLine(target)}", color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 if (target == null && item.request?.playlistFromSource == true) {
                     Text("→ playlist named after the source", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
@@ -276,14 +288,11 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = Accent)
             }
         }
-        status?.message?.takeIf { it.isNotBlank() }?.let { message ->
+        shown.message?.let { message ->
             Spacer(Modifier.height(6.dp))
-            Text(message, color = TextSecondary, style = MaterialTheme.typography.bodySmall)
+            Text(message, color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 8, overflow = TextOverflow.Ellipsis)
         }
-        // The final message repeats the warnings; list only what it does not already say.
-        val failures = status?.failures.orEmpty()
-        val warnings = status?.warnings.orEmpty().filterNot { status?.message?.contains(it) == true }
-        if (failures.isNotEmpty() || warnings.isNotEmpty()) {
+        if (shown.failedCount > 0 || shown.warningCount > 0) {
             Spacer(Modifier.height(6.dp))
             Row(
                 Modifier.fillMaxWidth().clickable { problemsOpen = !problemsOpen }.padding(vertical = 4.dp),
@@ -293,8 +302,8 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 Spacer(Modifier.width(6.dp))
                 Text(
                     listOfNotNull(
-                        failures.size.takeIf { it > 0 }?.let { "$it failed" },
-                        warnings.size.takeIf { it > 0 }?.let { if (it == 1) "1 warning" else "$it warnings" },
+                        shown.failedCount.takeIf { it > 0 }?.let { "$it failed" },
+                        shown.warningCount.takeIf { it > 0 }?.let { if (it == 1) "1 warning" else "$it warnings" },
                     ).joinToString(" • "),
                     color = WarningColor,
                     style = MaterialTheme.typography.bodySmall,
@@ -308,9 +317,19 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 )
             }
             if (problemsOpen) {
-                val lines = failures.map { failure -> listOf(failure.item, failure.error).filter { it.isNotBlank() }.joinToString(": ") } + warnings
-                lines.forEach { line ->
-                    Text("• $line", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
+                shown.lines.forEach { line ->
+                    Text(
+                        "• $line",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = 22.dp, top = 2.dp),
+                    )
+                }
+                val hidden = shown.failedCount + shown.warningCount - shown.lines.size
+                if (hidden > 0) {
+                    Text("and $hidden more", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
                 }
             }
         }

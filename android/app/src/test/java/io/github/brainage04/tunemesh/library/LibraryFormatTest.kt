@@ -137,6 +137,11 @@ class LibraryFormatTest {
         assertEquals("[untitled]", LibraryFormat.titleFromFileName("[untitled].mp3"))
         assertEquals("Song", LibraryFormat.titleFromFileName("Song [abc-_12].webm"))
         assertEquals("no extension", LibraryFormat.titleFromFileName("no extension"))
+        assertEquals(".hidden", LibraryFormat.titleFromFileName(".hidden"))
+        assertEquals("a []", LibraryFormat.titleFromFileName("a [].mp3"))
+        assertEquals("a", LibraryFormat.titleFromFileName("a\u00a0\u2003[x].mp3")) // Unicode White_Space, as Rust's trim_end
+        assertEquals("a [x] [y", LibraryFormat.titleFromFileName("a [x] [y"))
+        assertEquals("  [x]", LibraryFormat.titleFromFileName("  [x].opus"))
     }
 
     @Test

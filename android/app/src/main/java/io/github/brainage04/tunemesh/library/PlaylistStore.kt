@@ -43,7 +43,11 @@ class PlaylistException(message: String) : Exception(message)
  * changed is held entry by entry. A playlist beyond [M3u8]'s limits is listed with a [Playlist.problem] and is
  * never rewritten.
  */
-class PlaylistStore(private val root: File, private val lookup: (String) -> Track?) {
+class PlaylistStore(
+    private val root: File,
+    private val summaries: PlaylistSummaries? = null,
+    private val lookup: (String) -> Track?,
+) {
     private val directory get() = File(root, LibraryFormat.PLAYLISTS_DIR)
 
     fun file(name: String): File = File(directory, name + LibraryFormat.PLAYLIST_EXTENSION)
@@ -52,19 +56,27 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
     private fun canonical(path: String): String? = lookup(path)?.path
 
     private fun stream(file: File, keepExtinf: Boolean, onEntry: (PlaylistEntry) -> Unit) {
-        if (file.length() > M3u8.MAX_BYTES) throw PlaylistTooLargeException("larger than ${M3u8.MAX_BYTES / (1024 * 1024)} MiB")
+        if (file.length() > Limits.MAX_PLAYLIST_BYTES) throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
         file.inputStream().use { M3u8.read(it, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry) }
     }
 
-    /** All playlists, Liked Songs first, as summaries. Files that cannot be read at all are left out. */
+    /**
+     * Liked Songs, then the first [Limits.MAX_PLAYLISTS_LISTED] other playlists by name ignoring case, as summaries.
+     * Only those files are read, and an unchanged one is not read again ([summaries]). Files that cannot be read at
+     * all are left out.
+     */
     fun list(): List<Playlist> {
-        val files = directory.listFiles { file ->
-            file.isFile && file.name.endsWith(LibraryFormat.PLAYLIST_EXTENSION) &&
-                !LibraryFormat.isHidden(file.name) && !LibraryFormat.isConflictCopy(file.name)
+        val names = directory.list()?.filter { name ->
+            name.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
         } ?: return emptyList()
-        return files.mapNotNull(::summary).sortedWith(
-            compareBy<Playlist> { !it.isLikedSongs }.thenBy(String.CASE_INSENSITIVE_ORDER) { it.name },
-        )
+        val liked = LibraryFormat.LIKED_SONGS + LibraryFormat.PLAYLIST_EXTENSION
+        val others = names.filter { it != liked }.sortedWith(String.CASE_INSENSITIVE_ORDER).take(Limits.MAX_PLAYLISTS_LISTED)
+        val listed = (if (liked in names) listOf(liked) else emptyList()) + others
+        summaries?.retain(listed)
+        return listed.mapNotNull { name ->
+            val file = File(directory, name)
+            if (!file.isFile) null else summaries?.get(file, lookup) { summary(file) } ?: summary(file)
+        }
     }
 
     private fun summary(file: File): Playlist? {
@@ -182,15 +194,22 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         write(name, entries(name) + tracks.filter { M3u8.canWrite(it.path) }.map(M3u8::entryFor))
     }
 
-    /** Removes the entry at [index], or the first entry for [path] if the file changed since it was shown. */
-    fun removeAt(name: String, index: Int, path: String?) {
-        write(name, removeEntry(entries(name), index, path))
+    /**
+     * Removes the entry the user saw at [entry]. The file is read again first, so an entry another device moved is
+     * found by its key; one that is gone fails without writing.
+     */
+    fun remove(name: String, entry: EntryRef) {
+        val entries = entries(name).toMutableList()
+        entries.removeAt(locate(entries, listOf(entry))[0])
+        write(name, entries)
     }
 
-    fun move(name: String, from: Int, to: Int) {
+    /** Moves the entry the user saw at [from] to where the entry they saw at [to] is now (see [remove]). */
+    fun move(name: String, from: EntryRef, to: EntryRef) {
         val entries = entries(name).toMutableList()
-        if (from !in entries.indices || to !in entries.indices) return
-        entries.add(to, entries.removeAt(from))
+        val (source, target) = locate(entries, listOf(from, to))
+        if (source == target) return
+        entries.add(target, entries.removeAt(source))
         write(name, entries)
     }
 
@@ -213,13 +232,22 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         /** Unliking removes every entry for the track. */
         fun unlike(entries: List<PlaylistEntry>, path: String): List<PlaylistEntry> = entries.filter { it.path != path }
 
-        fun removeEntry(entries: List<PlaylistEntry>, index: Int, path: String?): List<PlaylistEntry> {
-            val target = when {
-                index in entries.indices && entries[index].path == path -> index
-                else -> entries.indexOfFirst { it.path == path }
+        /**
+         * Finds shown entries in freshly read [entries]: at their position if it still holds the same entry, else
+         * the first unclaimed entry with that key. Throws when one is gone, so nothing wrong is changed.
+         */
+        fun locate(entries: List<PlaylistEntry>, refs: List<EntryRef>): List<Int> {
+            val found = ArrayList<Int>(refs.size)
+            for (ref in refs) {
+                fun same(i: Int) = i in entries.indices && entries[i].key == ref.key
+                val at = if (same(ref.position) && ref.position !in found) {
+                    ref.position
+                } else {
+                    entries.indices.firstOrNull { it !in found && same(it) }
+                }
+                found += at ?: throw PlaylistException("The playlist changed on another device. Nothing was changed; try again.")
             }
-            if (target < 0) return entries
-            return entries.toMutableList().also { it.removeAt(target) }
+            return found
         }
     }
 }

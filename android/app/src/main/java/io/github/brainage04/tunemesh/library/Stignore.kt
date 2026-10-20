@@ -2,10 +2,7 @@ package io.github.brainage04.tunemesh.library
 
 import java.io.File
 import java.io.IOException
-import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
-import java.nio.file.attribute.BasicFileAttributes
 
 /**
  * `<root>/.stignore` (contract: "`.stignore`"): the Syncthing ignore rules every device needs so partial files
@@ -17,7 +14,6 @@ object Stignore {
 
     /** The rules from `docs/library-format.md`. */
     val RULES = listOf("(?d).~tunemesh-*")
-    private const val MAX_BYTES = 1024 * 1024
 
     /**
      * Makes sure `<root>/.stignore` contains every rule in [RULES]: missing ones are appended (exact match after
@@ -44,25 +40,9 @@ object Stignore {
     }
 
     /** The file's text, or null when it does not exist. Never follows a symlink. */
-    private fun read(file: File): String? {
-        val attributes = try {
-            Files.readAttributes(file.toPath(), BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS)
-        } catch (_: NoSuchFileException) {
-            return null
-        }
-        if (!attributes.isRegularFile) throw IOException("$file is not a regular file")
-        if (attributes.size() > MAX_BYTES) throw IOException("$file: larger than $MAX_BYTES bytes")
-        return Files.newInputStream(file.toPath(), LinkOption.NOFOLLOW_LINKS).use { input ->
-            // Bounded read: the file may grow between the size check and here.
-            val output = java.io.ByteArrayOutputStream(attributes.size().toInt())
-            val chunk = ByteArray(8192)
-            while (output.size() <= MAX_BYTES) {
-                val read = input.read(chunk)
-                if (read < 0) break
-                output.write(chunk, 0, read)
-            }
-            if (output.size() > MAX_BYTES) throw IOException("$file: larger than $MAX_BYTES bytes")
-            output.toString(Charsets.UTF_8.name())
-        }
+    private fun read(file: File): String? = try {
+        Limits.readText(file, Limits.MAX_STIGNORE_BYTES, followLinks = false)
+    } catch (_: NoSuchFileException) {
+        null
     }
 }
