@@ -31,27 +31,61 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || a >= 240)
 }
 
+/// The IPv4 address in the last 32 bits of `ip`.
+fn low_v4(ip: Ipv6Addr) -> Ipv4Addr {
+    let o = ip.octets();
+    Ipv4Addr::new(o[12], o[13], o[14], o[15])
+}
+
+/// IPv6 addresses are public unless they are in a block the IANA special
+/// purpose registry marks as not globally reachable, or reach a non-public
+/// IPv4 address through a translation or tunnel prefix.
 fn is_public_v6(ip: Ipv6Addr) -> bool {
-    if let Some(v4) = ip.to_ipv4_mapped() {
-        return is_public_v4(v4);
-    }
     let s = ip.segments();
-    // 64:ff9b::/96 (NAT64) reaches the embedded IPv4 address.
-    if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-        return is_public_v4(Ipv4Addr::new(
-            (s[6] >> 8) as u8,
-            s[6] as u8,
-            (s[7] >> 8) as u8,
-            s[7] as u8,
-        ));
+    let in_net = |net: [u16; 8], prefix: u32| {
+        let mask = u128::MAX.checked_shl(128 - prefix).unwrap_or(0);
+        u128::from(ip) & mask == u128::from(Ipv6Addr::from(net)) & mask
+    };
+    // ::ffff:0:0/96 (IPv4-mapped), 64:ff9b::/96 (NAT64) and
+    // ::ffff:0:0:0/96 (SIIT) reach the embedded IPv4 address.
+    if ip.to_ipv4_mapped().is_some()
+        || in_net([0x64, 0xff9b, 0, 0, 0, 0, 0, 0], 96)
+        || in_net([0, 0, 0, 0, 0xffff, 0, 0, 0], 96)
+    {
+        return is_public_v4(low_v4(ip));
     }
-    !(ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || (s[0] & 0xfe00) == 0xfc00 // fc00::/7: unique local, Tailscale
-        || (s[0] & 0xffc0) == 0xfe80 // fe80::/10: link-local
-        || (s[0] & 0xffc0) == 0xfec0 // fec0::/10: site-local
-        || (s[0] == 0x2001 && s[1] == 0x0db8)) // documentation
+    // 2002::/16 (6to4) tunnels to the IPv4 address in bits 16-47.
+    if s[0] == 0x2002 {
+        let o = ip.octets();
+        return is_public_v4(Ipv4Addr::new(o[2], o[3], o[4], o[5]));
+    }
+    // Globally reachable blocks inside 2001::/23 (IETF protocol
+    // assignments), which is otherwise not.
+    let global_in_2001 = [
+        ([0x2001, 1, 0, 0, 0, 0, 0, 1], 128), // Port Control Protocol anycast
+        ([0x2001, 1, 0, 0, 0, 0, 0, 2], 128), // TURN anycast
+        ([0x2001, 3, 0, 0, 0, 0, 0, 0], 32),  // AMT
+        ([0x2001, 4, 0x112, 0, 0, 0, 0, 0], 48), // AS112-v6
+        ([0x2001, 0x20, 0, 0, 0, 0, 0, 0], 28), // ORCHIDv2
+        ([0x2001, 0x30, 0, 0, 0, 0, 0, 0], 28), // drone remote ID
+    ];
+    if in_net([0x2001, 0, 0, 0, 0, 0, 0, 0], 23) {
+        return global_in_2001.iter().any(|(n, p)| in_net(*n, *p));
+    }
+    let not_global = [
+        ([0, 0, 0, 0, 0, 0, 0, 0], 96), // ::/96: unspecified, loopback, IPv4-compatible
+        ([0x64, 0xff9b, 1, 0, 0, 0, 0, 0], 48), // local-use NAT64 (RFC 8215)
+        ([0x100, 0, 0, 0, 0, 0, 0, 0], 64), // discard-only
+        ([0x100, 0, 0, 1, 0, 0, 0, 0], 64), // dummy prefix
+        ([0x2001, 0xdb8, 0, 0, 0, 0, 0, 0], 32), // documentation
+        ([0x3fff, 0, 0, 0, 0, 0, 0, 0], 20), // documentation
+        ([0x5f00, 0, 0, 0, 0, 0, 0, 0], 16), // SRv6 SIDs
+        ([0xfc00, 0, 0, 0, 0, 0, 0, 0], 7), // unique local, Tailscale
+        ([0xfe80, 0, 0, 0, 0, 0, 0, 0], 10), // link-local
+        ([0xfec0, 0, 0, 0, 0, 0, 0, 0], 10), // site-local
+        ([0xff00, 0, 0, 0, 0, 0, 0, 0], 8), // multicast
+    ];
+    !not_global.iter().any(|(n, p)| in_net(*n, *p))
 }
 
 /// Whether `ip` is a globally reachable address.
@@ -180,20 +214,23 @@ fn interface_networks() -> Vec<Net> {
 }
 
 /// Normalises IPv6 addresses that reach an IPv4 address (IPv4-mapped
-/// `::ffff:0:0/96`, NAT64 `64:ff9b::/96`) to that address, so they compare
-/// equal to it.
+/// `::ffff:0:0/96`, NAT64 `64:ff9b::/96`, SIIT `::ffff:0:0:0/96`, 6to4
+/// `2002::/16`) to that address, so they compare equal to it.
 fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return IpAddr::V4(v4);
-            }
             let s = v6.segments();
-            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
-                let o = v6.octets();
-                return IpAddr::V4(Ipv4Addr::new(o[12], o[13], o[14], o[15]));
+            let o = v6.octets();
+            if v6.to_ipv4_mapped().is_some()
+                || s[..6] == [0x64, 0xff9b, 0, 0, 0, 0]
+                || s[..6] == [0, 0, 0, 0, 0xffff, 0]
+            {
+                IpAddr::V4(low_v4(v6))
+            } else if s[0] == 0x2002 {
+                IpAddr::V4(Ipv4Addr::new(o[2], o[3], o[4], o[5]))
+            } else {
+                ip
             }
-            ip
         }
         v4 => v4,
     }
@@ -561,5 +598,49 @@ mod tests {
         );
         assert!(own[0].contains(ip("64:ff9b::b16:21fe")));
         assert_eq!(refusal(ip("64:ff9b::808:808"), &own), None);
+    }
+
+    /// R1-opus-4: translation and tunnel prefixes, and the IANA blocks
+    /// that are not globally reachable.
+    #[test]
+    fn classifies_special_ipv6_blocks() {
+        for refused in [
+            "64:ff9b:1::a00:1", // local-use NAT64, private IPv4
+            "64:ff9b:1::c0a8:101",
+            "64:ff9b:1:abcd::808:808", // local-use NAT64, even to a public IPv4
+            "64:ff9b::a00:1",          // well-known NAT64, private IPv4
+            "2002:a00:1::1",           // 6to4 to 10.0.0.1
+            "2002:7f00:1::1",          // 6to4 to 127.0.0.1
+            "::a00:1",                 // IPv4-compatible
+            "::808:808",
+            "::ffff:0:a00:1", // SIIT, private IPv4
+            "100::1",         // discard-only
+            "100:0:0:1::1",   // dummy prefix
+            "2001::1",        // Teredo
+            "2001:2::1",      // benchmarking
+            "2001:10::1",     // ORCHID (deprecated)
+            "2001:db8::1",
+            "3fff::1",
+            "5f00::1",
+            "fd7a:115c:a1e0::1",
+            "fe80::1",
+            "ff02::1",
+        ] {
+            assert!(!is_public(ip(refused)), "{refused}");
+        }
+        for allowed in [
+            "2a00:1450:4001:80b::200e",
+            "64:ff9b::808:808", // well-known NAT64 to 8.8.8.8
+            "2002:808:808::1",  // 6to4 to 8.8.8.8
+            "2001:4:112::1",    // AS112-v6
+            "2001:20::1",       // ORCHIDv2
+            "2001:1::1",
+        ] {
+            assert!(is_public(ip(allowed)), "{allowed}");
+        }
+        // 6to4 to one of the host's own IPv4 networks.
+        let own = [Net::new(ip("11.22.33.44"), 24)];
+        assert!(refusal(ip("2002:b16:2101::1"), &own).is_some());
+        assert_eq!(canonical(ip("2002:b16:212c::1")), ip("11.22.33.44"));
     }
 }

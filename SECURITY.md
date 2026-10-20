@@ -22,7 +22,9 @@ try to stop such a device from reaching anything outside the library:
 - **The downloader's network.** Download requests are URLs or search text
   written by any device. `tunemesh-worker` sends all of yt-dlp's traffic, and
   its own, through a proxy inside the worker that refuses loopback, private,
-  link-local, CGNAT/Tailscale and unique-local addresses, the host's own
+  link-local, CGNAT/Tailscale, unique-local and other not globally reachable
+  addresses (IPv6 forms of IPv4 addresses such as NAT64 and 6to4 count as
+  the IPv4 address they embed), the host's own
   interface addresses and every address on the host's own networks (their
   on-link prefixes and gateway-less routes, which covers LAN devices with
   global IPv6 addresses).
