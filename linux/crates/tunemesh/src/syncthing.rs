@@ -100,9 +100,29 @@ pub fn normalize_address(address: &str, tls: bool) -> Option<String> {
     Some(format!("{scheme}://{rest}"))
 }
 
+/// The host of a base URL (`scheme://[userinfo@]host[:port][/...]`),
+/// without brackets around an IPv6 literal.
+fn url_host(base: &str) -> Option<&str> {
+    let rest = base.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if let Some(v6) = host_port.strip_prefix('[') {
+        let (h, after) = v6.split_once(']')?;
+        return (after.is_empty() || after.starts_with(':')).then_some(h);
+    }
+    Some(host_port.split_once(':').map_or(host_port, |(h, _)| h))
+}
+
+/// Whether `base` names this machine: a loopback IP literal or exactly
+/// `localhost`. Only then is Syncthing's self-signed certificate accepted.
 fn is_loopback(base: &str) -> bool {
-    let host = base.split_once("://").map_or(base, |(_, r)| r);
-    host.starts_with("127.") || host.starts_with("localhost") || host.starts_with("[::1]")
+    match url_host(base) {
+        Some(h) => match h.parse::<std::net::IpAddr>() {
+            Ok(ip) => ip.is_loopback(),
+            Err(_) => h.eq_ignore_ascii_case("localhost"),
+        },
+        None => false,
+    }
 }
 
 #[derive(Debug)]
@@ -172,6 +192,9 @@ impl Client {
         let agent = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(5)))
             .http_status_as_error(false)
+            // The API key travels in a header: never follow a redirect,
+            // which could carry it to another origin.
+            .max_redirects(0)
             .tls_config(tls)
             .build()
             .into();
@@ -211,6 +234,9 @@ impl Client {
             } else {
                 serde_json::from_str(&text).unwrap_or(Value::Null)
             })),
+            300..=399 => Err(Error::Other(format!(
+                "Syncthing answered {status} (a redirect) to {method} {path}; check the address"
+            ))),
             404 => Ok(None),
             401 | 403 => Err(Error::Forbidden),
             _ => Err(Error::Other(format!(
@@ -500,6 +526,65 @@ mod tests {
         assert!(normalize_address("unix:///run/st.sock", false).is_none());
         assert!(normalize_address("ftp://x", false).is_none());
         assert!(is_loopback("https://127.0.0.1:8384"));
+        assert!(is_loopback("http://[::1]:8384"));
+        assert!(is_loopback("http://localhost:8384"));
+        assert!(is_loopback("https://LOCALHOST"));
+        assert!(!is_loopback("https://127.0.0.1.attacker.invalid"));
+        assert!(!is_loopback("https://localhost.attacker.invalid"));
+        assert!(!is_loopback("https://127.0.0.1.attacker.invalid:8384/rest"));
+        assert!(!is_loopback("https://127.0.0.1@attacker.invalid"));
+        assert!(!is_loopback("https://[::1].attacker.invalid"));
         assert!(!is_loopback("https://192.0.2.4:8384"));
+    }
+
+    /// Serves one canned HTTP response per connection; counts connections
+    /// and records the request headers it saw.
+    fn serve(response: String) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut s) = stream else { continue };
+                let mut buf = [0u8; 4096];
+                let n = s.read(&mut buf).unwrap_or(0);
+                log.lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                let _ = s.write_all(response.as_bytes());
+            }
+        });
+        (addr, seen)
+    }
+
+    #[test]
+    fn redirects_are_not_followed_and_keep_the_key_home() {
+        let body = r#"{"myID":"X"}"#;
+        let (other, other_seen) = serve(format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        ));
+        let (first, first_seen) = serve(format!(
+            "HTTP/1.1 302 Found\r\nLocation: {other}/rest/system/status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        ));
+        let client = Client::new(Endpoint {
+            base: first,
+            api_key: "secret-key".into(),
+        });
+        let r = client.my_id();
+        assert!(matches!(r, Err(Error::Other(_))), "{r:?}");
+        assert_eq!(first_seen.lock().unwrap().len(), 1);
+        assert!(
+            first_seen.lock().unwrap()[0]
+                .to_ascii_lowercase()
+                .contains("x-api-key: secret-key")
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            other_seen.lock().unwrap().is_empty(),
+            "the redirect target was contacted"
+        );
     }
 }
