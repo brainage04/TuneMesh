@@ -156,6 +156,7 @@
           config,
           lib,
           pkgs,
+          utils,
           ...
         }:
         let
@@ -254,7 +255,8 @@
               serviceConfig = {
                 User = cfg.user;
                 Group = config.users.users.${cfg.user}.group;
-                ExecStart = lib.escapeShellArgs (
+                # systemd expands % and $ in ExecStart; this escapes both.
+                ExecStart = utils.escapeSystemdExecArgs (
                   [
                     (lib.getExe cfg.package)
                     "--library"
@@ -329,6 +331,8 @@
                   "172.16.0.0/12"
                   "192.168.0.0/16"
                   "fc00::/7"
+                  # NAT64: reaches the embedded IPv4 address.
+                  "64:ff9b::/96"
                 ];
                 # 127.0.0.1: yt-dlp reaches the worker's egress proxy there (the
                 # filter applies to loopback traffic as well). Like the resolver

@@ -43,8 +43,10 @@ storage cannot hold symlinks.
 - Audio is any regular file under `<root>` with extension `opus`, `ogg`,
   `oga`, `m4a`, `mp4`, `aac`, `mp3`, `flac`, `wav` or `webm` (case-insensitive),
   excluding everything below `.tunemesh/` and `Playlists/`, hidden files and
-  directories (leading `.`), and Syncthing conflict copies (name contains
-  `.sync-conflict-`).
+  directories (leading `.`), Syncthing conflict copies (name contains
+  `.sync-conflict-`), and any file or directory whose name contains a line
+  break (LF or CR; such a path cannot be written as a playlist line), with
+  everything below such a directory.
 - A track's identity is its path relative to `<root>`, with `/` separators.
 - Metadata comes from embedded tags. Fallbacks when a tag is missing:
   title = file name without extension and without a trailing ` [<id>]`;
@@ -91,6 +93,8 @@ storage cannot hold symlinks.
 - Writers write atomically: write `.~tunemesh-<random>.tmp` in the same
   directory, then rename it over the target. Never edit in place.
 - Readers ignore `*.sync-conflict-*` copies.
+- Writers never write an entry whose path contains LF or CR: adding such a
+  track to a playlist skips that entry and adds the rest.
 
 ## Download requests
 
@@ -215,7 +219,10 @@ library, as a service or as a child process of the desktop app. It:
 1. Processes requests oldest first, one at a time, looking at the oldest 500
    request files only (`--max-pending`).
 2. Downloads into a private work directory outside `<root>` (owned by the
-   worker's user, mode 0700, refused otherwise) and moves finished files
+   worker's user, mode 0700, refused otherwise), in a run directory of its
+   own (`run/<id>/`, kept locked with `flock` while the worker runs, so
+   several workers can share one work directory and each removes only run
+   directories nobody holds), and moves finished files
    into place, so Syncthing never sees partial files. A file is moved only
    from inside the request's own scratch directory, and only while the
    library's filesystem keeps 2 GiB free (`--min-free-space`).
@@ -243,13 +250,19 @@ library, as a service or as a child process of the desktop app. It:
 9. Refuses (state `failed`, or a `failures` entry for a playlist item) URLs
    that are not http(s) or whose host is or resolves to a loopback, private,
    link-local, CGNAT/Tailscale (`100.64.0.0/10`), IPv6 unique-local or other
-   non-public address, or to one of the host's own interface addresses. All
+   non-public address, or to an address on one of the host's own networks
+   (an interface address or its on-link prefix, so global IPv6 addresses of
+   LAN neighbours such as the router or a NAS are refused too). The
+   message in the status file is the same for refused and unresolvable hosts
+   and names no address; details go to the worker's local log only. All
    network traffic of yt-dlp, its ffmpeg and the worker itself goes through
    the worker's filtering proxy, which applies this check to every
    connection, redirects included, and connects only to the address it
    checked. This does not cover the host's public IPv4 address behind NAT
-   (reachable through the router's hairpin NAT) or services that other hosts
-   on the internet can reach anyway; the NixOS module adds a firewall layer.
+   (reachable through the router's hairpin NAT), other internal networks
+   that use globally routable addresses but are not on-link here (behind
+   another router, a VPN), or services that other hosts on the internet can
+   reach anyway; the NixOS module adds a firewall layer.
 10. Runs ffmpeg and ffprobe (yt-dlp's postprocessing) only on files inside
     the request's scratch directory and only with demuxers for plain audio,
     video and image containers (`-format_whitelist`, `-protocol_whitelist
@@ -265,7 +278,8 @@ and never stored in `<root>`.
 ## `.stignore`
 
 Each device keeps this in `<root>/.stignore` (Syncthing does not sync it; the
-desktop app and the Android app write it when missing):
+desktop app, the Android app and the worker add these rules when missing,
+keeping the user's other lines):
 
 ```text
 // TuneMesh

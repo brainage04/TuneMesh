@@ -22,10 +22,14 @@ try to stop such a device from reaching anything outside the library:
 - **The downloader's network.** Download requests are URLs or search text
   written by any device. `tunemesh-worker` sends all of yt-dlp's traffic, and
   its own, through a proxy inside the worker that refuses loopback, private,
-  link-local, CGNAT/Tailscale and unique-local addresses and the host's own
-  interface addresses. Redirects, manifests, fragments and thumbnails go
-  through the same check. A port forwarded on your router and reached through
-  your public IPv4 address (hairpin NAT) is not detected.
+  link-local, CGNAT/Tailscale and unique-local addresses, the host's own
+  interface addresses and every address on the host's own networks (their
+  on-link prefixes, which covers LAN devices with global IPv6 addresses).
+  Redirects, manifests, fragments and thumbnails go through the same check.
+  Not detected: a port forwarded on your router and reached through your
+  public IPv4 address (hairpin NAT), and internal networks with globally
+  routable addresses that are not directly attached to the downloading host
+  (behind another router or a VPN).
 - **Resource use.** Requests are limited in items, file size, duration, run
   time, number of pending requests and free disk space (see
   `tunemesh-worker --help`).
