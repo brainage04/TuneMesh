@@ -26,16 +26,19 @@ logind session:
    null sink `tm-null` as the only audio output (`guest.sh deps`);
 2. for each package, one after another (`guest.sh test`):
    - installs it with the distribution's tool (`apt`, `dnf`, `zypper`,
-     `pacman`, `snap`, `flatpak`; the AppImage is copied to `~/Applications`)
-     and prints both `--version`s;
+     `pacman`, `snap`, `flatpak`; the AppImage is copied to `~/Applications`
+     after installing the desktop libraries it expects from the system, which
+     a server cloud image lacks) and prints both `--version`s;
    - copies a generated library (two tagged sine-tone Opus files made with
      ffmpeg and a playlist) to `~/Music/TuneMesh` and writes the app's
      `config.toml` where that format keeps it;
    - starts `tunemesh-worker` as a systemd user service (the packaged unit
      for `.deb`, `.rpm` and Arch; a transient `systemd-run --user` unit with
      the same command for AppImage, Snap and Flatpak, which ship no unit),
-     checks `systemctl --user is-active` after 15 s with no restarts, and
-     runs `tunemesh-worker --self-test`;
+     checks `systemctl --user is-active` and a running `tunemesh-worker`
+     process after 15 s with no restarts, runs `tunemesh-worker --self-test`,
+     and stops it (with the `flatpak run`/`snap run` scope the program moves
+     into, which stopping the unit alone does not reach);
    - starts headless sway and the app on it, waits for
      `io.github.brainage04.TuneMesh` and `org.mpris.MediaPlayer2.tunemesh`
      on the session bus, activates `app.play-route` (`home`: the whole
@@ -43,8 +46,9 @@ logind session:
      `PlaybackStatus` `Playing`, the `Position` advancing by at least 3 s in
      5 s, the generated track in `Metadata`, and a running TuneMesh stream
      linked to `tm-null` in `pw-dump`; then `app.play-pause` must pause;
-   - stops the app with SIGTERM (it must exit cleanly and log no missing
-     icons, GSettings schemas or GTK criticals) and takes a screenshot;
+   - takes a screenshot, then stops the app with SIGTERM: it must exit
+     within 15 s, cleanly, and log no missing icons, GSettings schemas or GTK
+     criticals;
    - uninstalls it and checks that no file of the package is left
      (`packaging/ci/check-removed.sh`), that systemd no longer knows the unit,
      that `~/snap/tunemesh` or `~/.var/app/<id>` are gone, and that no
@@ -92,3 +96,5 @@ setsid --fork --wait heavy --mem 4G --label vm -- \
 - Each VM gets a fresh copy-on-write disk and SSH key in a temporary
   directory that is removed afterwards (`TM_VM_KEEP=1` keeps it).
 - `TM_VM_ACCEL=tcg` forces emulation.
+- `TM_VM_HOLD=1` keeps the VM running after a failed package and prints the
+  SSH command to inspect it; deleting the printed hold file shuts it down.

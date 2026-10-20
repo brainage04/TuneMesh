@@ -23,6 +23,7 @@
 #   TM_VM_LOCK   lock file (default /tmp/tunemesh-vm.lock)
 #   TM_VM_ACCEL  kvm or tcg (default kvm when /dev/kvm is usable, else tcg)
 #   TM_VM_KEEP=1 keep the VM's work directory (disk overlay, SSH key)
+#   TM_VM_HOLD=1 after a failure, keep the VM running for inspection over SSH
 set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)

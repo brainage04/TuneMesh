@@ -221,6 +221,18 @@ test_package() {
         ;;
     *.AppImage)
         kind=appimage
+        # The libraries an AppImage expects from any desktop (see
+        # build-appimage.sh); a server cloud image does not have them.
+        if command -v apt-get >/dev/null; then
+            sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -yq install \
+                --no-install-recommends libgl1 libegl1 libgbm1 libx11-6 libx11-xcb1 libxcb1 \
+                libxcb-dri3-0 libdrm2 libwayland-client0 libfontconfig1 libfreetype6 libharfbuzz0b \
+                libfribidi0 libasound2t64 libpipewire-0.3-0t64 libusb-1.0-0 shared-mime-info
+        else
+            sudo dnf -y -q install mesa-libGL mesa-libEGL mesa-libgbm libX11 libX11-xcb libxcb \
+                libdrm libwayland-client fontconfig freetype harfbuzz fribidi alsa-lib \
+                pipewire-libs libusb1 shared-mime-info
+        fi
         mkdir -p ~/Applications
         cp "$pkg" ~/Applications/TuneMesh.AppImage
         chmod +x ~/Applications/TuneMesh.AppImage
