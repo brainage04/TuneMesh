@@ -320,20 +320,20 @@ at a character boundary.
 | --- | --- | --- |
 | A request, status or `worker.json` file | 1 MiB | Not read: a request is reported as an invalid request file, a status file is skipped, `worker.json` counts as absent |
 | `<root>/.stignore` | 1 MiB | Left unchanged (not read or rewritten) |
-| Request `input` | 8 KiB | The worker fails the request ("too long") |
+| Request `input`; request `playlist` | 8 KiB; 1 KiB | The worker fails the request ("too long"); clients cut what they show |
 | Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
-| Status files clients read | the newest 200 by id | Older ones are counted but not read or shown |
+| Request and status files clients read | the newest 200 ids (a request with its status file counts once) | Older ones are counted but not read or shown |
 | Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |
 | Status `message` | 4 KiB | Cut |
 | Status `warnings` | 50 entries | The rest is dropped |
 | Status `failures` | 200 entries | The rest is dropped (`itemsDone` and `message` still count all) |
 | Status `tracks` | 10,000 paths | The rest is dropped |
 | A playlist file | 32 MiB, 250,000 entries, lines of 32 KiB (without the line ending) | Too large: listed as too large, not opened for playing or editing, never rewritten or truncated (see "Playlists") |
-| Playlists listed | 1,000 (by name, case-insensitively) | The others are not listed |
+| Playlists listed | 1,000 (by name, case-insensitively), Liked Songs not counted | The others are not listed; Liked Songs is always shown |
 | An `#EXTINF` label | 1 KiB | Cut when read and when written |
 | A tag text field (title, artist, album, album artist) | 1 KiB | Cut |
 | Artists in one tag | 32 | The rest is dropped |
-| A single tag item (a picture or text frame) | 16 MiB | Not read; the track keeps its other tags and its fallbacks |
+| A single tag item (a picture or text frame) | 16 MiB | Not used (a reader may have to load it once to see its size); the track keeps its other tags and its fallbacks |
 | An embedded or folder cover | 16 MiB, and 5,000 pixels per side as stated in the image header (JPEG, PNG, WebP or GIF) | Not shown: the placeholder is drawn. A cover whose size cannot be read from its header is not shown either |
 | Folder depth below `<root>` | 64 levels | Deeper folders are not scanned |
 | Entries read from one folder | 100,000 | The rest of that folder is not scanned |
