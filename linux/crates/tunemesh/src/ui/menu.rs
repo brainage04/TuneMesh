@@ -69,7 +69,12 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         let lists = gio::Menu::new();
         for (i, name) in app.store.playlist_names().into_iter().enumerate() {
             let action_name = format!("add-pl-{i}");
-            lists.append(Some(&name), Some(&format!("tm.{action_name}")));
+            // Menu labels treat `_` as a mnemonic marker; double it so a
+            // name like "lo_fi" shows as written.
+            lists.append(
+                Some(&name.replace('_', "__")),
+                Some(&format!("tm.{action_name}")),
+            );
             let (a, p) = (app.clone(), paths.clone());
             action(&group, &action_name, move || {
                 match a.store.add_to_playlist(&name, &p) {
