@@ -28,6 +28,26 @@ plugins {
 //   previousKeyAlias, previousKeyPassword            when minSdk is below 28
 // Without the file, builds fall back to the machine's own debug key; Android rejects such an APK as
 // an update to an install signed with another key.
+// The app has the same version as the Linux workspace (`version` in `[workspace.package]` of linux/Cargo.toml),
+// which the release tag must equal. versionCode = major * 10000 + minor * 100 + patch, so it grows with every
+// release; minor and patch stay below 100.
+val appVersion: String = run {
+    val cargo = rootProject.file("../linux/Cargo.toml")
+    var section = ""
+    // Through providers, so the configuration cache notices a version change.
+    val toml = providers.fileContents(rootProject.layout.projectDirectory.file("../linux/Cargo.toml")).asText.get()
+    val version = toml.lines().firstNotNullOfOrNull { line ->
+        val text = line.substringBefore('#').trim()
+        if (text.startsWith("[")) section = text
+        Regex("""^version\s*=\s*"([^"]*)"$""").find(text)?.groupValues?.get(1)?.takeIf { section == "[workspace.package]" }
+    } ?: throw GradleException("No version in [workspace.package] of $cargo")
+    check(Regex("""(0|[1-9]\d*)\.(0|[1-9]\d?)\.(0|[1-9]\d?)""").matches(version)) {
+        "$cargo: version \"$version\" must be MAJOR.MINOR.PATCH with MINOR and PATCH below 100"
+    }
+    version
+}
+val appVersionCode: Int = appVersion.split('.').map(String::toInt).let { (major, minor, patch) -> major * 10_000 + minor * 100 + patch }
+
 val signing = rootProject.file(".signing/signing.properties")
     .takeIf { it.isFile }
     ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
@@ -43,8 +63,8 @@ android {
         applicationId = "io.github.brainage04.tunemesh"
         minSdk = 30
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = appVersionCode
+        versionName = appVersion
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -183,6 +203,16 @@ androidComponents {
             .wiredWithDirectories(RotateApkSignature::inputApks, RotateApkSignature::outputApks)
             .toTransformMany(SingleArtifact.APK)
         rotate.configure { transformationRequest.set(request) }
+    }
+}
+
+tasks.register("printVersion") {
+    description = "Prints versionName and versionCode (from linux/Cargo.toml) without building."
+    val name = appVersion
+    val code = appVersionCode
+    doLast {
+        println("versionName=$name")
+        println("versionCode=$code")
     }
 }
 

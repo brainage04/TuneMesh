@@ -34,5 +34,8 @@ it exists, apply as well.
 - Signing: `android/.signing/` (git-ignored) holds the app's key, described in `app/build.gradle.kts`. Never
   delete, regenerate or replace it. Without it builds use the machine's debug key and cannot update an install
   signed with the app's key.
+- The app version comes from `linux/Cargo.toml` (`[workspace.package]` `version`, read in
+  `app/build.gradle.kts`): versionName is that version, versionCode is major * 10000 + minor * 100 + patch.
+  `./gradlew -q :app:printVersion` prints both.
 - F-Droid/Obtainium metadata lives in `fastlane/metadata/android/en-US/`. Add
   `changelogs/<versionCode>.txt` for every release.
