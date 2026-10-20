@@ -206,4 +206,23 @@ class PlaylistStoreTest {
         assertNull(store.contents("Nothing"))
         assertEquals(emptySet<String>(), store.likedPaths())
     }
+
+    /** docs/library-format.md: writers never write over the limits; adding to a full playlist fails. */
+    @Test
+    fun addingToAFullPlaylistFailsAndLeavesItAsItIs() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val full = File(dir, "Full.m3u8")
+        full.outputStream().buffered().use { out ->
+            out.write("#EXTM3U\n".toByteArray())
+            repeat(M3u8.MAX_ENTRIES) { out.write("../missing.wav\n".toByteArray()) }
+        }
+        val before = full.readBytes()
+        val store = store()
+        assertEquals(M3u8.MAX_ENTRIES, store.list().single().size)
+        val error = assertThrows(PlaylistException::class.java) { store.add("Full", listOf(a)) }
+        assertTrue(error.message!!.contains("would be too large"))
+        assertTrue(before.contentEquals(full.readBytes()))
+        store.removeAt("Full", 0, "missing.wav")
+        assertEquals(M3u8.MAX_ENTRIES - 1, store.list().single().size)
+    }
 }

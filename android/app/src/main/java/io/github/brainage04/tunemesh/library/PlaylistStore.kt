@@ -128,8 +128,14 @@ class PlaylistStore(private val root: File, private val lookup: (String) -> Trac
         throw PlaylistException("Cannot read \"$name\": ${error.message}")
     }
 
+    /** Writes [entries]; a playlist that would be over the size limits is refused and the file left as it is. */
     private fun write(name: String, entries: List<PlaylistEntry>) {
-        AtomicFiles.write(file(name), M3u8.write(entries, lookup))
+        val text = try {
+            M3u8.write(entries, lookup)
+        } catch (error: PlaylistTooLargeException) {
+            throw PlaylistException("\"$name\" would be too large (${error.message})")
+        }
+        AtomicFiles.write(file(name), text)
     }
 
     /**
