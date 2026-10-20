@@ -11,15 +11,15 @@
 //! those names, the worker execs the real program with, for every input,
 //! `-format_whitelist` (plain audio, video and image containers only, none
 //! that follow references) and `-protocol_whitelist file`, after checking
-//! that every `file:` path on the command line is inside the work
-//! directory. `--postprocessor-args` cannot do this: it does not reach the
+//! that every input is a `file:` path inside the job directory. `--postprocessor-args` cannot do this: it does not reach the
 //! ffprobe calls.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 use std::{env, fs, io};
 
 /// Demuxers ffmpeg may use on files yt-dlp hands it. None of them opens
@@ -45,19 +45,35 @@ pub fn invoked_as() -> Option<&'static str> {
     }
 }
 
-/// Creates `<work dir>/ffmpeg-shim/{ffmpeg,ffprobe}` and returns the
-/// directory for `--ffmpeg-location`.
-pub fn install(work_dir: &Path) -> io::Result<PathBuf> {
-    let dir = work_dir.join("ffmpeg-shim");
+/// `/proc/self/exe` after the binary was replaced (a package upgrade).
+fn strip_deleted(p: PathBuf) -> PathBuf {
+    match p.as_os_str().as_bytes().strip_suffix(b" (deleted)") {
+        Some(b) => PathBuf::from(OsStr::from_bytes(b)),
+        None => p,
+    }
+}
+
+/// This executable's path, resolved once (call early, before an upgrade
+/// can replace the file).
+pub fn exe() -> io::Result<&'static Path> {
+    static EXE: OnceLock<Option<PathBuf>> = OnceLock::new();
+    EXE.get_or_init(|| env::current_exe().ok().map(strip_deleted))
+        .as_deref()
+        .ok_or_else(|| io::Error::other("cannot find this executable"))
+}
+
+/// Creates `<dir>/ffmpeg-shim/{ffmpeg,ffprobe}` and returns the directory
+/// for `--ffmpeg-location`. A link that already resolves to a file is kept.
+pub fn install(dir: &Path) -> io::Result<PathBuf> {
+    let dir = dir.join("ffmpeg-shim");
     fs::create_dir_all(&dir)?;
-    let exe = env::current_exe()?;
     for name in ["ffmpeg", "ffprobe"] {
         let link = dir.join(name);
-        if fs::read_link(&link).is_ok_and(|t| t == exe) {
+        if fs::metadata(&link).is_ok_and(|m| m.is_file()) {
             continue;
         }
         let _ = fs::remove_file(&link);
-        std::os::unix::fs::symlink(&exe, &link)?;
+        std::os::unix::fs::symlink(exe()?, &link)?;
     }
     Ok(dir)
 }
@@ -71,16 +87,14 @@ pub fn env(ffmpeg: &Path, ffprobe: &Path, root: &Path) -> [(&'static str, OsStri
     ]
 }
 
-/// Whether `path` (absolute, or relative to the current directory) is
-/// inside `root`. A path that does not exist yet (an output) counts by its
-/// parent directory.
-fn inside(path: &str, root: &Path) -> bool {
-    let path = Path::new(path);
+/// Whether `path` is inside `root`. A path that does not exist yet (an
+/// output) counts by its parent directory.
+fn inside(path: &Path, root: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
     let resolved = path.canonicalize().or_else(|_| {
-        let parent = path
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .unwrap_or(Path::new("."));
+        let parent = path.parent().unwrap_or(Path::new("/"));
         parent
             .canonicalize()
             .map(|p| p.join(path.file_name().unwrap_or_default()))
@@ -88,27 +102,69 @@ fn inside(path: &str, root: &Path) -> bool {
     resolved.is_ok_and(|p| p.starts_with(root))
 }
 
+/// The path of a `file:` argument (raw bytes, any encoding).
+fn file_path(arg: &OsStr) -> Option<&Path> {
+    arg.as_bytes()
+        .strip_prefix(b"file:")
+        .map(|b| Path::new(OsStr::from_bytes(b)))
+}
+
+/// Requires `arg` to be a `file:` path inside `root`.
+fn check_input(arg: &OsStr, root: &Path) -> Result<(), String> {
+    match file_path(arg) {
+        Some(p) if inside(p, root) => Ok(()),
+        Some(p) => Err(format!(
+            "refusing {}: outside the work directory",
+            p.display()
+        )),
+        None => Err(format!(
+            "refusing input {}: only file: paths in the work directory",
+            arg.to_string_lossy()
+        )),
+    }
+}
+
 /// The real program's arguments: the confinement options before every
-/// input of ffmpeg, or first for ffprobe. Refuses `file:` paths outside
-/// `root`.
+/// input. Every input must be a `file:` path inside `root`: each `-i` value
+/// for ffmpeg; for ffprobe the last argument, passed on as `-i`, so any other
+/// positional argument makes ffprobe fail ("input already specified").
+/// Any other `file:` argument (outputs, attachments) must be inside `root`
+/// too. An ffprobe call whose arguments are all options (`-version`) has no
+/// input and passes unchanged.
 pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
     for a in args {
-        if let Some(path) = a.to_str().and_then(|s| s.strip_prefix("file:"))
-            && !inside(path, root)
+        if let Some(p) = file_path(a)
+            && !inside(p, root)
         {
-            return Err(format!("refusing {path}: outside the work directory"));
+            return Err(format!(
+                "refusing {}: outside the work directory",
+                p.display()
+            ));
         }
     }
     let mut out: Vec<OsString> = Vec::with_capacity(args.len() + 8);
     if program == "ffprobe" {
+        if args.iter().all(|a| a.as_bytes().starts_with(b"-")) {
+            return Ok(args.to_vec());
+        }
+        let (input, rest) = args.split_last().ok_or("no arguments")?;
+        check_input(input, root)?;
         out.extend(CONFINE.iter().map(OsString::from));
-        out.extend(args.iter().cloned());
+        out.extend(rest.iter().cloned());
+        out.push("-i".into());
+        out.push(input.clone());
     } else {
-        for a in args {
+        let mut it = args.iter();
+        while let Some(a) = it.next() {
             if a == "-i" {
+                let input = it.next().ok_or("-i without a value")?;
+                check_input(input, root)?;
                 out.extend(CONFINE.iter().map(OsString::from));
+                out.push(a.clone());
+                out.push(input.clone());
+            } else {
+                out.push(a.clone());
             }
-            out.push(a.clone());
         }
     }
     Ok(out)
@@ -168,7 +224,11 @@ mod tests {
         assert_eq!(s[first_i - 1], "file");
         let out = rewrite("ffprobe", &os(&["-show_streams", &a]), &r).unwrap();
         assert_eq!(out[0], "-format_whitelist");
-        assert_eq!(out.len(), 6);
+        assert_eq!(out[4..], os(&["-show_streams", "-i", &a])[..]);
+        assert_eq!(
+            rewrite("ffprobe", &os(&["-version"]), &r).unwrap(),
+            os(&["-version"])
+        );
         // Version checks pass through.
         assert_eq!(
             rewrite("ffmpeg", &os(&["-bsfs"]), &r).unwrap(),
@@ -186,5 +246,54 @@ mod tests {
         std::os::unix::fs::symlink("/etc", r.join("etc")).unwrap();
         let via_link = format!("file:{}/etc/passwd", r.display());
         assert!(rewrite("ffmpeg", &os(&["-i", &via_link]), &r).is_err());
+    }
+
+    /// Review item 8: bare paths and non-UTF-8 paths are inputs too.
+    #[test]
+    fn refuses_bare_and_non_utf8_inputs() {
+        use std::os::unix::ffi::OsStringExt;
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path().canonicalize().unwrap();
+        let inside_bare = format!("{}/a.mp3", r.display());
+        assert!(rewrite("ffmpeg", &os(&["-i", "/etc/passwd", "out.opus"]), &r).is_err());
+        assert!(rewrite("ffmpeg", &os(&["-i", &inside_bare]), &r).is_err());
+        assert!(rewrite("ffprobe", &os(&["-show_streams", "/etc/passwd"]), &r).is_err());
+        assert!(rewrite("ffmpeg", &os(&["-i"]), &r).is_err());
+        let mut raw = b"file:/etc/\xff".to_vec();
+        raw.extend_from_slice(b"/x");
+        let raw = OsString::from_vec(raw);
+        assert!(rewrite("ffmpeg", &[OsString::from("-i"), raw.clone()], &r).is_err());
+        assert!(rewrite("ffprobe", &[raw], &r).is_err());
+        let mut in_root = format!("file:{}/", r.display()).into_bytes();
+        in_root.extend_from_slice(b"\xff.mp3");
+        assert!(
+            rewrite(
+                "ffmpeg",
+                &[OsString::from("-i"), OsString::from_vec(in_root)],
+                &r
+            )
+            .is_ok()
+        );
+    }
+
+    /// Review item 3: after an upgrade `/proc/self/exe` ends in
+    /// " (deleted)"; a working link is never replaced.
+    #[test]
+    fn shim_links_survive_upgrades() {
+        assert_eq!(
+            strip_deleted(PathBuf::from("/usr/bin/tunemesh-worker (deleted)")),
+            PathBuf::from("/usr/bin/tunemesh-worker")
+        );
+        assert_eq!(strip_deleted(PathBuf::from("/a/b")), PathBuf::from("/a/b"));
+        let d = tempfile::tempdir().unwrap();
+        let shim = d.path().join("ffmpeg-shim");
+        fs::create_dir_all(&shim).unwrap();
+        let other = d.path().join("other-binary");
+        fs::write(&other, b"x").unwrap();
+        std::os::unix::fs::symlink(&other, shim.join("ffmpeg")).unwrap();
+        std::os::unix::fs::symlink(d.path().join("gone (deleted)"), shim.join("ffprobe")).unwrap();
+        install(d.path()).unwrap();
+        assert_eq!(fs::read_link(shim.join("ffmpeg")).unwrap(), other);
+        assert_eq!(fs::read_link(shim.join("ffprobe")).unwrap(), exe().unwrap());
     }
 }

@@ -16,6 +16,7 @@ use crate::child::Stop;
 use crate::config::Limits;
 use crate::http::Http;
 use crate::proxy::Proxy;
+use crate::rundir::RunDir;
 use crate::tools::{Resolved, Tools};
 use crate::{leader, log, signals, spotify, ytdlp};
 
@@ -27,6 +28,8 @@ const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 pub struct Ctx {
     pub root: PathBuf,
     pub work_dir: PathBuf,
+    /// This process's own part of the work directory.
+    pub run: RunDir,
     pub limits: Limits,
     pub proxy: Proxy,
     pub http: Http,
@@ -418,7 +421,7 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
 pub fn process(ctx: &mut Ctx, req: Request) {
     let id = req.id.clone();
     log!("[{id}] processing {:?}", req.input);
-    let dir = ctx.work_dir.join("jobs").join(&id);
+    let dir = ctx.run.jobs().join(&id);
     let _ = fs::remove_dir_all(&dir);
     if let Err(e) = fs::create_dir_all(&dir) {
         log!("[{id}] creating {}: {e}", dir.display());
@@ -556,6 +559,7 @@ pub mod tests {
         Ctx {
             root: root.to_path_buf(),
             work_dir: work.to_path_buf(),
+            run: RunDir::claim(work).unwrap(),
             limits: Limits {
                 min_free_space: 0,
                 ..Limits::default()

@@ -206,5 +206,5 @@ fn self_test_passes() {
         !text.contains("FAIL") && text.contains("disguised playlist refused"),
         "{text}"
     );
-    assert!(!dir.join("jobs/self-test").exists());
+    assert_eq!(fs::read_dir(dir.join("run")).unwrap().count(), 0);
 }

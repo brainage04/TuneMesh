@@ -12,6 +12,7 @@ mod job;
 mod leader;
 mod netguard;
 mod proxy;
+mod rundir;
 mod selftest;
 mod signals;
 mod spotify;
@@ -19,7 +20,6 @@ mod tools;
 mod ytdlp;
 
 use std::collections::HashSet;
-use std::fs;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -46,6 +46,8 @@ enum Fatal {
 }
 
 fn main() -> ExitCode {
+    // Before anything can replace the binary (package upgrades).
+    let _ = ffshim::exe();
     if let Some(program) = ffshim::invoked_as() {
         return ffshim::main(program);
     }
@@ -104,9 +106,16 @@ fn setup(args: &Args) -> Result<(std::path::PathBuf, std::path::PathBuf)> {
 fn run(args: Args) -> Result<(), Fatal> {
     signals::install();
     let (library, work_dir) = setup(&args).map_err(Fatal::Config)?;
-    // Leftovers of a previous run.
-    let _ = fs::remove_dir_all(work_dir.join("jobs"));
-    let _ = fs::remove_dir_all(work_dir.join("tmp"));
+    // Worker-only devices have no app to write the ignore rule for the
+    // temporary files moved into the library.
+    match tunemesh_core::stignore::ensure(&library) {
+        Ok(true) => log!("added the TuneMesh rule to {}/.stignore", library.display()),
+        Ok(false) => {}
+        Err(e) => log!("could not update .stignore: {e}"),
+    }
+    let run = rundir::RunDir::claim(&work_dir)
+        .with_context(|| format!("setting up {}", work_dir.display()))
+        .map_err(Fatal::Other)?;
     let proxy = proxy::Proxy::start()
         .context("starting the egress proxy")
         .map_err(Fatal::Other)?;
@@ -121,6 +130,7 @@ fn run(args: Args) -> Result<(), Fatal> {
     let mut ctx = Ctx {
         root: library,
         work_dir,
+        run,
         limits: args.limits.clone(),
         proxy,
         http,
@@ -173,8 +183,6 @@ fn run(args: Args) -> Result<(), Fatal> {
     }
     log!("tunemesh-worker: stopping");
     leader.release();
-    let _ = fs::remove_dir_all(ctx.work_dir.join("jobs"));
-    let _ = fs::remove_dir_all(ctx.work_dir.join("tmp"));
     Ok(())
 }
 

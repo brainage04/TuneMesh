@@ -7,6 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 
+use crate::rundir::RunDir;
 use crate::{config, ffshim, tools::Tools};
 
 struct Checks {
@@ -82,11 +83,17 @@ pub fn main(work_dir: Option<PathBuf>) -> ExitCode {
         return ExitCode::from(1);
     }
     let (ffmpeg, ffprobe) = tools.unwrap_or_default();
-    let job = work.join("jobs").join("self-test");
-    let _ = fs::remove_dir_all(&job);
+    let run_dir = match RunDir::claim(&work) {
+        Ok(r) => r,
+        Err(e) => {
+            c.report("shim installed", Err(e.to_string()));
+            return ExitCode::from(1);
+        }
+    };
+    let job = run_dir.jobs().join("self-test");
     let setup = fs::create_dir_all(&job)
         .and_then(|()| job.canonicalize())
-        .and_then(|job| ffshim::install(&work).map(|shim| (job, shim)))
+        .and_then(|job| ffshim::install(run_dir.path()).map(|shim| (job, shim)))
         .map_err(|e| e.to_string());
     if !c.report(
         "shim installed",
@@ -204,7 +211,7 @@ pub fn main(work_dir: Option<PathBuf>) -> ExitCode {
             },
         );
     }
-    let _ = fs::remove_dir_all(&job);
+    drop(run_dir);
     if c.failed {
         println!("self-test failed");
         ExitCode::from(1)

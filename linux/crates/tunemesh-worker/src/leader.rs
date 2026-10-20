@@ -119,17 +119,24 @@ impl Leader {
             .spawn(move || {
                 while !signals::stop_requested() {
                     signals::sleep(Duration::from_secs(5));
-                    let mut s = l.lock();
-                    if s.active
-                        && s.last_beat
-                            .is_none_or(|t| t.elapsed() >= HEARTBEAT_INTERVAL)
-                    {
-                        s.beat();
-                    }
+                    l.tick();
                 }
             })
             .expect("spawning the heartbeat thread");
         leader
+    }
+
+    /// One heartbeat-thread step: beats when due, never after a stop was
+    /// requested or the role released.
+    fn tick(&self) {
+        let mut s = self.lock();
+        if !signals::stop_requested()
+            && s.active
+            && s.last_beat
+                .is_none_or(|t| t.elapsed() >= HEARTBEAT_INTERVAL)
+        {
+            s.beat();
+        }
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
@@ -162,7 +169,9 @@ impl Leader {
 
     /// On exit: removes `worker.json` if it is still ours.
     pub fn release(&self) {
-        let s = self.lock();
+        let mut s = self.lock();
+        // The heartbeat thread must not write the file again.
+        s.active = false;
         if worker::read(&s.root).is_some_and(|w| s.is_me(&w)) {
             let _ = worker::remove(&s.root);
         }
@@ -243,5 +252,19 @@ mod tests {
         .unwrap();
         assert!(!leader.may_work());
         assert_eq!(worker::read(root).unwrap().machine, "");
+    }
+
+    /// Review item 9: after `release` the heartbeat thread writes nothing.
+    #[test]
+    fn no_heartbeat_after_release() {
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let leader = Leader::new(root, "pc".into(), "machine-a".into());
+        assert!(leader.may_work());
+        leader.release();
+        assert!(worker::read(root).is_none());
+        leader.lock().last_beat = None;
+        leader.tick();
+        assert!(worker::read(root).is_none());
     }
 }

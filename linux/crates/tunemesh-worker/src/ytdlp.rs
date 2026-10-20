@@ -44,13 +44,14 @@ pub fn command(job: &Job) -> Command {
     let t = &job.tools;
     let proxy = job.ctx.proxy.url();
     let work = &job.ctx.work_dir;
+    let run = &job.ctx.run;
     let mut c = Command::new(&t.yt_dlp);
+    // The proxy (with its per-run password) reaches yt-dlp through the
+    // environment only, which other users cannot read, unlike argv.
     c.args([
         "--ignore-config",
         "--no-playlist",
         "--no-colors",
-        "--proxy",
-        &proxy,
         "--cache-dir",
     ])
     .arg(work.join("cache/yt-dlp"));
@@ -60,13 +61,14 @@ pub fn command(job: &Job) -> Command {
     }
     // ffmpeg and ffprobe only through the confining shim; without it the
     // postprocessors fail rather than run unconfined.
-    match crate::ffshim::install(work) {
+    match crate::ffshim::install(run.path()) {
         Ok(dir) => {
             c.arg("--ffmpeg-location").arg(dir);
         }
         Err(e) => {
             log!("[{}] could not set up the ffmpeg shim: {e}", job.req.id);
-            c.arg("--ffmpeg-location").arg(work.join("ffmpeg-shim"));
+            c.arg("--ffmpeg-location")
+                .arg(run.path().join("ffmpeg-shim"));
         }
     }
     c.envs(crate::ffshim::env(&t.ffmpeg, &t.ffprobe, &job.dir));
@@ -80,7 +82,7 @@ pub fn command(job: &Job) -> Command {
     ] {
         c.env(var, &proxy);
     }
-    let tmp = work.join("tmp");
+    let tmp = run.tmp();
     let _ = std::fs::create_dir_all(&tmp);
     c.env_remove("no_proxy")
         .env_remove("NO_PROXY")
