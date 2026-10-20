@@ -13,7 +13,7 @@ use crate::store::StoreChange;
 use crate::ui::widgets::{fmt_duration, icon_button, label};
 
 pub struct NowPlaying {
-    pub widget: gtk::Box,
+    pub widget: gtk::CenterBox,
     app: Weak<App>,
     cover: gtk::Image,
     title: gtk::Label,
@@ -31,21 +31,23 @@ pub struct NowPlaying {
     seek: gtk::Scale,
     queue_btn: gtk::Button,
     volume_btn: gtk::Button,
-    volume: gtk::Scale,
+    pub volume: gtk::Scale,
     last_volume: Cell<f64>,
 }
 
 impl NowPlaying {
     pub fn new(app: &Rc<App>) -> Rc<Self> {
-        let widget = gtk::Box::builder()
-            .spacing(16)
+        // The controls stay centred; the sides give up width first in a
+        // narrow window.
+        let widget = gtk::CenterBox::builder()
             .css_classes(["tm-nowplaying"])
             .build();
 
         // Left: track info.
         let left = gtk::Box::builder()
             .spacing(12)
-            .width_request(300)
+            .width_request(150)
+            .margin_end(16)
             .valign(gtk::Align::Center)
             .build();
         let cover = crate::ui::widgets::cover_image(56);
@@ -76,13 +78,11 @@ impl NowPlaying {
         heart.add_css_class("tm-heart");
         heart.set_valign(gtk::Align::Center);
         left.append(&heart);
-        widget.append(&left);
+        widget.set_start_widget(Some(&left));
 
         // Centre: transport and seek bar.
         let center = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .hexpand(true)
-            .halign(gtk::Align::Center)
             .valign(gtk::Align::Center)
             .spacing(4)
             .build();
@@ -115,7 +115,8 @@ impl NowPlaying {
             .orientation(gtk::Orientation::Horizontal)
             .adjustment(&gtk::Adjustment::new(0.0, 0.0, 1.0, 1.0, 10.0, 0.0))
             .draw_value(false)
-            .width_request(520)
+            .width_request(160)
+            .hexpand(true)
             .css_classes(["tm-seek"])
             .build();
         let dur_label = gtk::Label::builder()
@@ -128,12 +129,20 @@ impl NowPlaying {
         seek_row.append(&seek);
         seek_row.append(&dur_label);
         center.append(&seek_row);
-        widget.append(&center);
+        let clamp = adw::Clamp::builder()
+            .maximum_size(640)
+            .tightening_threshold(640)
+            .child(&center)
+            .build();
+        clamp.set_size_request(220, -1);
+        clamp.set_hexpand(true);
+        widget.set_center_widget(Some(&clamp));
 
         // Right: queue and volume.
         let right = gtk::Box::builder()
             .spacing(8)
-            .width_request(300)
+            .width_request(110)
+            .margin_start(16)
             .halign(gtk::Align::End)
             .valign(gtk::Align::Center)
             .build();
@@ -150,7 +159,7 @@ impl NowPlaying {
                 0.0,
             ))
             .draw_value(false)
-            .width_request(110)
+            .width_request(70)
             .css_classes(["tm-volume"])
             .build();
         let spacer = gtk::Box::builder().hexpand(true).build();
@@ -158,7 +167,7 @@ impl NowPlaying {
         right.append(&queue_btn);
         right.append(&volume_btn);
         right.append(&volume);
-        widget.append(&right);
+        widget.set_end_widget(Some(&right));
 
         let np = Rc::new(Self {
             widget,
@@ -206,7 +215,7 @@ impl NowPlaying {
         let a = app.clone();
         self.queue_btn.connect_clicked(move |_| a.toggle_queue());
         let me = Rc::downgrade(self);
-        app.queue_revealer.connect_reveal_child_notify(move |_| {
+        app.queue_split.connect_show_sidebar_notify(move |_| {
             if let Some(me) = me.upgrade() {
                 me.update_options();
             }
@@ -403,7 +412,7 @@ impl NowPlaying {
             v if v < 67.0 => "audio-volume-medium-symbolic",
             _ => "audio-volume-high-symbolic",
         });
-        let revealed = app.queue_revealer.reveals_child();
+        let revealed = app.queue_shown();
         if revealed {
             self.queue_btn.add_css_class("on")
         } else {

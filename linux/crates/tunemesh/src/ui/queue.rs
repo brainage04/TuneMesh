@@ -285,7 +285,7 @@ impl QueuePanel {
         let Some(app) = self.app.upgrade() else {
             return;
         };
-        if !app.queue_revealer.reveals_child() {
+        if !app.queue_shown() {
             return;
         }
         let items = app.player.items();

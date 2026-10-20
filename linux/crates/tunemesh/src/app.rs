@@ -26,6 +26,13 @@ pub fn cap_search(text: &str) -> String {
 
 pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
+/// Narrowest window, in pixels: about a tiled half of a 1366-pixel screen.
+const MIN_WIDTH: i32 = 600;
+/// Up to this width (sp) the queue opens over the page instead of beside it.
+const QUEUE_BESIDE: u32 = 1180;
+/// Up to this width (sp) the library sidebar folds away as well.
+const SIDEBAR_BESIDE: u32 = 900;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Route {
     Home,
@@ -97,7 +104,10 @@ pub struct App {
     hist_pos: Cell<usize>,
     scroller: RefCell<Option<gtk::ScrolledWindow>>,
     sidebar: RefCell<Option<Rc<ui::sidebar::Sidebar>>>,
-    pub queue_revealer: gtk::Revealer,
+    /// The queue panel beside (or, in a narrow window, over) the page.
+    pub queue_split: adw::OverlaySplitView,
+    /// The library sidebar beside (or, in a narrow window, over) the rest.
+    library_split: adw::OverlaySplitView,
     queue_panel: RefCell<Option<Rc<ui::queue::QueuePanel>>>,
     /// Live track lists, refreshed in place on like/now-playing changes.
     track_lists: RefCell<Vec<Weak<ui::tracklist::Shared>>>,
@@ -117,8 +127,10 @@ impl App {
             .title("TuneMesh")
             .default_width(1280)
             .default_height(820)
-            .width_request(900)
-            .height_request(560)
+            // Narrow windows (a tiled half screen) fold the sidebar and the
+            // queue over the page; see the breakpoints in build_window.
+            .width_request(MIN_WIDTH)
+            .height_request(480)
             .build();
         window.add_css_class("tunemesh");
 
@@ -160,9 +172,15 @@ impl App {
             hist_pos: Cell::new(0),
             scroller: RefCell::new(None),
             sidebar: RefCell::new(None),
-            queue_revealer: gtk::Revealer::builder()
-                .transition_type(gtk::RevealerTransitionType::SlideLeft)
-                .transition_duration(180)
+            queue_split: adw::OverlaySplitView::builder()
+                .sidebar_position(gtk::PackType::End)
+                .min_sidebar_width(300.0)
+                .max_sidebar_width(340.0)
+                .show_sidebar(false)
+                .build(),
+            library_split: adw::OverlaySplitView::builder()
+                .min_sidebar_width(220.0)
+                .max_sidebar_width(280.0)
                 .build(),
             queue_panel: RefCell::new(None),
             track_lists: RefCell::new(Vec::new()),
@@ -209,30 +227,57 @@ impl App {
         self.toasts.set_vexpand(true);
 
         let queue = ui::queue::QueuePanel::new(self);
-        self.queue_revealer.set_child(Some(&queue.widget));
-        // A collapsed revealer still claims its child's width; hide it once closed.
-        self.queue_revealer.set_visible(false);
-        self.queue_revealer.connect_child_revealed_notify(|r| {
-            if !r.is_child_revealed() && !r.reveals_child() {
-                r.set_visible(false);
-            }
-        });
+        queue.widget.set_margin_start(8);
+        self.queue_split.set_sidebar(Some(&queue.widget));
+        self.queue_split.set_content(Some(&self.toasts));
         *self.queue_panel.borrow_mut() = Some(queue);
 
-        let body = gtk::Box::builder()
-            .spacing(8)
-            .css_classes(["tm-body"])
-            .vexpand(true)
+        sidebar.widget.set_margin_end(8);
+        self.library_split.set_sidebar(Some(&sidebar.widget));
+        self.library_split.set_content(Some(&self.queue_split));
+        self.library_split.add_css_class("tm-body");
+        self.library_split.set_vexpand(true);
+        let body = &self.library_split;
+
+        // In a narrow window the sidebar folds away behind this button.
+        let sidebar_btn = gtk::ToggleButton::builder()
+            .icon_name("sidebar-show-symbolic")
+            .tooltip_text("Your Library")
+            .css_classes(["tm-nav-circle", "flat"])
             .build();
-        body.append(&sidebar.widget);
-        body.append(&self.toasts);
-        body.append(&self.queue_revealer);
+        self.library_split
+            .bind_property("show-sidebar", &sidebar_btn, "active")
+            .bidirectional()
+            .sync_create()
+            .build();
+        self.library_split
+            .bind_property("collapsed", &sidebar_btn, "visible")
+            .sync_create()
+            .build();
+        header.pack_start(&sidebar_btn);
+
+        let wide_queue = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse(&format!("max-width: {QUEUE_BESIDE}sp"))
+                .expect("condition"),
+        );
+        wide_queue.add_setter(&self.queue_split, "collapsed", Some(&true.to_value()));
+        self.window.add_breakpoint(wide_queue);
+        let narrow = adw::Breakpoint::new(
+            adw::BreakpointCondition::parse(&format!("max-width: {SIDEBAR_BESIDE}sp"))
+                .expect("condition"),
+        );
+        narrow.add_setter(&self.queue_split, "collapsed", Some(&true.to_value()));
+        narrow.add_setter(&self.library_split, "collapsed", Some(&true.to_value()));
+        narrow.add_setter(&self.library_split, "show-sidebar", Some(&false.to_value()));
 
         let bar = ui::nowplaying::NowPlaying::new(self);
+        // Narrow: the slider goes; the volume button still mutes and unmutes.
+        narrow.add_setter(&bar.volume, "visible", Some(&false.to_value()));
+        self.window.add_breakpoint(narrow);
 
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.append(&header);
-        root.append(&body);
+        root.append(body);
         root.append(&bar.widget);
         self.window.set_content(Some(&root));
         drop(bar);
@@ -407,6 +452,10 @@ impl App {
     }
 
     pub fn navigate(&self, route: Route) {
+        // Picking a page in the folded sidebar closes it.
+        if self.library_split.is_collapsed() {
+            self.library_split.set_show_sidebar(false);
+        }
         if route == self.route() {
             return;
         }
@@ -572,12 +621,13 @@ impl App {
         }
     }
 
+    pub fn queue_shown(&self) -> bool {
+        self.queue_split.shows_sidebar()
+    }
+
     pub fn toggle_queue(&self) {
-        let reveal = !self.queue_revealer.reveals_child();
-        if reveal {
-            self.queue_revealer.set_visible(true);
-        }
-        self.queue_revealer.set_reveal_child(reveal);
+        let reveal = !self.queue_shown();
+        self.queue_split.set_show_sidebar(reveal);
         if reveal && let Some(q) = self.queue_panel.borrow().as_ref() {
             q.rebuild();
         }
