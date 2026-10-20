@@ -33,10 +33,15 @@ pub fn is_conflict_copy(name: &str) -> bool {
     name.contains(".sync-conflict-")
 }
 
-/// Whether a directory entry name is skipped while scanning (hidden files and
-/// conflict copies).
+/// Whether a name contains a line break, which no playlist line can hold.
+pub fn has_line_break(name: &str) -> bool {
+    name.contains(['\n', '\r'])
+}
+
+/// Whether a directory entry name is skipped while scanning (hidden files,
+/// conflict copies, names with line breaks).
 fn is_ignored_name(name: &str) -> bool {
-    name.starts_with('.') || is_conflict_copy(name)
+    name.starts_with('.') || is_conflict_copy(name) || has_line_break(name)
 }
 
 /// Whether the root-relative path (with `/` separators) names a library track.
@@ -759,6 +764,30 @@ mod tests {
         );
         assert_eq!(t.listed_artist(), "A1");
         assert_eq!(t.cover, CoverSource::Embedded);
+    }
+
+    /// Review item 12: names with line breaks are not tracks, so they never
+    /// reach a playlist line.
+    #[test]
+    fn scan_skips_names_with_line_breaks() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path();
+        fs::create_dir_all(root.join("A/B")).unwrap();
+        fs::create_dir_all(root.join("C\nD")).unwrap();
+        for p in [
+            "A/B/one\ntwo.mp3",
+            "A/B/cr\rx.mp3",
+            "A/B/ok.mp3",
+            "C\nD/x.mp3",
+        ] {
+            fs::write(root.join(p), b"x").unwrap();
+        }
+        let paths: Vec<_> = scan(root, &HashMap::new())
+            .into_iter()
+            .map(|t| t.path)
+            .collect();
+        assert_eq!(paths, vec!["A/B/ok.mp3"]);
+        assert!(!is_track_path("A/B/one\ntwo.mp3"));
     }
 
     #[test]

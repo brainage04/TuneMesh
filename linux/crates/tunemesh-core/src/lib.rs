@@ -8,6 +8,7 @@ pub mod playlist;
 pub mod request;
 pub mod sanitize;
 pub mod search;
+pub mod stignore;
 pub mod worker;
 
 pub use library::{CoverSource, Library, Track};

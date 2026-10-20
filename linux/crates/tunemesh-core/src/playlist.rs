@@ -4,7 +4,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::fsx::{Dir, Kind};
-use crate::library::{is_conflict_copy, title_from_file_name};
+use crate::library::{has_line_break, is_conflict_copy, title_from_file_name};
 use crate::{PLAYLISTS_DIR, sanitize};
 
 pub const LIKED_SONGS: &str = "Liked Songs";
@@ -108,7 +108,11 @@ pub fn parse(text: &str, root: &Path) -> Vec<PlaylistEntry> {
 /// Serialises entries: `#EXTM3U`, then `#EXTINF` + path per entry, LF endings.
 pub fn serialize(entries: &[PlaylistEntry], info: &dyn Fn(&str) -> Option<TrackInfo>) -> String {
     let mut out = String::from("#EXTM3U\n");
-    for e in entries {
+    // An entry with a line break would turn into two lines.
+    for e in entries
+        .iter()
+        .filter(|e| !has_line_break(&e.raw) && !e.track.as_deref().is_some_and(has_line_break))
+    {
         let known = e.track.as_deref().and_then(info);
         let duration = known.as_ref().and_then(|k| k.duration_secs).or(e.duration);
         let label = known
@@ -292,8 +296,10 @@ impl Playlist {
     }
 
     /// Liked Songs: liking inserts at the top (no-op when already liked).
+    /// Tracks whose path has a line break are skipped (contract: they are
+    /// never library tracks, and no playlist line can hold them).
     pub fn like(&mut self, track: &str) {
-        if !self.contains(track) {
+        if !has_line_break(track) && !self.contains(track) {
             self.entries.insert(0, PlaylistEntry::for_track(track));
         }
     }
@@ -304,8 +310,12 @@ impl Playlist {
     }
 
     pub fn append<'a>(&mut self, tracks: impl IntoIterator<Item = &'a str>) {
-        self.entries
-            .extend(tracks.into_iter().map(PlaylistEntry::for_track));
+        self.entries.extend(
+            tracks
+                .into_iter()
+                .filter(|t| !has_line_break(t))
+                .map(PlaylistEntry::for_track),
+        );
     }
 
     /// Removes the entries at `positions` (any order, duplicates ignored).
@@ -529,6 +539,21 @@ mod tests {
             "road trip"
         );
         assert_eq!(list_names(root), vec!["Drive", "road trip"]);
+    }
+
+    /// Review item 12: a path with a line break never corrupts a playlist.
+    #[test]
+    fn line_breaks_never_reach_a_playlist() {
+        let mut p = Playlist {
+            name: "x".into(),
+            entries: vec![],
+        };
+        p.append(["A/B/one\ntwo.mp3", "A/B/ok.mp3", "A/B/cr\r.mp3"]);
+        p.like("L/x\ny.mp3");
+        assert_eq!(p.entries.len(), 1);
+        p.entries.push(PlaylistEntry::for_track("A/B/sneak\ny.mp3"));
+        let out = serialize(&p.entries, &|_| None);
+        assert_eq!(out, "#EXTM3U\n#EXTINF:-1,ok\n../A/B/ok.mp3\n");
     }
 
     #[test]
