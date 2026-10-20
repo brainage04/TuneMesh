@@ -214,6 +214,29 @@ fn read_lines(
         if limits && total > MAX_PLAYLIST_BYTES {
             return Err(too_large("larger than 32 MiB"));
         }
+        // Cut off by the per-line limit: only CRs may follow before the
+        // line's LF (or the end); any other byte makes the line, CRs inside
+        // it included, longer than the limit.
+        if limits && n as u64 == max_read && buf.last() != Some(&b'\n') {
+            loop {
+                let rest = reader.fill_buf()?;
+                let crs = rest.iter().take_while(|b| **b == b'\r').count();
+                let (used, end) = match rest.get(crs) {
+                    None if rest.is_empty() => break,
+                    None => (crs, false),
+                    Some(b'\n') => (crs + 1, true),
+                    Some(_) => return Err(too_large("a line is longer than 32 KiB")),
+                };
+                reader.consume(used);
+                total += used as u64;
+                if end {
+                    break;
+                }
+            }
+        }
+        if limits && total > MAX_PLAYLIST_BYTES {
+            return Err(too_large("larger than 32 MiB"));
+        }
         let mut bytes = buf.strip_suffix(b"\n").unwrap_or(&buf);
         while let Some(b) = bytes.strip_suffix(b"\r") {
             bytes = b;
@@ -869,6 +892,10 @@ mod tests {
             huge.push_str(&line);
         }
         let ok_line = format!("#EXTM3U\n../{}.mp3\r\n", "x".repeat(MAX_LINE_BYTES - 7));
+        // CRs inside a line count; only trailing ones are the line ending.
+        let inner_crs = format!("#EXTM3U\n{}\r\r\rb\n", "a".repeat(MAX_LINE_BYTES - 1));
+        let crs_at_end = format!("#EXTM3U\n{}\r\r\r\n", "a".repeat(MAX_LINE_BYTES));
+        let crs_at_eof = format!("#EXTM3U\n{}\r\r", "a".repeat(MAX_LINE_BYTES));
         for (name, text, ok) in [
             ("Many", &entries_ok, true),
             ("TooMany", &too_many, false),
@@ -876,6 +903,9 @@ mod tests {
             ("LongComment", &long_comment, false),
             ("Huge", &huge, false),
             ("LongOk", &ok_line, true),
+            ("InnerCrs", &inner_crs, false),
+            ("CrsAtEnd", &crs_at_end, true),
+            ("CrsAtEof", &crs_at_eof, true),
         ] {
             let path = root.join(format!("Playlists/{name}.m3u8"));
             fs::write(&path, text).unwrap();
