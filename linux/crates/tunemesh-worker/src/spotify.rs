@@ -683,8 +683,14 @@ fn output_template(t: &SpTrack) -> String {
     )
 }
 
-/// Writes Spotify's metadata over what YouTube supplied.
+/// Writes Spotify's metadata over what YouTube supplied. A lofty panic
+/// counts as an error (see `library::guarded`).
 fn retag(path: &Path, t: &SpTrack) -> Result<(), String> {
+    tunemesh_core::library::guarded(&path.display().to_string(), || retag_unguarded(path, t))
+        .unwrap_or_else(|| Err("the tag writer crashed on this file".to_owned()))
+}
+
+fn retag_unguarded(path: &Path, t: &SpTrack) -> Result<(), String> {
     let mut file = lofty::read_from_path(path).map_err(|e| e.to_string())?;
     if file.primary_tag_mut().is_none() {
         let tag_type = file.primary_tag_type();

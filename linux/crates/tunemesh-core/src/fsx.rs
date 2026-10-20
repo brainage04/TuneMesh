@@ -61,6 +61,8 @@ pub struct Meta {
     pub len: u64,
     /// Seconds since the Unix epoch.
     pub mtime: i64,
+    /// Nanoseconds within that second.
+    pub mtime_nsec: u32,
 }
 
 /// An open directory; all operations are relative to it.
@@ -231,6 +233,7 @@ impl Dir {
             kind: Kind::from_type(FileType::from_raw_mode(st.st_mode)),
             len: st.st_size as u64,
             mtime: st.st_mtime as i64,
+            mtime_nsec: st.st_mtime_nsec as u32,
         })
     }
 

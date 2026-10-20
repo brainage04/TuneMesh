@@ -400,7 +400,7 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
                 .open_file(rel)
                 .map(|mut f| library::read_tags_from(&mut f))
                 .unwrap_or_default();
-            let t = library::make_track(rel, tags, None, 0, 0);
+            let t = library::make_track(rel, tags, None, (0, 0), 0);
             (
                 rel.as_str(),
                 (t.duration_secs(), format!("{} - {}", t.artist, t.title)),

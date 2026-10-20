@@ -3,8 +3,8 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::time::UNIX_EPOCH;
 
 use lofty::prelude::*;
 use lofty::tag::{ItemKey, Tag};
@@ -90,6 +90,10 @@ pub struct Track {
     pub cover: CoverSource,
     /// Modification time in seconds since the epoch.
     pub mtime: i64,
+    /// Nanoseconds within `mtime`'s second: a file retagged within the same
+    /// second (same size) must still count as changed. Caches written
+    /// before this field existed do not parse, so they are rebuilt.
+    pub mtime_nsec: u32,
     pub size: u64,
 }
 
@@ -204,18 +208,40 @@ fn tag_info(tag: &Tag) -> TagInfo {
     }
 }
 
+/// Runs a lofty call, treating a panic as an unreadable file. lofty 0.25.4
+/// panics on some malformed files (an Opus header with 0 channels), and a
+/// file any synced device can write must not take down a scan, the app or
+/// the worker. The release profile therefore unwinds (`linux/Cargo.toml`).
+/// The first such file is logged with a note; the panic message itself is
+/// printed by the panic hook each time.
+pub fn guarded<T>(what: &str, read: impl FnOnce() -> T) -> Option<T> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static LOGGED: AtomicBool = AtomicBool::new(false);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
+    if result.is_err() && !LOGGED.swap(true, Ordering::Relaxed) {
+        eprintln!("tunemesh: the tag reader crashed on {what}; treating it as unreadable");
+    }
+    result.ok()
+}
+
 /// Reads tags and duration; unreadable files yield an empty `TagInfo` so the
 /// track still appears with its fallbacks.
 ///
 /// Follows symlinks: for files below the library root use
 /// [`read_tags_from`] with a file from `fsx::Dir::open_file`.
 pub fn read_tags(path: &Path) -> TagInfo {
-    lofty::read_from_path(path).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+    guarded(&path.display().to_string(), || {
+        lofty::read_from_path(path).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+    })
+    .unwrap_or_default()
 }
 
 /// [`read_tags`] for an already open file (see `fsx::Dir::open_file`).
 pub fn read_tags_from(file: &mut fs::File) -> TagInfo {
-    lofty::read_from(file).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+    guarded("a library file", || {
+        lofty::read_from(file).map_or_else(|_| TagInfo::default(), |f| tagged_info(&f))
+    })
+    .unwrap_or_default()
 }
 
 fn tagged_info(file: &lofty::file::TaggedFile) -> TagInfo {
@@ -236,13 +262,16 @@ fn tagged_info(file: &lofty::file::TaggedFile) -> TagInfo {
 /// Follows symlinks: for files below the library root use
 /// [`read_embedded_cover_from`] with a file from `fsx::Dir::open_file`.
 pub fn read_embedded_cover(path: &Path) -> Option<Vec<u8>> {
-    cover_of(&lofty::read_from_path(path).ok()?)
+    guarded(&path.display().to_string(), || {
+        cover_of(&lofty::read_from_path(path).ok()?)
+    })
+    .flatten()
 }
 
 /// [`read_embedded_cover`] for an already open file (see
 /// `fsx::Dir::open_file`).
 pub fn read_embedded_cover_from(file: &mut fs::File) -> Option<Vec<u8>> {
-    cover_of(&lofty::read_from(file).ok()?)
+    guarded("a library file", || cover_of(&lofty::read_from(file).ok()?)).flatten()
 }
 
 fn cover_of(file: &lofty::file::TaggedFile) -> Option<Vec<u8>> {
@@ -260,7 +289,7 @@ pub fn make_track(
     rel: &str,
     info: TagInfo,
     dir_cover: Option<&str>,
-    mtime: i64,
+    (mtime, mtime_nsec): (i64, u32),
     size: u64,
 ) -> Track {
     let file_name = rel.rsplit('/').next().unwrap_or(rel);
@@ -292,6 +321,7 @@ pub fn make_track(
         duration_ms: info.duration_ms,
         cover,
         mtime,
+        mtime_nsec,
         size,
     }
 }
@@ -413,7 +443,11 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
         for (name, meta) in audio {
             let rel = rel_of(&name);
             let track = match previous.get(&rel) {
-                Some(old) if old.mtime == meta.mtime && old.size == meta.len => {
+                Some(old)
+                    if old.mtime == meta.mtime
+                        && old.mtime_nsec == meta.mtime_nsec
+                        && old.size == meta.len =>
+                {
                     let mut t = old.clone();
                     if t.cover != CoverSource::Embedded {
                         t.cover = dir_cover
@@ -430,15 +464,8 @@ pub fn scan(root: &Path, previous: &HashMap<String, Track>) -> Vec<Track> {
                     };
                     let (len, mtime) = file
                         .metadata()
-                        .map(|m| {
-                            let mtime = m
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                                .map_or(0, |d| d.as_secs() as i64);
-                            (m.len(), mtime)
-                        })
-                        .unwrap_or((meta.len, meta.mtime));
+                        .map(|m| (m.len(), (m.mtime(), m.mtime_nsec() as u32)))
+                        .unwrap_or((meta.len, (meta.mtime, meta.mtime_nsec)));
                     make_track(
                         &rel,
                         read_tags_from(&mut file),
@@ -769,7 +796,7 @@ mod tests {
             "Art/Alb/Song [id1].opus",
             TagInfo::default(),
             Some("Art/Alb/cover.jpg"),
-            5,
+            (5, 0),
             9,
         );
         assert_eq!(
@@ -786,7 +813,7 @@ mod tests {
             has_picture: true,
             ..Default::default()
         };
-        let t = make_track("x.mp3", info, None, 0, 0);
+        let t = make_track("x.mp3", info, None, (0, 0), 0);
         assert_eq!(
             (t.title.as_str(), t.artist.as_str(), t.album.as_str()),
             ("Real", "A1, A2", "Rec")
@@ -992,6 +1019,166 @@ mod tests {
         dir.close().unwrap();
     }
 
+    /// Ogg CRC-32 (polynomial 0x04c11db7, no reflection, init 0).
+    fn ogg_crc(data: &[u8]) -> u32 {
+        let mut crc = 0u32;
+        for &b in data {
+            crc ^= u32::from(b) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04c1_1db7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        crc
+    }
+
+    /// One Ogg page holding one packet (< 255 bytes).
+    fn ogg_page(header_type: u8, granule: u64, seq: u32, packet: &[u8]) -> Vec<u8> {
+        let mut p = b"OggS\0".to_vec();
+        p.push(header_type);
+        p.extend_from_slice(&granule.to_le_bytes());
+        p.extend_from_slice(&1u32.to_le_bytes()); // serial
+        p.extend_from_slice(&seq.to_le_bytes());
+        p.extend_from_slice(&[0; 4]); // CRC, filled in below
+        p.push(1);
+        p.push(packet.len() as u8);
+        p.extend_from_slice(packet);
+        let crc = ogg_crc(&p);
+        p[22..26].copy_from_slice(&crc.to_le_bytes());
+        p
+    }
+
+    /// An Ogg Opus file whose OpusHead claims `channels` channels (byte 37
+    /// of the file, as in an ffmpeg-made file).
+    fn opus_with_channels(channels: u8) -> Vec<u8> {
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, channels]);
+        head.extend_from_slice(&312u16.to_le_bytes());
+        head.extend_from_slice(&48_000u32.to_le_bytes());
+        head.extend_from_slice(&[0, 0, 0]);
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend_from_slice(&4u32.to_le_bytes());
+        tags.extend_from_slice(b"test");
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        let mut f = ogg_page(2, 0, 0, &head);
+        f.extend(ogg_page(0, 0, 1, &tags));
+        f.extend(ogg_page(4, 48_000, 2, &[0xf8, 0xff, 0xfe]));
+        assert_eq!(f[37], channels);
+        f
+    }
+
+    /// R1-opus-b-1: lofty 0.25.4 panics on an Opus header with 0 channels.
+    /// The file reads as unreadable (empty tags, no cover) and the scan
+    /// still returns the other tracks. Uses a hand-made file, and an
+    /// ffmpeg-made one with byte 37 set to 0 when ffmpeg is on `PATH`.
+    #[test]
+    fn zero_channel_opus_does_not_stop_the_scan() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("A/B")).unwrap();
+        fs::write(root.join("A/B/Good.opus"), opus_with_channels(2)).unwrap();
+        fs::write(root.join("A/B/Bad.opus"), opus_with_channels(0)).unwrap();
+        let ffmpeg_made = root.join("A/B/Made.opus");
+        let made = std::process::Command::new("ffmpeg")
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=330:duration=1",
+            ])
+            .args(["-c:a", "libopus"])
+            .arg(&ffmpeg_made)
+            .status()
+            .is_ok_and(|s| s.success());
+        if made {
+            let mut bytes = fs::read(&ffmpeg_made).unwrap();
+            assert_eq!(&bytes[28..36], b"OpusHead");
+            bytes[37] = 0;
+            fs::write(&ffmpeg_made, bytes).unwrap();
+        } else {
+            eprintln!("ffmpeg not on PATH: only the hand-made file is tested");
+        }
+        // The bug is still in lofty (when this fails, lofty no longer
+        // panics and the guard is only a safety net).
+        let raw =
+            std::panic::catch_unwind(|| lofty::read_from_path(root.join("A/B/Bad.opus")).is_ok());
+        assert!(raw.is_err(), "lofty no longer panics on 0 channels");
+        for bad in ["A/B/Bad.opus", "A/B/Made.opus"]
+            .iter()
+            .filter(|p| root.join(p).exists())
+        {
+            let empty =
+                |t: TagInfo| t.title.is_none() && t.artists.is_empty() && t.duration_ms == 0;
+            assert!(empty(read_tags(&root.join(bad))));
+            assert!(read_embedded_cover(&root.join(bad)).is_none());
+            let mut f = fs::File::open(root.join(bad)).unwrap();
+            assert!(empty(read_tags_from(&mut f)));
+            let mut f = fs::File::open(root.join(bad)).unwrap();
+            assert!(read_embedded_cover_from(&mut f).is_none());
+        }
+        let tracks = scan(root, &HashMap::new());
+        let paths: Vec<_> = tracks.iter().map(|t| t.path.as_str()).collect();
+        let mut expected = vec!["A/B/Bad.opus", "A/B/Good.opus"];
+        if made {
+            expected.push("A/B/Made.opus");
+        }
+        assert_eq!(paths, expected);
+        assert_eq!(tracks[0].title, "Bad");
+    }
+
+    /// R1-astra-3: a same-size rewrite within one second (only the
+    /// nanoseconds of the modification time differ) is read again.
+    #[test]
+    fn scan_cache_compares_nanoseconds() {
+        use std::time::{Duration, SystemTime};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("A/B")).unwrap();
+        let path = root.join("A/B/song.mp3");
+        fs::write(&path, b"xxxx").unwrap();
+        let second = SystemTime::UNIX_EPOCH + Duration::from_secs(1_792_470_994);
+        let set = |nanos: u32| {
+            fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(second + Duration::from_nanos(nanos.into()))
+                .unwrap()
+        };
+        set(281_060_366);
+        let stale = |tracks: Vec<Track>| -> HashMap<String, Track> {
+            tracks
+                .into_iter()
+                .map(|mut t| {
+                    t.title = "stale".into();
+                    (t.path.clone(), t)
+                })
+                .collect()
+        };
+        let first = scan(root, &HashMap::new());
+        assert_eq!(first[0].mtime_nsec, 281_060_366);
+        // Unchanged: the cached track is reused.
+        let previous = stale(first);
+        assert_eq!(scan(root, &previous)[0].title, "stale");
+        // Same size, same second, other nanoseconds: read again.
+        set(123_456_789);
+        let again = scan(root, &previous);
+        assert_eq!(again[0].title, "song");
+        assert_eq!(
+            (again[0].mtime, again[0].mtime_nsec),
+            (1_792_470_994, 123_456_789)
+        );
+        // A cache written before `mtime_nsec` existed does not parse.
+        let mut old = serde_json::to_value(&again[0]).unwrap();
+        old.as_object_mut().unwrap().remove("mtime_nsec");
+        assert!(serde_json::from_value::<Track>(old).is_err());
+    }
+
     #[test]
     fn scan_ignores_symlinks() {
         let outside = tempfile::tempdir().unwrap();
@@ -1024,7 +1211,7 @@ mod tests {
                 track_number: Some(n),
                 ..Default::default()
             };
-            make_track(path, info, None, n as i64, 0)
+            make_track(path, info, None, (n as i64, 0), 0)
         };
         let lib = Library::new(vec![
             mk("a/2.mp3", Some("VA"), &["X"], "Comp", 2),

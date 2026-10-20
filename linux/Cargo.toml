@@ -19,4 +19,6 @@ anyhow = "1"
 [profile.release]
 lto = "thin"
 codegen-units = 4
-panic = "abort"
+# Unwind, so a panic in a tag parser on a synced file can be caught
+# (tunemesh_core::library::guarded) instead of ending the process.
+panic = "unwind"
