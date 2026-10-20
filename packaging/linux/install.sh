@@ -79,14 +79,42 @@ for bin in tunemesh tunemesh-worker; do
     fi
 done
 
+# systemd refuses executable paths containing quotes, backslashes or control
+# characters however they are escaped, so such prefixes are rejected before
+# anything is installed.
+case $bindir in
+    *'
+'*) bad=true ;;
+    *) if printf '%s' "$bindir" | LC_ALL=C grep -q "[\"'\\[:cntrl:]]"; then bad=true; else bad=false; fi ;;
+esac
+if $bad; then
+    echo "install.sh: systemd cannot run programs from a path with quotes, backslashes or" >&2
+    echo "  control characters: $bindir" >&2
+    exit 1
+fi
+
 install -Dm755 "$bin_dir/tunemesh" "$destdir$bindir/tunemesh"
 install -Dm755 "$bin_dir/tunemesh-worker" "$destdir$bindir/tunemesh-worker"
 install -Dm644 "$data/$app_id.desktop" "$destdir$datadir/applications/$app_id.desktop"
 install -Dm644 "$data/$app_id.svg" "$destdir$datadir/icons/hicolor/scalable/apps/$app_id.svg"
 install -Dm644 "$data/$app_id.metainfo.xml" "$destdir$datadir/metainfo/$app_id.metainfo.xml"
 mkdir -p "$destdir$userunitdir"
-sed "s|@bindir@|$bindir|g" "$repo/packaging/systemd/tunemesh-worker.service.in" \
-    >"$destdir$userunitdir/tunemesh-worker.service"
+# ExecStart takes the worker as one double-quoted word with % (systemd
+# specifiers) doubled; systemd does not expand $ in the executable path. The
+# template is filled in with awk's index/substr, so nothing in the prefix acts
+# as a pattern or replacement metacharacter.
+worker_exec=$(printf '%s/tunemesh-worker' "$bindir" | sed 's/%/%%/g')
+TUNEMESH_WORKER_EXEC="\"$worker_exec\"" awk '
+    BEGIN { token = "@bindir@/tunemesh-worker"; value = ENVIRON["TUNEMESH_WORKER_EXEC"] }
+    {
+        out = ""
+        while ((i = index($0, token)) > 0) {
+            out = out substr($0, 1, i - 1) value
+            $0 = substr($0, i + length(token))
+        }
+        print out $0
+    }
+' "$repo/packaging/systemd/tunemesh-worker.service.in" >"$destdir$userunitdir/tunemesh-worker.service"
 chmod 644 "$destdir$userunitdir/tunemesh-worker.service"
 # TuneMesh's licence and those of the Rust crates linked into both binaries.
 install -Dm644 "$repo/LICENSE" "$destdir$datadir/licenses/tunemesh/LICENSE"
