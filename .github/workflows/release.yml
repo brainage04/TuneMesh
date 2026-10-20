@@ -36,6 +36,12 @@ concurrency:
 env:
   APP_ID: io.github.brainage04.TuneMesh
 
+# bash -eo pipefail for every run step (GitHub's default for steps without a
+# shell is bash -e, where a failing command before a pipe goes unnoticed).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   version:
     runs-on: ubuntu-24.04
@@ -143,7 +149,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: |
-          pip install --user aiohttp tomlkit
+          pip install --user aiohttp==3.14.5 tomlkit==0.15.2
           packaging/flatpak/update-cargo-sources.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -262,7 +268,7 @@ jobs:
           ANDROID_KEYSTORE_B64=$(base64 -w0 "$keys/new.jks") ANDROID_STORE_PASSWORD=pass-new \
             ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD=pass-new \
             ANDROID_LINEAGE_B64=$(base64 -w0 "$keys/lineage") packaging/ci/android-release.sh sign
-          "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep -q 'CN=throwaway old'
+          "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep 'CN=throwaway old' >/dev/null
           # Expected to fail; GITHUB_ACTIONS unset keeps it from annotating the run.
           if env -u GITHUB_ACTIONS ANDROID_KEYSTORE_B64="$(base64 -w0 "$keys/new.jks")" \
               ANDROID_STORE_PASSWORD=pass-new ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD='' \
@@ -377,6 +383,30 @@ jobs:
           systemctl --user status tunemesh-worker --no-pager
           systemctl --user is-active tunemesh-worker
           systemctl --user disable --now tunemesh-worker
+      # install.sh with a prefix full of characters that are special to the
+      # shell, sed and systemd: the unit must verify and actually start.
+      - name: User service from an awkward install.sh prefix
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          prefix="$HOME/Tune Mesh 100% |&\$x;*"
+          packaging/linux/install.sh --prefix "$prefix" --bin-dir /usr/bin
+          unit="$prefix/lib/systemd/user/tunemesh-worker.service"
+          grep '^ExecStart=' "$unit"
+          systemd-analyze --user verify "$unit"
+          systemctl --user link "$unit"
+          systemctl --user start tunemesh-worker
+          sleep 5
+          systemctl --user status tunemesh-worker --no-pager
+          systemctl --user show -p ExecStart tunemesh-worker | grep -F "$prefix/bin/tunemesh-worker"
+          systemctl --user is-active tunemesh-worker
+          systemctl --user stop tunemesh-worker
+          systemctl --user disable tunemesh-worker
+          packaging/linux/install.sh --prefix "$prefix" --uninstall
+          test -z "$(find "$prefix" -type f)"
+          # Paths systemd cannot run are refused before anything is installed.
+          if packaging/linux/install.sh --prefix "$HOME/quote'd" --bin-dir /usr/bin; then exit 1; fi
+          test ! -e "$HOME/quote'd"
       - name: Uninstall
         run: |
           dpkg -L tunemesh >installed.txt

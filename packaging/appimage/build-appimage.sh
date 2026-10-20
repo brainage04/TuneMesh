@@ -40,10 +40,33 @@ build_binaries
 tools=$(mktemp -d)
 appdir=$(mktemp -d)/AppDir
 trap 'rm -rf "$tools" "$(dirname "$appdir")"' EXIT
-fetch() { curl -fsSL --retry 3 -o "$tools/$1" "$2" && chmod +x "$tools/$1"; }
-fetch linuxdeploy "https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-$arch.AppImage"
-fetch linuxdeploy-plugin-appimage "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-$arch.AppImage"
-fetch linuxdeploy-plugin-gtk.sh "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh"
+# Pinned tool versions, each checked against its SHA-256 before it runs. To
+# update: pick the new release or commit and replace its hash with the output
+# of `curl -fsSL <url> | sha256sum`.
+linuxdeploy_tag=1-alpha-20251107-1
+plugin_appimage_tag=1-alpha-20250213-1
+plugin_gtk_commit=7a3fbc31a9e5075073ff8790f26effbac5f84453
+case $arch in
+    x86_64)
+        linuxdeploy_sha=c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d
+        plugin_appimage_sha=992d502a248e14ab185448ddf6f6e7d25558cb84d4623c354c3af350c25fccb3 ;;
+    aarch64)
+        linuxdeploy_sha=620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff
+        plugin_appimage_sha=83c292149274965a865dcd44c135cfca8ba28c6b7de3eb628d4b8b5f248af17c ;;
+    *) echo "build-appimage.sh: unsupported architecture $arch" >&2; exit 1 ;;
+esac
+plugin_gtk_sha=b0f4cbc684a0103a9651f0955b635eaea0096b3a66c0f5a2c2aa337960375171
+fetch() {
+    curl -fsSL --retry 3 -o "$tools/$1" "$3"
+    echo "$2  $tools/$1" | sha256sum -c --quiet -
+    chmod +x "$tools/$1"
+}
+fetch linuxdeploy "$linuxdeploy_sha" \
+    "https://github.com/linuxdeploy/linuxdeploy/releases/download/$linuxdeploy_tag/linuxdeploy-$arch.AppImage"
+fetch linuxdeploy-plugin-appimage "$plugin_appimage_sha" \
+    "https://github.com/linuxdeploy/linuxdeploy-plugin-appimage/releases/download/$plugin_appimage_tag/linuxdeploy-plugin-appimage-$arch.AppImage"
+fetch linuxdeploy-plugin-gtk.sh "$plugin_gtk_sha" \
+    "https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/$plugin_gtk_commit/linuxdeploy-plugin-gtk.sh"
 export PATH=$tools:$PATH
 # CI runners and containers have no FUSE.
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -119,7 +142,8 @@ EOF
     for tool in linuxdeploy linuxdeploy-plugin-appimage linuxdeploy-plugin-gtk.sh; do
         echo "- $tool, SHA-256 $(sha256sum "$tools/$tool" | cut -d' ' -f1)"
     done
-    echo "  (https://github.com/linuxdeploy, continuous builds; MIT licence)"
+    echo "  (https://github.com/linuxdeploy: linuxdeploy $linuxdeploy_tag, linuxdeploy-plugin-appimage"
+    echo "  $plugin_appimage_tag, linuxdeploy-plugin-gtk commit $plugin_gtk_commit; MIT licence)"
 } >>"$appdir/sources.tmp"
 install -Dm644 "$appdir/sources.tmp" "$sources"
 rm "$appdir/sources.tmp"
