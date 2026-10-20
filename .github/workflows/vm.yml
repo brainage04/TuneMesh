@@ -132,11 +132,10 @@ jobs:
           github-token: ${{ github.token }}
       - name: Test in a ${{ matrix.distro }} VM
         run: |
-          shopt -s nullglob
           read -ra globs <<<"$PACKAGES"
           files=()
           for glob in "${globs[@]}"; do
-            match=(pkg/$glob)
+            mapfile -t match < <(compgen -G "pkg/$glob" || true)
             [ ${#match[@]} -eq 1 ] || { echo "::error::$glob matches ${#match[@]} files in pkg/"; ls pkg; exit 1; }
             files+=("${match[0]}")
           done

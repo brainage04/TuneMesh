@@ -226,6 +226,13 @@ for p in "${packages[@]}"; do
     fi
 done
 collect
+if [ "${TM_VM_HOLD:-}" = 1 ] && [ $result -ne 0 ]; then
+    touch "$work/hold"
+    log "TM_VM_HOLD: VM kept running; log in with"
+    log "  ssh -i $work/id -p $port -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null tm@127.0.0.1"
+    log "  and rm $work/hold to shut it down"
+    while [ -e "$work/hold" ] && kill -0 "$qemu_pid" 2>/dev/null; do sleep 5; done
+fi
 vm 'sudo systemctl poweroff' 2>/dev/null || true
 for _ in $(seq 60); do kill -0 "$qemu_pid" 2>/dev/null || break; sleep 1; done
 exit $result

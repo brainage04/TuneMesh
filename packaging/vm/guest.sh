@@ -136,6 +136,18 @@ activate() {
     fi
 }
 leftover_processes() { pgrep -u "$(id -u)" -x 'tunemesh|tunemesh-worker'; }
+not_running() { ! leftover_processes; }
+worker_running() { pgrep -u "$(id -u)" -x tunemesh-worker; }
+
+# The program's own scopes: `flatpak run` and `snap run` move it out of the
+# service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
+# so stopping that service alone does not reach it.
+scopes=("app-flatpak-$APP_ID-*.scope" 'snap.tunemesh.*.scope')
+# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit.
+stop_unit() {
+    systemctl --user stop "$1" "${scopes[@]}"
+    wait_for 15 not_running || fail "TuneMesh still runs 15 s after stopping $1"
+}
 
 # ----------------------------------------------------------------- test
 
@@ -167,9 +179,8 @@ uninstall() {
 clean_up_failure() {
     [ $? -ne 0 ] || return 0
     log "cleaning up after the failure"
-    systemctl --user stop tm-app.service tm-sway.service 2>/dev/null || true
-    systemctl --user disable --now tunemesh-worker.service 2>/dev/null ||
-        systemctl --user stop tunemesh-worker.service 2>/dev/null || true
+    systemctl --user disable tunemesh-worker.service 2>/dev/null || true
+    systemctl --user stop tm-app.service tm-sway.service tunemesh-worker.service "${scopes[@]}" 2>/dev/null || true
     systemctl --user reset-failed 2>/dev/null || true
     [ -z "$kind" ] || uninstall || true
 }
@@ -274,6 +285,7 @@ test_package() {
     journalctl --user -u tunemesh-worker --no-pager >"$out/worker.log" 2>&1 || true
     systemctl --user status tunemesh-worker --no-pager || true
     systemctl --user is-active --quiet tunemesh-worker || fail "tunemesh-worker is not active after 15 s"
+    worker_running >/dev/null || fail "no tunemesh-worker process after 15 s"
     [ "$(systemctl --user show -p NRestarts --value tunemesh-worker)" = 0 ] ||
         fail "tunemesh-worker restarted"
     log "tunemesh-worker active as a user service ($unit_mode)"
@@ -281,11 +293,8 @@ test_package() {
     $worker --self-test --work-dir "/tmp/tm-self-test.$$" 2>&1 | tee "$out/self-test.log"
     rm -rf "/tmp/tm-self-test.$$"
     log "tunemesh-worker --self-test passed"
-    if [ "$unit_mode" = shipped ]; then
-        systemctl --user disable --now tunemesh-worker.service
-    else
-        systemctl --user stop tunemesh-worker.service
-    fi
+    [ "$unit_mode" = transient ] || systemctl --user disable tunemesh-worker.service
+    stop_unit tunemesh-worker.service
     systemctl --user reset-failed 2>/dev/null || true
 
     # ---- the app in headless sway, playing to the null sink
@@ -301,6 +310,8 @@ test_package() {
     done
     [ -n "$wl" ] || fail "sway did not start (journalctl --user -u tm-sway)"
     log "headless sway on $wl"
+    local app_start
+    app_start=$(date +%s)
     # shellcheck disable=SC2086
     systemd-run --user --unit=tm-app -E WAYLAND_DISPLAY="$wl" -E XDG_SESSION_TYPE=wayland \
         -E XDG_CURRENT_DESKTOP=sway -E GDK_BACKEND=wayland -- $app --library "$LIB"
@@ -332,8 +343,9 @@ test_package() {
     WAYLAND_DISPLAY=$wl grim "$out/screenshot.png" || true
 
     # SIGTERM, as on logout: the app saves its state and exits cleanly.
-    systemctl --user stop tm-app.service
-    journalctl --user -u tm-app --no-pager >"$out/app.log" 2>&1 || true
+    stop_unit tm-app.service
+    journalctl --user --since "@$app_start" -u tm-app.service -u "${scopes[0]}" -u "${scopes[1]}" \
+        --no-pager >"$out/app.log" 2>&1 || true
     if systemctl --user is-failed --quiet tm-app.service; then
         fail "the app did not exit cleanly on SIGTERM"
     fi
