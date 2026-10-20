@@ -39,6 +39,17 @@ pub struct Playlist {
     pub entries: Vec<PlaylistEntry>,
 }
 
+/// A playlist's size and first tracks, read without holding its entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Summary {
+    pub name: String,
+    /// Number of entries, as `parse` would produce.
+    pub count: usize,
+    /// Root-relative paths of the first entries that resolve inside the
+    /// root, in order.
+    pub first_tracks: Vec<String>,
+}
+
 /// What writers need to know about a track for its `#EXTINF` line.
 pub struct TrackInfo {
     pub duration_secs: Option<u64>,
@@ -69,16 +80,20 @@ fn resolve(line: &str, root: &Path) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join("/"))
 }
 
+/// The non-blank lines of playlist text, BOM and CR removed.
+fn lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_prefix('\u{feff}')
+        .unwrap_or(text)
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .filter(|line| !line.trim().is_empty())
+}
+
 /// Parses playlist text. Tolerates a BOM and CRLF line endings.
 pub fn parse(text: &str, root: &Path) -> Vec<PlaylistEntry> {
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut entries = Vec::new();
     let mut pending: Option<(Option<u64>, Option<String>)> = None;
-    for line in text.lines() {
-        let line = line.trim_end_matches('\r');
-        if line.trim().is_empty() {
-            continue;
-        }
+    for line in lines(text) {
         if let Some(info) = line.strip_prefix("#EXTINF:") {
             let (dur, label) = info.split_once(',').unwrap_or((info, ""));
             let dur = dur
@@ -208,27 +223,48 @@ pub fn existing_name(root: &Path, name: &str) -> Option<String> {
         .find(|stem| stem.to_lowercase() == folded)
 }
 
+/// A playlist file's bytes (empty for a missing Liked Songs), refusing a
+/// symlink and files over `MAX_PLAYLIST_BYTES`.
+fn read_bytes(root: &Path, name: &str) -> io::Result<Vec<u8>> {
+    match open_dir(root, false).and_then(|d| d.read(&file_name(name), MAX_PLAYLIST_BYTES)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound && name == LIKED_SONGS => Ok(Vec::new()),
+        r => r,
+    }
+}
+
 impl Playlist {
     /// Reads a playlist; a missing Liked Songs file reads as empty. A
     /// playlist that is a symlink (or below a symlinked `Playlists`) is
     /// refused, so a synced link cannot leak the file it points to.
     pub fn read(root: &Path, name: &str) -> io::Result<Self> {
-        let bytes =
-            open_dir(root, false).and_then(|d| d.read(&file_name(name), MAX_PLAYLIST_BYTES));
-        match bytes {
-            Ok(bytes) => {
-                let text = String::from_utf8_lossy(&bytes);
-                Ok(Self {
-                    name: name.to_owned(),
-                    entries: parse(&text, root),
-                })
+        let bytes = read_bytes(root, name)?;
+        Ok(Self {
+            name: name.to_owned(),
+            entries: parse(&String::from_utf8_lossy(&bytes), root),
+        })
+    }
+
+    /// The entry count and the first `first` resolvable tracks, read with
+    /// `read`'s rules but without building the entries: memory stays at
+    /// the file's bytes however many entries it has.
+    pub fn summary(root: &Path, name: &str, first: usize) -> io::Result<Summary> {
+        let bytes = read_bytes(root, name)?;
+        let text = String::from_utf8_lossy(&bytes);
+        let mut count = 0;
+        let mut first_tracks = Vec::new();
+        for line in lines(&text).filter(|l| !l.starts_with('#')) {
+            count += 1;
+            if first_tracks.len() < first
+                && let Some(track) = resolve(line, root)
+            {
+                first_tracks.push(track);
             }
-            Err(e) if e.kind() == io::ErrorKind::NotFound && name == LIKED_SONGS => Ok(Self {
-                name: name.to_owned(),
-                entries: Vec::new(),
-            }),
-            Err(e) => Err(e),
         }
+        Ok(Summary {
+            name: name.to_owned(),
+            count,
+            first_tracks,
+        })
     }
 
     pub fn write(&self, root: &Path, info: &dyn Fn(&str) -> Option<TrackInfo>) -> io::Result<()> {
@@ -572,5 +608,51 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["c", "a", "b"]
         );
+    }
+
+    /// `summary` agrees with `parse` on count and first resolvable tracks,
+    /// and follows `read`'s rules.
+    #[test]
+    fn summary_matches_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("Playlists")).unwrap();
+        let text = format!(
+            "\u{feff}#EXTM3U\r\n#EXTINF:12,A - B\r\n../A/b.mp3\r\n# comment\r\n\r\n   \n\
+             ../../outside.mp3\n/etc/passwd\n{}/C/d.opus\n#EXTINF:-1,x\nsub/e.flac\n../A/b.mp3\n../F/g.mp3\n",
+            root.display()
+        );
+        fs::write(root.join("Playlists/Mix.m3u8"), &text).unwrap();
+        let parsed = parse(&text, root);
+        let resolved: Vec<String> = parsed.iter().filter_map(|e| e.track.clone()).collect();
+        for first in [0, 2, 3, 100] {
+            let s = Playlist::summary(root, "Mix", first).unwrap();
+            assert_eq!(s.count, parsed.len());
+            assert_eq!(s.first_tracks, resolved[..first.min(resolved.len())]);
+        }
+        assert_eq!(parsed.len(), 7);
+        assert_eq!(&resolved[..2], ["A/b.mp3", "C/d.opus"]);
+        // Same rules as `read`: missing Liked Songs is empty, others fail,
+        // symlinks are refused, lossy UTF-8.
+        fs::write(root.join("Playlists/Bad.m3u8"), b"../a/\xff.mp3\n").unwrap();
+        let bad = Playlist::summary(root, "Bad", 5).unwrap();
+        assert_eq!(
+            bad.first_tracks,
+            [Playlist::read(root, "Bad").unwrap().entries[0]
+                .track
+                .clone()
+                .unwrap()]
+        );
+        let liked = Playlist::summary(root, LIKED_SONGS, 5).unwrap();
+        assert_eq!((liked.count, liked.first_tracks.len()), (0, 0));
+        assert!(Playlist::summary(root, "Nope", 5).is_err());
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("s.m3u8"), "../x.mp3\n").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("s.m3u8"),
+            root.join("Playlists/Link.m3u8"),
+        )
+        .unwrap();
+        assert!(Playlist::summary(root, "Link", 5).is_err());
     }
 }
