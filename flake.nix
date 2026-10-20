@@ -161,6 +161,10 @@
         }:
         let
           cfg = config.services.tunemesh-worker;
+          # One path in a systemd path list: quoted (spaces), with `%`
+          # (specifiers), `"` and `\` escaped.
+          systemdPath =
+            path: ''"${lib.replaceStrings [ "\\" "\"" "%" ] [ "\\\\" "\\\"" "%%" ] path}"'';
         in
         {
           options.services.tunemesh-worker = {
@@ -281,7 +285,7 @@
                 # write: it may touch the library and the work directory only.
                 ProtectSystem = "strict";
                 ProtectHome = "read-only";
-                ReadWritePaths = [
+                ReadWritePaths = map systemdPath [
                   cfg.libraryPath
                   cfg.workDir
                 ];

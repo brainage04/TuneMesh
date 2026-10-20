@@ -46,7 +46,8 @@ storage cannot hold symlinks.
   directories (leading `.`), Syncthing conflict copies (name contains
   `.sync-conflict-`), and any file or directory whose name contains a line
   break (LF or CR; such a path cannot be written as a playlist line), with
-  everything below such a directory.
+  everything below such a directory. Readers may stop descending at some
+  depth; the Linux apps read 64 directory levels below `<root>`.
 - A track's identity is its path relative to `<root>`, with `/` separators.
 - Metadata comes from embedded tags. Fallbacks when a tag is missing:
   title = file name without extension and without a trailing ` [<id>]`;
@@ -251,8 +252,10 @@ library, as a service or as a child process of the desktop app. It:
    that are not http(s) or whose host is or resolves to a loopback, private,
    link-local, CGNAT/Tailscale (`100.64.0.0/10`), IPv6 unique-local or other
    non-public address, or to an address on one of the host's own networks
-   (an interface address or its on-link prefix, so global IPv6 addresses of
-   LAN neighbours such as the router or a NAS are refused too). The
+   (an interface address with its on-link prefix, a /64 for a /128 IPv6
+   address, and every route without a gateway, so global IPv6 addresses of
+   LAN neighbours such as the router or a NAS are refused too; NAT64
+   addresses `64:ff9b::/96` count as the IPv4 address they embed). The
    message in the status file is the same for refused and unresolvable hosts
    and names no address; details go to the worker's local log only. All
    network traffic of yt-dlp, its ffmpeg and the worker itself goes through
@@ -266,9 +269,11 @@ library, as a service or as a child process of the desktop app. It:
 10. Runs ffmpeg and ffprobe (yt-dlp's postprocessing) only on files inside
     the request's scratch directory and only with demuxers for plain audio,
     video and image containers (`-format_whitelist`, `-protocol_whitelist
-    file`), so a download that is really a playlist or script referring to
-    other files (HLS, ffconcat, DASH) fails instead of copying local files
-    into the library.
+    file`, placed after the caller's options so they win), and only with
+    the options yt-dlp's postprocessing uses (no other file-taking options
+    such as `-filter_script` or `-progress`), so a download that is really
+    a playlist or script referring to other files (HLS, ffconcat, DASH)
+    fails instead of copying local files into the library.
 
 ## Local state
 

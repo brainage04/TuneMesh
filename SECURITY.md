@@ -24,7 +24,8 @@ try to stop such a device from reaching anything outside the library:
   its own, through a proxy inside the worker that refuses loopback, private,
   link-local, CGNAT/Tailscale and unique-local addresses, the host's own
   interface addresses and every address on the host's own networks (their
-  on-link prefixes, which covers LAN devices with global IPv6 addresses).
+  on-link prefixes and gateway-less routes, which covers LAN devices with
+  global IPv6 addresses).
   Redirects, manifests, fragments and thumbnails go through the same check.
   Not detected: a port forwarded on your router and reached through your
   public IPv4 address (hairpin NAT), and internal networks with globally
