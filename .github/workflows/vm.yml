@@ -1,0 +1,172 @@
+name: VM tests
+
+# Boots each supported distribution from its official cloud image in QEMU
+# (KVM) and tests the packages as a user would get them: the worker as a
+# systemd user service under a logind session, the app in a headless sway
+# session playing through PipeWire, controlled over D-Bus and checked through
+# MPRIS, then uninstall. One distribution per job, each on its own runner;
+# packaging/vm/README.md has the details and the local runner.
+#
+# Runs on a weekly schedule, by hand, and on pushes and pull requests that
+# touch the packaging, the NixOS module or playback; then it builds the
+# packages itself (build.yml). On v* tags the Release workflow calls it with
+# the packages it built (prebuilt: true), and publishing waits for it.
+on:
+  workflow_call:
+    inputs:
+      prebuilt:
+        description: The calling run already uploaded the pkg-* artifacts (build.yml)
+        type: boolean
+        default: false
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+    inputs:
+      run-id:
+        description: Test the pkg-* artifacts of this earlier Release or VM tests run instead of building
+        type: string
+        default: ''
+  push:
+    branches: ['**']
+    paths:
+      - packaging/**
+      - .github/workflows/vm.yml
+      - flake.nix
+      - linux/crates/tunemesh/src/mpv.rs
+      - linux/crates/tunemesh/src/player.rs
+  pull_request:
+    paths:
+      - packaging/**
+      - .github/workflows/vm.yml
+      - flake.nix
+      - linux/crates/tunemesh/src/mpv.rs
+      - linux/crates/tunemesh/src/player.rs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vm-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+# bash -eo pipefail for every run step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    if: ${{ !inputs.prebuilt && !inputs.run-id }}
+    uses: ./.github/workflows/build.yml
+
+  vm:
+    name: vm (${{ matrix.distro }})
+    needs: build
+    if: ${{ !cancelled() && (needs.build.result == 'success' || needs.build.result == 'skipped') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read # download-artifact from another run (run-id)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro: ubuntu-24.04
+            artifacts: '{pkg-deb-x86_64,pkg-appimage-x86_64,pkg-snap-x86_64}'
+            packages: tunemesh_*_amd64.deb TuneMesh-*-x86_64.AppImage tunemesh_*_amd64.snap
+          - distro: debian-13
+            artifacts: pkg-deb-x86_64
+            packages: tunemesh_*_amd64.deb
+          - distro: fedora
+            artifacts: '{pkg-rpm-x86_64,pkg-flatpak-x86_64}'
+            packages: tunemesh-[0-9]*.x86_64.rpm TuneMesh-*-x86_64.flatpak
+          - distro: opensuse-tumbleweed
+            artifacts: pkg-rpm-x86_64
+            packages: tunemesh-[0-9]*.x86_64.rpm
+          - distro: arch
+            artifacts: pkg-arch-x86_64
+            packages: tunemesh-[0-9]*.pkg.tar.zst tunemesh-bin-[0-9]*.pkg.tar.zst
+    env:
+      DISTRO: ${{ matrix.distro }}
+      PACKAGES: ${{ matrix.packages }}
+      TM_VM_CACHE: ${{ github.workspace }}/../vm-images
+      TM_VM_LOGS: ${{ github.workspace }}/vm-logs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # GitHub's documented rule for hardware acceleration on Linux runners.
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM: $(ls -l /dev/kvm)"
+          else
+            echo "::warning::/dev/kvm is not usable on this runner; the VM falls back to TCG emulation"
+          fi
+          ls -l /dev/kvm || true
+          echo "$(nproc) CPUs, $(grep -cwE 'vmx|svm' /proc/cpuinfo) with vmx/svm; $(free -h | awk '/Mem:/ { print $2 }') RAM"
+      - name: Install QEMU
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ffmpeg
+      - name: Resolve the cloud image
+        id: image
+        run: |
+          read -r url algo sum < <(packaging/vm/images.sh "$DISTRO")
+          echo "$url ($algo $sum)"
+          echo "key=vm-image-$DISTRO-$(printf '%s %s' "$url" "$sum" | sha256sum | cut -c1-32)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.TM_VM_CACHE }}
+          key: ${{ steps.image.outputs.key }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ${{ matrix.artifacts }}
+          path: pkg
+          merge-multiple: true
+          run-id: ${{ inputs.run-id || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Test in a ${{ matrix.distro }} VM
+        run: |
+          read -ra globs <<<"$PACKAGES"
+          files=()
+          for glob in "${globs[@]}"; do
+            mapfile -t match < <(compgen -G "pkg/$glob" || true)
+            [ ${#match[@]} -eq 1 ] || { echo "::error::$glob matches ${#match[@]} files in pkg/"; ls pkg; exit 1; }
+            files+=("${match[0]}")
+          done
+          packaging/vm/run.sh "$DISTRO" "${files[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: failure()
+        with:
+          name: vm-logs-${{ matrix.distro }}
+          path: vm-logs
+          if-no-files-found: ignore
+
+  nixos:
+    name: vm (NixOS module)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' |
+            sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo udevadm settle
+          if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "KVM: $(ls -l /dev/kvm)"
+          else
+            echo "::warning::/dev/kvm is not usable on this runner; the NixOS test runs under TCG"
+          fi
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+        with:
+          extra_nix_config: system-features = nixos-test benchmark big-parallel kvm
+      - name: nixosTest worker-module
+        run: nix build -L --no-link .#checks.x86_64-linux.worker-module

@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# bash -eo pipefail for every run step (GitHub's default for steps without a
+# shell is bash -e, where a failing command before a pipe goes unnoticed).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - name: Cache Cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('linux/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: rustfmt
+        run: nix develop -c bash -c 'cd linux && cargo fmt --all --check'
+      - name: clippy
+        run: nix develop -c bash -c 'cd linux && cargo clippy --workspace --all-targets --locked -- -D warnings'
+      - name: test
+        run: nix develop -c bash -c 'cd linux && cargo test --workspace --locked'
+
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - run: nix flake check -L
+
+  ffmpeg-ubuntu:
+    name: ffmpeg confinement (Ubuntu 24.04's ffmpeg 6.1)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: sudo apt-get update -q && sudo apt-get install -yq ffmpeg
+      - name: tests/ffmpeg_confinement.rs against the distribution's ffmpeg
+        run: |
+          ffmpeg -hide_banner -version | sed -n 1p
+          cargo test --locked --manifest-path linux/Cargo.toml -p tunemesh-worker \
+            --test ffmpeg_confinement -- --nocapture 2>&1 | tee test.log
+          if grep -q '^skipped' test.log; then echo "::error::the test skipped"; exit 1; fi
+
+  licences:
+    name: Rust crate licences up to date
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - run: |
+          nix shell --inputs-from . nixpkgs#cargo-about nixpkgs#cargo \
+            -c packaging/licenses/update-rust-licenses.sh
+          # Blank lines are ignored: crates whose licence texts differ only in
+          # blank lines (miniz_oxide 0.8 and 0.9) share one entry, and which
+          # text cargo-about prints depends on the registry's directory order.
+          git diff --exit-code --ignore-blank-lines packaging/licenses/THIRD-PARTY-RUST.txt || {
+            echo "::error::packaging/licenses/THIRD-PARTY-RUST.txt is out of date; run packaging/licenses/update-rust-licenses.sh"
+            exit 1
+          }
+
+  shell:
+    name: Packaging scripts (shellcheck)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          shellcheck -x --shell=sh packaging/linux/*.sh packaging/deb/*.sh packaging/rpm/*.sh \
+            packaging/arch/*.sh packaging/ci/*.sh packaging/flatpak/*.sh packaging/licenses/*.sh \
+            packaging/appimage/AppRun
+          shellcheck -x packaging/appimage/build-appimage.sh
+
+  workflows:
+    name: Workflows (actionlint)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      # actionlint from the flake's pinned nixpkgs; it runs shellcheck on every run: script.
+      - run: nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck -c actionlint
+
+  android:
+    name: Android (unit tests, debug build)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - run: ./gradlew --no-daemon testDebugUnitTest assembleDebug
+      - name: Licence notices in the APK
+        run: unzip -l app/build/outputs/apk/debug/*.apk | grep ' assets/NOTICE.txt$'
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tunemesh-debug-apk
+          path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7

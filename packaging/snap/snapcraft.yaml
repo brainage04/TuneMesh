@@ -1,0 +1,159 @@
+# Snap for TuneMesh. It packages the binaries of the Ubuntu 24.04 build (the
+# generic tarball from packaging/deb/build-deb.sh, the same base as core24),
+# so they link against the gnome extension's GTK 4.14 and libadwaita 1.5.
+# snapcraft expects this file at snap/snapcraft.yaml in the project root:
+#
+#   packaging/deb/build-deb.sh dist        # on Ubuntu 24.04
+#   cp dist/tunemesh-*-linux-$(uname -m).tar.gz packaging/snap/tunemesh-linux.tar.gz
+#   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/ && snapcraft pack
+#
+# Install a local build:
+#   sudo snap install --dangerous ./tunemesh_<version>_amd64.snap
+#   sudo snap connect tunemesh:syncthing-config     # optional, see below
+name: tunemesh
+title: TuneMesh
+summary: Music player for a Syncthing-shared library
+description: |
+  TuneMesh plays a music library that lives in one Syncthing folder shared
+  between your devices, and downloads new songs into it with yt-dlp.
+
+  The library lives in your home folder (default ~/Music/TuneMesh). For a
+  library on a removable drive, connect removable-media:
+  sudo snap connect tunemesh:removable-media
+  To let TuneMesh read Syncthing's API key, connect syncthing-config:
+  sudo snap connect tunemesh:syncthing-config
+  The download worker also runs on its own as tunemesh.worker.
+adopt-info: tunemesh
+license: MIT
+base: core24
+grade: stable
+confinement: strict
+icon: linux/data/io.github.brainage04.TuneMesh.svg
+website: https://github.com/brainage04/TuneMesh
+source-code: https://github.com/brainage04/TuneMesh
+platforms:
+  amd64:
+  arm64:
+
+plugs:
+  syncthing-config:
+    interface: personal-files
+    read:
+      - $HOME/.config/syncthing
+      - $HOME/.local/state/syncthing
+
+slots:
+  # GApplication's unique name, used for single-instance and its D-Bus actions.
+  tunemesh-dbus:
+    interface: dbus
+    bus: session
+    name: io.github.brainage04.TuneMesh
+  # org.mpris.MediaPlayer2.tunemesh: media keys and desktop media controls.
+  tunemesh-mpris:
+    interface: mpris
+    name: tunemesh
+
+environment:
+  LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/blas:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/lapack
+  TUNEMESH_FFMPEG_DIR: $SNAP/usr/bin
+
+apps:
+  tunemesh:
+    command: usr/bin/tunemesh
+    desktop: usr/share/applications/io.github.brainage04.TuneMesh.desktop
+    common-id: io.github.brainage04.TuneMesh
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      # The worker's egress proxy listens on 127.0.0.1.
+      - network-bind
+      - audio-playback
+      - removable-media
+      - syncthing-config
+    slots:
+      - tunemesh-dbus
+      - tunemesh-mpris
+  worker:
+    command: usr/bin/tunemesh-worker
+    # For the GNOME runtime's libraries, which ffmpeg needs as well.
+    extensions: [gnome]
+    plugs:
+      - home
+      - network
+      - network-bind
+      - removable-media
+
+parts:
+  tunemesh:
+    # Unpacked by hand: snapcraft's tar source would strip the single top-level
+    # usr/ directory.
+    plugin: nil
+    stage-packages:
+      - libmpv2
+      - ffmpeg
+    override-build: |
+      craftctl default
+      tar -xzf "$CRAFT_PROJECT_DIR/packaging/snap/tunemesh-linux.tar.gz" -C "$CRAFT_PART_INSTALL"
+      craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$CRAFT_PROJECT_DIR/linux/Cargo.toml")"
+      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
+        "$CRAFT_PART_INSTALL/usr/share/applications/io.github.brainage04.TuneMesh.desktop"
+    stage:
+      # No systemd user units in a snap; the worker runs as tunemesh.worker.
+      - -usr/lib/systemd
+    prime:
+      # usr/share/doc stays: it holds the staged packages' copyright files.
+      - -usr/share/man
+
+  # Drop the staged copies of libraries that core24 and the GNOME and Mesa
+  # content snaps provide: older duplicates (librsvg, HarfBuzz, ...) would
+  # shadow theirs and break GTK. Then list the source of every Ubuntu package
+  # that still ships files in the snap.
+  cleanup:
+    after: [tunemesh]
+    plugin: nil
+    build-snaps: [core24, gnome-46-2404, mesa-2404]
+    override-prime: |
+      set -eux
+      for snap in core24 gnome-46-2404 mesa-2404; do
+        # Libraries in subdirectories stay: the snap finds them through its
+        # own LD_LIBRARY_PATH entries, which the GNOME runtime's path lacks.
+        # Copyright files stay too.
+        cd "/snap/$snap/current" && find . -type f,l \
+          ! -path '*/blas/*' ! -path '*/lapack/*' ! -path '*/pulseaudio/*' \
+          ! -path './usr/share/doc/*' \
+          -exec rm -f "$CRAFT_PRIME/{}" \;
+      done
+
+      debs=$CRAFT_PART_SRC/../../tunemesh/stage_packages
+      ls "$debs"/*.deb
+      bundled=
+      for deb in "$debs"/*.deb; do
+        # Bundled when any of its files other than documentation is left.
+        if dpkg-deb -c "$deb" | awk '$1 !~ /^d/ { sub(/^\./, "", $6); print $6 }' |
+            grep -v '^/usr/share/doc/' | while read -r f; do
+              if [ -e "$CRAFT_PRIME$f" ] || [ -L "$CRAFT_PRIME$f" ]; then echo yes; break; fi
+            done | grep -q yes; then
+          bundled="$bundled $deb"
+        fi
+      done
+      sed -i 's/^Types: deb$/Types: deb deb-src/' /etc/apt/sources.list.d/ubuntu.sources
+      apt-get update -q || true
+      project=$CRAFT_PROJECT_DIR
+      version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$project/linux/Cargo.toml")
+      sources=$CRAFT_PRIME/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md
+      mkdir -p "$(dirname "$sources")"
+      {
+        "$project/packaging/licenses/sources-header.sh" "snap ($CRAFT_ARCH_BUILD_FOR)" "$version"
+        echo
+        echo "## Bundled Ubuntu 24.04 packages"
+        echo
+        echo "libmpv, ffmpeg, ffprobe and the libraries they need that the GNOME and Mesa"
+        echo "runtime snaps lack come unmodified from these Ubuntu 24.04 packages. Ubuntu"
+        echo "builds FFmpeg with --enable-gpl (and without --enable-nonfree), so the"
+        echo "bundled FFmpeg libraries and programs are under the GPL-2.0-or-later;"
+        echo "libmpv is GPL-2.0-or-later too. GTK, libadwaita and Mesa come from the"
+        echo "gnome-46-2404 and mesa-2404 snaps, which Canonical distributes separately."
+      } >"$sources"
+      # shellcheck disable=SC2086
+      "$project/packaging/licenses/debian-notices.sh" "$CRAFT_PRIME" "$sources" $bundled

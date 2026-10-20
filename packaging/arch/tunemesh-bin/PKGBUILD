@@ -1,0 +1,23 @@
+# Maintainer: brainage04 <brainage04 at users dot noreply dot github dot com>
+# Repackages the prebuilt binaries from the GitHub release (built on Ubuntu 24.04).
+pkgname=tunemesh-bin
+_pkgname=tunemesh
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Music player for a Syncthing-shared library, with a yt-dlp download worker (prebuilt)'
+arch=(x86_64 aarch64)
+url='https://github.com/brainage04/TuneMesh'
+license=(MIT Apache-2.0 BSD-3-Clause CC0-1.0 CDLA-Permissive-2.0 ISC MPL-2.0 Unicode-3.0)
+depends=(gtk4 libadwaita mpv ffmpeg hicolor-icon-theme glibc gcc-libs glib2)
+optdepends=('syncthing: keeps the library in sync between devices')
+provides=("$_pkgname=$pkgver")
+conflicts=("$_pkgname")
+options=(!strip !debug)
+source_x86_64=("https://github.com/brainage04/TuneMesh/releases/download/v$pkgver/$_pkgname-$pkgver-linux-x86_64.tar.gz")
+source_aarch64=("https://github.com/brainage04/TuneMesh/releases/download/v$pkgver/$_pkgname-$pkgver-linux-aarch64.tar.gz")
+sha256sums_x86_64=('SKIP')
+sha256sums_aarch64=('SKIP')
+
+package() {
+    cp -a usr "$pkgdir/"
+}
