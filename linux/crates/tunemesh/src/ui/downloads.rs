@@ -4,7 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
-use gtk::{gdk, glib};
+use gtk::{gdk, gio, glib};
 use tunemesh_core::request::{self, Request, RequestState, Status};
 
 use crate::app::{App, Page, Route};
@@ -105,7 +105,9 @@ fn query_param<'a>(url: &'a str, name: &str) -> Option<&'a str> {
 }
 
 /// What a pasted line is (Spotify and YouTube / YouTube Music URLs; other
-/// input counts as a single item).
+/// input counts as a single item). Same rule as the worker and the Android
+/// app (contract: "YouTube links"): any `list=` makes a YouTube link a
+/// playlist, even with a video in it, except auto-generated mixes (`RD…`).
 pub fn classify(line: &str) -> Kind {
     let lower = line.trim().to_ascii_lowercase();
     let Some(rest) = lower
@@ -114,8 +116,12 @@ pub fn classify(line: &str) -> Kind {
     else {
         return Kind::Single;
     };
-    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    let host = host.trim_start_matches("www.").trim_start_matches("m.");
+    let (host, path) = match rest.find(['/', '?', '#']) {
+        Some(i) => (&rest[..i], rest[i..].trim_start_matches('/')),
+        None => (rest, ""),
+    };
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    let host = host.strip_prefix("m.").unwrap_or(host);
     match host {
         "open.spotify.com" => {
             // `/intl-de/playlist/…` and `/playlist/…`
@@ -132,18 +138,43 @@ pub fn classify(line: &str) -> Kind {
                 _ => Kind::Single,
             }
         }
-        "youtube.com" | "music.youtube.com" => {
+        "youtube.com" | "music.youtube.com" | "youtu.be" => {
             if path.starts_with("browse/mpreb") {
                 return Kind::Album;
             }
             match query_param(line.trim(), "list") {
                 // YouTube Music albums are playlists with this prefix.
                 Some(id) if id.starts_with("OLAK5uy_") => Kind::Album,
+                // YouTube Music's editorial playlists are fixed lists.
+                Some(id) if id.starts_with("RDCLAK5uy_") => Kind::Playlist,
+                // Other RD lists are endless mixes generated for one video.
+                Some(id) if id.starts_with("RD") => Kind::Single,
                 Some(id) if !id.is_empty() => Kind::Playlist,
                 _ => Kind::Single,
             }
         }
         _ => Kind::Single,
+    }
+}
+
+/// Request ids for one paste, in pasted order. Ids sort by their
+/// millisecond prefix (contract: "Download requests"), so each id gets a
+/// later millisecond than the one before instead of waiting for the clock.
+struct OrderedIds {
+    last: u128,
+}
+
+impl OrderedIds {
+    fn new() -> Self {
+        Self { last: 0 }
+    }
+
+    fn next(&mut self) -> String {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        self.last = now.max(self.last + 1);
+        format!("{}-{:08x}", self.last, fastrand::u32(..))
     }
 }
 
@@ -607,37 +638,54 @@ pub fn page(app: &Rc<App>) -> Page {
             let as_playlists = switch.is_active() && playlist.is_none();
             let device = config::device_name();
             let root = a.store.root();
-            let mut written = 0;
-            let mut failed: Vec<String> = Vec::new();
-            for line in &lines {
-                let from_source = as_playlists && classify(line) != Kind::Single;
-                let req = Request::new(line, playlist.clone(), from_source, &device);
-                match req.write(&root) {
-                    Ok(()) => written += 1,
-                    Err(e) => {
-                        eprintln!("tunemesh: writing the request for {line:?}: {e}");
-                        failed.push(line.clone());
+            let mut ids = OrderedIds::new();
+            let requests: Vec<Request> = lines
+                .iter()
+                .map(|line| {
+                    let from_source = as_playlists && classify(line) != Kind::Single;
+                    let mut req = Request::new(line, playlist.clone(), from_source, &device);
+                    req.id = ids.next();
+                    req
+                })
+                .collect();
+            // Each write is synced to disk: a long paste takes a while, so it
+            // runs off the GTK thread while the box shows what is going on.
+            view.set_sensitive(false);
+            let (a, view) = (a.clone(), view.clone());
+            glib::spawn_future_local(async move {
+                let failed = gio::spawn_blocking(move || {
+                    let mut failed: Vec<String> = Vec::new();
+                    for req in &requests {
+                        if let Err(e) = req.write(&root) {
+                            eprintln!("tunemesh: writing the request for {:?}: {e}", req.input);
+                            failed.push(req.input.clone());
+                        }
                     }
+                    (requests.len(), failed)
+                })
+                .await;
+                view.set_sensitive(true);
+                let buf = view.buffer();
+                match failed {
+                    Ok((total, failed)) if failed.is_empty() => {
+                        buf.set_text("");
+                        a.toast(&format!(
+                            "Requested {}",
+                            plural(total, "download", "downloads")
+                        ));
+                    }
+                    Ok((_, failed)) => {
+                        // Keep what failed in the box so it can be retried.
+                        buf.set_text(&failed.join("\n"));
+                        a.toast(&format!(
+                            "Could not write {} (see the log)",
+                            plural(failed.len(), "request", "requests")
+                        ));
+                    }
+                    Err(_) => a.toast("Could not write the requests (see the log)"),
                 }
-                // Ids order requests by their millisecond prefix: keep the
-                // pasted order.
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
-            if failed.is_empty() {
-                buf.set_text("");
-                a.toast(&format!(
-                    "Requested {}",
-                    plural(written, "download", "downloads")
-                ));
-            } else {
-                // Keep what failed in the box so it can be retried.
-                buf.set_text(&failed.join("\n"));
-                a.toast(&format!(
-                    "Could not write {} (see the log)",
-                    plural(failed.len(), "request", "requests")
-                ));
-            }
-            refresh_if_shown();
+                refresh_if_shown();
+            });
         }
     };
     let submit = Rc::new(submit);
@@ -708,6 +756,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn pasted_ids_keep_their_order_without_waiting() {
+        let mut ids = OrderedIds::new();
+        let started = std::time::Instant::now();
+        let v: Vec<String> = (0..1000).map(|_| ids.next()).collect();
+        assert!(started.elapsed() < std::time::Duration::from_millis(200));
+        let mut sorted = v.clone();
+        sorted.sort_by(|a, b| request::order_key(a).cmp(&request::order_key(b)));
+        assert_eq!(sorted, v);
+        assert!(v.iter().all(|id| {
+            let (ms, hex) = id.split_once('-').unwrap();
+            ms.parse::<u128>().is_ok() && hex.len() == 8
+        }));
+    }
+
+    #[test]
     fn classifies_links() {
         for (url, kind) in [
             (
@@ -744,6 +807,28 @@ mod tests {
                 Kind::Single,
             ),
             ("https://youtu.be/dQw4w9WgXcQ", Kind::Single),
+            ("https://youtu.be/jNQXAC9IVRw?list=PLx", Kind::Playlist),
+            ("https://YOUTU.BE/x?list=PLx", Kind::Playlist),
+            ("https://youtu.be?list=PLx", Kind::Playlist),
+            ("https://m.youtube.com/watch?v=x&list=PLx", Kind::Playlist),
+            (
+                "https://music.youtube.com/watch?v=x&list=PLx",
+                Kind::Playlist,
+            ),
+            (
+                "https://www.youtube.com/watch?v=jNQXAC9IVRw&list=RDjNQXAC9IVRw",
+                Kind::Single,
+            ),
+            (
+                "https://music.youtube.com/watch?v=x&list=RDAMVMx",
+                Kind::Single,
+            ),
+            (
+                "https://music.youtube.com/playlist?list=RDCLAK5uy_k",
+                Kind::Playlist,
+            ),
+            ("https://www.youtube.com/watch?v=x&list=", Kind::Single),
+            ("https://www.youtube.com/watch?v=x#list=PLx", Kind::Single),
             ("some artist some song", Kind::Single),
         ] {
             assert_eq!(classify(url), kind, "{url}");
