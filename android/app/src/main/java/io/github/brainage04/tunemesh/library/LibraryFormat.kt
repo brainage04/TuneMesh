@@ -11,7 +11,6 @@ object LibraryFormat {
     const val LIKED_SONGS = "Liked Songs"
     const val UNKNOWN_ALBUM = "Unknown Album"
     const val UNKNOWN_ARTIST = "Unknown Artist"
-    const val STIGNORE = "// TuneMesh\n(?d).~tunemesh-*\n"
     const val MAX_COMPONENT_BYTES = 120
 
     val AUDIO_EXTENSIONS = setOf("opus", "ogg", "oga", "m4a", "mp4", "aac", "mp3", "flac", "wav", "webm")
@@ -118,7 +117,7 @@ object LibraryFormat {
         else -> false
     }
 
-    private fun trimWhiteSpace(value: String): String = value.trim(::isWhiteSpace)
+    internal fun trimWhiteSpace(value: String): String = value.trim(::isWhiteSpace)
 
     /** A leading `.` and each trailing `.` or space become `_`. */
     private fun fixEnds(value: String): String {

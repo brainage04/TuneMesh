@@ -2,6 +2,7 @@ package io.github.brainage04.tunemesh.data
 
 import android.os.Environment
 import android.os.FileObserver
+import android.util.Log
 import io.github.brainage04.tunemesh.library.DownloadItem
 import io.github.brainage04.tunemesh.library.DownloadStore
 import io.github.brainage04.tunemesh.library.Downloader
@@ -11,6 +12,7 @@ import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.library.PlaylistStore
 import io.github.brainage04.tunemesh.library.RawTags
+import io.github.brainage04.tunemesh.library.Stignore
 import io.github.brainage04.tunemesh.library.Track
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -145,8 +147,13 @@ class LibraryRepository(
 
     private fun ensureRoot(root: File) {
         if (!root.isDirectory && !root.mkdirs()) throw IOException("Cannot create $root")
-        val stignore = File(root, ".stignore")
-        if (!stignore.exists()) stignore.writeText(LibraryFormat.STIGNORE)
+        // Syncthing must never sync TuneMesh's temporary files. A .stignore that cannot be updated (a symlink,
+        // say) is left alone, as on the desktop, and does not stop the library from loading.
+        try {
+            Stignore.ensure(root)
+        } catch (error: IOException) {
+            Log.w(TAG, "Cannot update $root/.stignore", error)
+        }
     }
 
     private fun reloadPlaylists() {
@@ -284,6 +291,7 @@ class LibraryRepository(
     }
 
     companion object {
+        private const val TAG = "TuneMesh"
         private const val DOWNLOAD_POLL_MS = 3_000L
         private const val LIBRARY_POLL_MS = 60_000L
     }
