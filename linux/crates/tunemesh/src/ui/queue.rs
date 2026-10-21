@@ -117,7 +117,7 @@ impl QueuePanel {
                 weak_app.clone(),
                 q.index.clone(),
                 q.current.clone(),
-                row.clone(),
+                row.downgrade(),
             );
             click.connect_pressed(move |g, _, x, y| {
                 g.set_state(gtk::EventSequenceState::Claimed);
@@ -137,7 +137,9 @@ impl QueuePanel {
                     playlist: None,
                     queue_index: (!cur.get()).then_some(i),
                 };
-                menu::popup(&a, r.upcast_ref(), x, y, ctx);
+                if let Some(r) = r.upgrade() {
+                    menu::popup(&a, r.upcast_ref(), x, y, ctx);
+                }
             });
             row.add_controller(click);
 
@@ -153,9 +155,13 @@ impl QueuePanel {
             });
             row.add_controller(source);
             let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-            let (wa, idx, r) = (weak_app.clone(), q.index.clone(), row.clone());
-            target.connect_drop(move |_, value, _, _| {
-                r.remove_css_class("tm-drop-before");
+            // A row's own controllers reach it through the controller, never
+            // by a captured reference that would keep the row alive.
+            let (wa, idx) = (weak_app.clone(), q.index.clone());
+            target.connect_drop(move |t, value, _, _| {
+                if let Some(r) = t.widget() {
+                    r.remove_css_class("tm-drop-before");
+                }
                 let (Some(a), Some(to)) = (wa.upgrade(), idx.get()) else {
                     return false;
                 };
@@ -171,13 +177,17 @@ impl QueuePanel {
                 a.player.move_item(from, to);
                 true
             });
-            let r = row.clone();
-            target.connect_enter(move |_, _, _| {
-                r.add_css_class("tm-drop-before");
+            target.connect_enter(|t, _, _| {
+                if let Some(r) = t.widget() {
+                    r.add_css_class("tm-drop-before");
+                }
                 gdk::DragAction::MOVE
             });
-            let r = row.clone();
-            target.connect_leave(move |_| r.remove_css_class("tm-drop-before"));
+            target.connect_leave(|t| {
+                if let Some(r) = t.widget() {
+                    r.remove_css_class("tm-drop-before");
+                }
+            });
             row.add_controller(target);
 
             // SAFETY: only read back as `QRow`.

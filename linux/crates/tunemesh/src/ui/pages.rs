@@ -485,21 +485,11 @@ fn grid_page(
         let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
         let tile = Tile::new(round);
         li.set_child(Some(&tile.widget));
-        // SAFETY: only read back as `Tile`.
-        unsafe { tile.widget.set_data("tm-tile", tile.clone()) };
     });
     let app2 = app.clone();
     factory.connect_bind(move |_, obj| {
         let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
-        let widget = li.child().expect("tile");
-        // SAFETY: set in setup with this type.
-        let tile = unsafe {
-            widget
-                .data::<Tile>("tm-tile")
-                .expect("tile")
-                .as_ref()
-                .clone()
-        };
+        let tile = Tile::of(&li.child().expect("tile"));
         let i = *li
             .item()
             .and_downcast::<glib::BoxedAnyObject>()

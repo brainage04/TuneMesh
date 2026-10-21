@@ -23,7 +23,8 @@ thread_local! {
 
 struct ListState {
     app: Weak<App>,
-    container: gtk::Box,
+    /// Weak: the container keeps this state, not the other way round.
+    container: glib::WeakRef<gtk::Box>,
     /// Request and status files are read on a thread, one load at a time.
     loading: Cell<bool>,
     again: Cell<bool>,
@@ -256,21 +257,24 @@ impl ListState {
     }
 
     fn show(&self, app: &Rc<App>, rows: Vec<Row>, total: usize) {
-        while let Some(c) = self.container.first_child() {
-            self.container.remove(&c);
+        let Some(container) = self.container.upgrade() else {
+            return;
+        };
+        while let Some(c) = container.first_child() {
+            container.remove(&c);
         }
         if rows.is_empty() {
-            self.container.append(&widgets::empty(
+            container.append(&widgets::empty(
                 "No downloads yet. Paste links or type a song above.",
             ));
             return;
         }
         let shown = rows.len();
         for row in rows {
-            self.container.append(&request_row(app, row));
+            container.append(&request_row(app, row));
         }
         if total > shown {
-            self.container.append(&label(
+            container.append(&label(
                 &format!(
                     "…and {} older",
                     plural(total - shown, "request", "requests")
@@ -837,7 +841,7 @@ pub fn page(app: &Rc<App>) -> Page {
     b.append(&container);
     let state = Rc::new(ListState {
         app: Rc::downgrade(app),
-        container: container.clone(),
+        container: container.downgrade(),
         loading: Cell::new(false),
         again: Cell::new(false),
     });

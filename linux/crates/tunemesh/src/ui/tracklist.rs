@@ -398,10 +398,14 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
             slot.append(&row.root);
             li.set_child(Some(&slot));
 
+            // Closures on a row's widgets hold the shared list weakly: it
+            // holds the rows, so a strong reference would keep the whole
+            // list alive after its page is gone.
             let (a, pos) = (app.clone(), row.pos.clone());
-            let sh = shared.clone();
+            let sh = Rc::downgrade(&shared);
             row.heart.connect_clicked(move |_| {
-                if let Some(path) = pos.get().and_then(|i| sh.available(&a, i))
+                if let Some(sh) = sh.upgrade()
+                    && let Some(path) = pos.get().and_then(|i| sh.available(&a, i))
                     && let Err(e) = a.store.toggle_like(&path)
                 {
                     a.error("Could not update Liked Songs", e);
@@ -414,14 +418,17 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
             let (a, pos, sh, sel, pl, root) = (
                 app.clone(),
                 row.pos.clone(),
-                shared.clone(),
+                Rc::downgrade(&shared),
                 selection.clone(),
                 playlist.clone(),
-                row.root.clone(),
+                row.root.downgrade(),
             );
             click.connect_pressed(move |g, _, x, y| {
                 g.set_state(gtk::EventSequenceState::Claimed);
-                let Some(i) = pos.get() else { return };
+                let (Some(i), Some(sh), Some(root)) = (pos.get(), sh.upgrade(), root.upgrade())
+                else {
+                    return;
+                };
                 let model_pos = i as u32 + offset;
                 let mut targets: Vec<usize> = Vec::new();
                 if sel.is_selected(model_pos) && sel.selection().size() > 1 {
@@ -458,9 +465,9 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                 let source = gtk::DragSource::builder()
                     .actions(gdk::DragAction::MOVE)
                     .build();
-                let (pos, sh, n) = (row.pos.clone(), shared.clone(), name.clone());
+                let (pos, sh, n) = (row.pos.clone(), Rc::downgrade(&shared), name.clone());
                 source.connect_prepare(move |_, _, _| {
-                    let from = sh.entry_ref(pos.get()?)?;
+                    let from = sh.upgrade()?.entry_ref(pos.get()?)?;
                     let payload = glib::BoxedAnyObject::new(DraggedEntry {
                         playlist: n.clone(),
                         from,
@@ -472,15 +479,15 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                     glib::BoxedAnyObject::static_type(),
                     gdk::DragAction::MOVE,
                 );
-                let (a, pos, root, sh) = (
-                    app.clone(),
-                    row.pos.clone(),
-                    row.root.clone(),
-                    shared.clone(),
-                );
-                target.connect_drop(move |_, value, _, _| {
-                    root.remove_css_class("tm-drop-before");
-                    let Some(to) = pos.get().and_then(|i| sh.entry_ref(i)) else {
+                let (a, pos, sh) = (app.clone(), row.pos.clone(), Rc::downgrade(&shared));
+                target.connect_drop(move |t, value, _, _| {
+                    if let Some(root) = t.widget() {
+                        root.remove_css_class("tm-drop-before");
+                    }
+                    let Some(to) = sh
+                        .upgrade()
+                        .and_then(|sh| pos.get().and_then(|i| sh.entry_ref(i)))
+                    else {
                         return false;
                     };
                     let Ok(obj) = value.get::<glib::BoxedAnyObject>() else {
@@ -499,13 +506,17 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                     }
                     true
                 });
-                let root = row.root.clone();
-                target.connect_enter(move |_, _, _| {
-                    root.add_css_class("tm-drop-before");
+                target.connect_enter(|t, _, _| {
+                    if let Some(root) = t.widget() {
+                        root.add_css_class("tm-drop-before");
+                    }
                     gdk::DragAction::MOVE
                 });
-                let root = row.root.clone();
-                target.connect_leave(move |_| root.remove_css_class("tm-drop-before"));
+                target.connect_leave(|t| {
+                    if let Some(root) = t.widget() {
+                        root.remove_css_class("tm-drop-before");
+                    }
+                });
                 row.root.add_controller(target);
             }
 
