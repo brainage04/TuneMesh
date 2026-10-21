@@ -141,10 +141,19 @@ no_appimage_mount() { ! grep -q '/tmp/.mount_' /proc/mounts; }
 # service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
 # so stopping that service alone does not reach it.
 scopes=("app-flatpak-$APP_ID-*.scope" 'snap.tunemesh.*.scope')
-# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit. A
-# transient unit whose program already exited cleanly is gone, so stop may
-# fail; whether anything still runs is what counts.
+unit_inactive() { ! systemctl --user is-active --quiet "$1"; }
+# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit.
+# With $2, that program gets SIGTERM first and the unit a chance to end by
+# itself: `systemctl stop` signals every process of the unit at once, and an
+# AppImage runtime killed that way leaves its FUSE mount behind (or unmounts
+# the image under the still running program). A transient unit whose program
+# already exited cleanly is gone, so stop may fail; whether anything still
+# runs is what counts.
 stop_unit() {
+    if [ -n "${2:-}" ]; then
+        pkill -TERM -u "$(id -u)" -x "$2" || true
+        wait_for 15 unit_inactive "$1" || true
+    fi
     systemctl --user stop "$1" "${scopes[@]}" 2>/dev/null || true
     wait_for 15 not_running || fail "TuneMesh still runs 15 s after stopping $1"
 }
@@ -295,8 +304,12 @@ test_package() {
     $worker --self-test --work-dir "/tmp/tm-self-test.$$" 2>&1 | tee "$out/self-test.log"
     rm -rf "/tmp/tm-self-test.$$"
     log "tunemesh-worker --self-test passed"
-    [ "$unit_mode" = transient ] || systemctl --user disable tunemesh-worker.service
-    stop_unit tunemesh-worker.service
+    if [ "$unit_mode" = transient ]; then
+        stop_unit tunemesh-worker.service tunemesh-worker
+    else
+        systemctl --user disable tunemesh-worker.service
+        stop_unit tunemesh-worker.service
+    fi
     systemctl --user reset-failed 2>/dev/null || true
 
     # ---- the app in headless sway, playing to the null sink
@@ -345,12 +358,10 @@ test_package() {
     WAYLAND_DISPLAY=$wl grim "$out/screenshot.png" || true
 
     # SIGTERM to the app itself (as `kill` would): it saves its state and
-    # exits cleanly. Not `systemctl stop` first: that signals every process of
-    # the unit at once, and the AppImage runtime then unmounts the image under
-    # the still running app (SIGBUS).
+    # exits cleanly.
     pkill -TERM -u "$(id -u)" -x tunemesh
     wait_for 15 app_gone || fail "the app did not exit within 15 s of SIGTERM"
-    stop_unit tm-app.service
+    stop_unit tm-app.service tunemesh
     journalctl --user --since "@$app_start" -u tm-app.service -u "${scopes[0]}" -u "${scopes[1]}" \
         --no-pager >"$out/app.log" 2>&1 || true
     if systemctl --user is-failed --quiet tm-app.service; then
