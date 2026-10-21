@@ -1,0 +1,216 @@
+name: Build packages
+
+# Builds every Linux package from this checkout. Called by release.yml (and by
+# vm.yml when it runs on its own); artifact names: pkg-deb-<arch>,
+# pkg-rpm-x86_64, pkg-arch-x86_64, pkg-appimage-<arch>, pkg-flatpak-x86_64,
+# pkg-snap-<arch>, flatpak-cargo-sources. Output `version`: the version from
+# linux/Cargo.toml, checked against the tag on v* tags.
+on:
+  workflow_call:
+    outputs:
+      version:
+        description: Version from linux/Cargo.toml
+        value: ${{ jobs.version.outputs.version }}
+
+permissions:
+  contents: read
+
+env:
+  APP_ID: io.github.brainage04.TuneMesh
+
+# bash -eo pipefail for every run step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        run: |
+          cargo=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' linux/Cargo.toml)
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            tag=${GITHUB_REF_NAME#v}
+            if [ "$tag" != "$cargo" ]; then
+              echo "::error::tag $GITHUB_REF_NAME does not match linux/Cargo.toml version $cargo"
+              exit 1
+            fi
+          fi
+          echo "version=$cargo" >>"$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------- builds
+
+  deb:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: packaging/deb/build-deb.sh --deps dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: dist/*
+
+  rpm:
+    needs: version
+    runs-on: ubuntu-24.04
+    # The oldest Fedora release still supported, so the package installs on
+    # every supported one.
+    container: fedora:43
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: packaging/rpm/build-rpm.sh --deps dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-rpm-x86_64
+          path: dist/*
+
+  arch:
+    needs: [version, deb, rpm]
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-deb-*
+          path: bin
+          merge-multiple: true
+      # The published source tarball, so the PKGBUILD's checksum matches it.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-rpm-x86_64
+          path: src
+      - run: |
+          TUNEMESH_SOURCE_TARBALL="src/tunemesh-$VERSION.tar.gz" \
+            packaging/arch/build-arch.sh dist "bin/tunemesh-$VERSION-linux-x86_64.tar.gz"
+          tar -C dist -czf "dist/tunemesh-$VERSION-aur.tar.gz" aur
+          rm -r dist/aur
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-arch-x86_64
+          path: dist/*
+
+  appimage:
+    needs: version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: packaging/appimage/build-appimage.sh --deps dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-appimage-${{ matrix.arch }}
+          path: dist/*
+
+  flatpak-sources:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: |
+          pip install --user aiohttp==3.14.5 tomlkit==0.15.2
+          packaging/flatpak/update-cargo-sources.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak/cargo-sources.json
+
+  flatpak:
+    needs: [version, flatpak-sources]
+    runs-on: ubuntu-24.04
+    container:
+      # gnome-51, pinned by digest (update by hand, see .github/dependabot.yml).
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-51@sha256:78d969b18225ae107ca29497bf09c4a3f791e5f1838a9a912a529d0024fb6210
+      options: --privileged
+      # The SDK, the build and the export need more than the runner's free
+      # disk: the host's preinstalled toolchains are mounted to be deleted.
+      volumes:
+        - /usr/share/dotnet:/host/dotnet
+        - /usr/local/lib/android:/host/android
+        - /opt/hostedtoolcache:/host/toolcache
+        - /opt/ghc:/host/ghc
+    steps:
+      - name: Free disk space
+        run: |
+          df -h /
+          rm -rf /host/dotnet/* /host/android/* /host/toolcache/* /host/ghc/*
+          df -h /
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@79327416609af08178ad73b352877e51450790b3 # v6.8
+        with:
+          bundle: TuneMesh-${{ needs.version.outputs.version }}-x86_64.flatpak
+          manifest-path: packaging/flatpak/io.github.brainage04.TuneMesh.yml
+          cache-key: flatpak-builder-${{ hashFiles('packaging/flatpak/io.github.brainage04.TuneMesh.yml') }}
+          upload-artifact: false
+      # The same list the Flatpak carries in share/licenses/<app id>/.
+      - run: packaging/flatpak/third-party-sources.sh >THIRD-PARTY-SOURCES-Flatpak-x86_64.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-flatpak-x86_64
+          path: |
+            TuneMesh-*.flatpak
+            THIRD-PARTY-SOURCES-Flatpak-x86_64.md
+
+  snap:
+    needs: deb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: bin
+      - env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          cp bin/tunemesh-*-linux-"$ARCH".tar.gz packaging/snap/tunemesh-linux.tar.gz
+          mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/
+      - uses: canonical/action-build@3bdaa03e1ba6bf59a65f84a751d943d549a54e79 # v1.3.0
+        id: build
+      - name: Collect the snap and its source list
+        env:
+          SNAP_FILE: ${{ steps.build.outputs.snap }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir dist && mv "$SNAP_FILE" dist/
+          sudo apt-get install -yq squashfs-tools
+          unsquashfs -cat dist/*.snap usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md \
+            >"dist/THIRD-PARTY-SOURCES-snap-$ARCH.md"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-snap-${{ matrix.arch }}
+          path: dist/*

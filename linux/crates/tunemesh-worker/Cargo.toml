@@ -1,0 +1,24 @@
+[package]
+name = "tunemesh-worker"
+description = "TuneMesh download worker: turns request files into library tracks with yt-dlp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tunemesh-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc = "0.2"
+fastrand.workspace = true
+humantime.workspace = true
+toml = "1"
+ureq = "3"
+sha2 = "0.10"
+flate2 = "1"
+lofty = "0.25"
+
+[dev-dependencies]
+tempfile = "3"

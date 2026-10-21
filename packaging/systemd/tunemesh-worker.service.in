@@ -1,0 +1,38 @@
+# TuneMesh download worker as a systemd user service, for a device that
+# downloads for the whole library without the desktop app running:
+#
+#   systemctl --user enable --now tunemesh-worker
+#   journalctl --user -u tunemesh-worker -f
+#
+# The library is library_path in ~/.config/tunemesh/config.toml (the desktop
+# app's setting; default ~/Music/TuneMesh) and the work directory is
+# ~/.cache/tunemesh/worker. To use another folder:
+#
+#   systemctl --user edit tunemesh-worker
+#     [Service]
+#     ExecStart=
+#     ExecStart=@bindir@/tunemesh-worker --library /path/to/TuneMesh
+#
+# To keep it running while you are logged out: loginctl enable-linger
+[Unit]
+Description=TuneMesh download worker
+Documentation=https://github.com/brainage04/TuneMesh
+
+[Service]
+Type=simple
+ExecStart=@bindir@/tunemesh-worker
+Restart=on-failure
+RestartSec=30
+# Exit status 2 is a configuration error (bad options, library folder
+# missing, unreadable config.toml, refused work directory): fix it, then
+# `systemctl --user restart tunemesh-worker`.
+RestartPreventExitStatus=2
+# Files placed in the Syncthing folder stay readable like the user's own.
+UMask=0022
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=2G
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

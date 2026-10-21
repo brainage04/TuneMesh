@@ -1,0 +1,22 @@
+TuneMesh is a music player for your own music library. The library is a plain folder that Syncthing keeps in sync between your computer and your phone, so there is no server, no account and no cloud: songs, playlists and likes are files you own.
+
+<b>Play your library</b>
+<ul>
+<li>Home, search, albums, artists and playlists, with album art from the files</li>
+<li>Background playback with a media notification, lock screen and headset controls</li>
+<li>Queue, shuffle, repeat; the queue and position survive restarts</li>
+<li>Liked Songs and playlists are standard .m3u8 files, shared with the TuneMesh desktop app on Linux</li>
+</ul>
+
+<b>Request downloads</b>
+<ul>
+<li>Paste YouTube, YouTube Music or Spotify links, one per line, or type what you want to hear</li>
+<li>Share a link to TuneMesh from those apps</li>
+<li>Playlist links can become TuneMesh playlists</li>
+<li>A computer running the TuneMesh desktop app or download worker downloads the requests into the library; the phone shows which device is downloading and the progress of each request</li>
+</ul>
+
+<b>How it works</b>
+TuneMesh reads and writes the library folder directly (by default Music/TuneMesh in your phone's storage), so it needs Android's "All files access". It does not use the internet itself: Syncthing (for example Syncthing-Fork) moves the files, and the onboarding explains how to set it up.
+
+TuneMesh is free software under the MIT license.

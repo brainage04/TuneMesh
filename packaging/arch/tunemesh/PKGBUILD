@@ -1,0 +1,40 @@
+# Maintainer: brainage04 <brainage04 at users dot noreply dot github dot com>
+pkgname=tunemesh
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Music player for a Syncthing-shared library, with a yt-dlp download worker'
+arch=(x86_64 aarch64)
+url='https://github.com/brainage04/TuneMesh'
+license=(MIT Apache-2.0 BSD-3-Clause CC0-1.0 CDLA-Permissive-2.0 ISC MPL-2.0 Unicode-3.0)
+depends=(gtk4 libadwaita mpv ffmpeg hicolor-icon-theme glibc gcc-libs glib2)
+makedepends=(cargo)
+optdepends=('syncthing: keeps the library in sync between devices')
+conflicts=(tunemesh-bin)
+options=(!lto !debug)
+source=("https://github.com/brainage04/TuneMesh/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --manifest-path linux/Cargo.toml --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=linux/target
+    cargo build --frozen --release --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=linux/target
+    cargo test --frozen --release --manifest-path linux/Cargo.toml -p tunemesh-core
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    packaging/linux/install.sh --destdir "$pkgdir" --prefix /usr
+}

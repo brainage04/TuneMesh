@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/io/github/brainage04/TuneMesh">
+    <file compressed="true">colors.css</file>
+    <file compressed="true">colors-adw15.css</file>
+    <file compressed="true">style.css</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tm-heart-filled-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tm-heart-outline-symbolic.svg</file>
+    <file preprocess="xml-stripblanks">icons/scalable/actions/tm-library-symbolic.svg</file>
+  </gresource>
+</gresources>

@@ -1,0 +1,7 @@
+First public release.
+
+- Plays the music library in a Syncthing-shared folder: albums, artists, playlists, Liked Songs, search
+- Background playback with notification, lock screen and headset controls
+- Download requests: paste several YouTube, YouTube Music or Spotify links at once, or share a link to TuneMesh
+- Shows which device downloads requests, and per-request progress and warnings
+- Onboarding for All files access and Syncthing-Fork setup

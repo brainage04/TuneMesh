@@ -1,0 +1,23 @@
+Third-party Rust crates in tunemesh and tunemesh-worker
+=========================================================
+
+Both programs are statically linked with the Rust crates below. TuneMesh
+itself is MIT licensed (see LICENSE). This file is generated from
+linux/Cargo.lock by packaging/licenses/update-rust-licenses.sh.
+
+Overview
+--------
+{{#each overview}}
+  {{{name}}}: {{count}} crates
+{{/each}}
+
+{{#each licenses}}
+--------------------------------------------------------------------------------
+{{{name}}} ({{id}})
+
+Used by:
+{{#each used_by}}  {{crate.name}} {{crate.version}}{{#if crate.repository}} {{crate.repository}}{{/if}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

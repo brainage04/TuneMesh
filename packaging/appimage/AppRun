@@ -1,0 +1,23 @@
+#!/bin/sh
+# TuneMesh AppImage entry point.
+#   ./TuneMesh-<version>-<arch>.AppImage [--library <folder>]   the app
+#   ./TuneMesh-<version>-<arch>.AppImage worker [args]          the download worker
+# A symlink to the AppImage named tunemesh-worker also starts the worker.
+APPDIR=${APPDIR:-$(dirname "$(readlink -f "$0")")}
+export APPDIR
+
+# linuxdeploy's wrapper has already sourced the GTK hook (GTK, GLib and
+# GdkPixbuf paths) before this script runs.
+
+# The worker uses the bundled ffmpeg/ffprobe; the app finds the worker next
+# to its own binary.
+export TUNEMESH_FFMPEG_DIR="$APPDIR/usr/bin"
+
+case $(basename "${ARGV0:-$0}") in
+    tunemesh-worker*) exec "$APPDIR/usr/bin/tunemesh-worker" "$@" ;;
+esac
+if [ "${1:-}" = worker ]; then
+    shift
+    exec "$APPDIR/usr/bin/tunemesh-worker" "$@"
+fi
+exec "$APPDIR/usr/bin/tunemesh" "$@"

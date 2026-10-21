@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 brainage04 -->
+<component type="desktop-application">
+  <id>io.github.brainage04.TuneMesh</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <name>TuneMesh</name>
+  <summary>Play and download music in a library synced by Syncthing</summary>
+  <developer id="io.github.brainage04">
+    <name>brainage04</name>
+  </developer>
+
+  <description>
+    <p>
+      TuneMesh is a music player for your own collection. The library is an
+      ordinary folder that Syncthing keeps the same on your computers and
+      phones, so songs, playlists and likes follow you everywhere without a
+      server or an account.
+    </p>
+    <ul>
+      <li>Browse albums, artists and playlists, search as you type, and keep a play queue</li>
+      <li>Like songs and build playlists; changes sync to every device</li>
+      <li>Paste links or search text to download music: one device per library does the downloading and the songs arrive everywhere</li>
+      <li>Import whole playlists and albums from YouTube, YouTube Music and Spotify links</li>
+      <li>A setup assistant shares the library folder through Syncthing and adds your other devices</li>
+      <li>Media keys and desktop media controls through MPRIS</li>
+    </ul>
+    <p>
+      TuneMesh also has an Android app that reads the same library.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.brainage04.TuneMesh.desktop</launchable>
+  <provides>
+    <binary>tunemesh</binary>
+  </provides>
+
+  <url type="homepage">https://github.com/brainage04/TuneMesh</url>
+  <url type="bugtracker">https://github.com/brainage04/TuneMesh/issues</url>
+  <url type="vcs-browser">https://github.com/brainage04/TuneMesh</url>
+
+  <categories>
+    <category>AudioVideo</category>
+    <category>Audio</category>
+    <category>Player</category>
+  </categories>
+  <keywords>
+    <keyword>music</keyword>
+    <keyword>player</keyword>
+    <keyword>playlist</keyword>
+    <keyword>syncthing</keyword>
+    <keyword>download</keyword>
+  </keywords>
+
+  <requires>
+    <display_length compare="ge">900</display_length>
+  </requires>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>An album with the play queue open</caption>
+      <image>https://raw.githubusercontent.com/brainage04/TuneMesh/main/docs/screenshots/album.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Home: recently added albums and playlists</caption>
+      <image>https://raw.githubusercontent.com/brainage04/TuneMesh/main/docs/screenshots/home.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Downloading songs and importing playlists</caption>
+      <image>https://raw.githubusercontent.com/brainage04/TuneMesh/main/docs/screenshots/downloads.png</image>
+    </screenshot>
+    <screenshot>
+      <caption>Sharing the library with Syncthing in the setup assistant</caption>
+      <image>https://raw.githubusercontent.com/brainage04/TuneMesh/main/docs/screenshots/setup-syncthing.png</image>
+    </screenshot>
+  </screenshots>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.1.0" date="2026-10-19">
+      <description>
+        <p>First public release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

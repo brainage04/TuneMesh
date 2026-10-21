@@ -1,0 +1,490 @@
+name: Release
+
+# On a v* tag: builds every package, install-tests each one in a clean
+# environment and publishes them with SHA256SUMS as a GitHub Release.
+# Pushes and pull requests that touch the packaging run the same builds and
+# tests without publishing.
+#
+# Android signing: the android-signed job runs only for v* tags, in the GitHub
+# environment `release` (deployment rule: tags matching v* only), which holds
+# the secrets ANDROID_KEYSTORE_B64, ANDROID_STORE_PASSWORD, ANDROID_KEY_ALIAS,
+# ANDROID_KEY_PASSWORD and, optionally, ANDROID_LINEAGE_B64; a tag build fails
+# when one of the four required secrets is missing. The android job builds the
+# unsigned APK without secrets; android-signed only downloads it and signs it
+# with apksigner. Every other run signs a copy with a throwaway key instead
+# (android-signing-dry-run) and never sees those secrets.
+# Only the publish job may write to the repository (contents: write).
+on:
+  push:
+    tags: ['v*']
+    branches: ['**']
+    paths:
+      - packaging/**
+      - .github/workflows/release.yml
+      - .github/workflows/build.yml
+      - .github/workflows/vm.yml
+  pull_request:
+    paths:
+      - packaging/**
+      - .github/workflows/release.yml
+      - .github/workflows/build.yml
+      - .github/workflows/vm.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  APP_ID: io.github.brainage04.TuneMesh
+
+# bash -eo pipefail for every run step (GitHub's default for steps without a
+# shell is bash -e, where a failing command before a pipe goes unnoticed).
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  # Android, in two jobs: `android` builds the unsigned release APK and has no
+  # secrets; the signing job only downloads that artifact and signs it with
+  # apksigner from the pinned build-tools. No Gradle or app build code runs in
+  # a job that holds the key.
+  android:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Build the unsigned release APK
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: packaging/ci/android-release.sh build
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-unsigned
+          path: dist/*
+
+  # Non-tag runs: the signing job's steps with a throwaway key and lineage;
+  # the signed copy is discarded, the unsigned APK stays the run's artifact.
+  android-signing-dry-run:
+    if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+    needs: [build, android]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-unsigned
+          path: dist
+      - name: Sign with a throwaway key
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          keys=$(mktemp -d)
+          packaging/ci/android-release.sh build-tools "$keys/build-tools"
+          apksigner=$keys/build-tools/apksigner
+          for k in old new; do
+            keytool -genkeypair -keystore "$keys/$k.jks" -storepass "pass-$k" -keypass "pass-$k" \
+              -alias "$k" -keyalg RSA -keysize 2048 -validity 2 -dname "CN=throwaway $k" 2>/dev/null
+          done
+          "$apksigner" rotate --out "$keys/lineage" \
+            --old-signer --ks "$keys/old.jks" --ks-pass pass:pass-old \
+            --new-signer --ks "$keys/new.jks" --ks-pass pass:pass-new
+          cp "dist/TuneMesh-$VERSION-unsigned.apk" "$keys/unsigned.apk"
+          ANDROID_KEYSTORE_B64=$(base64 -w0 "$keys/new.jks") ANDROID_STORE_PASSWORD=pass-new \
+            ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD=pass-new \
+            ANDROID_LINEAGE_B64=$(base64 -w0 "$keys/lineage") packaging/ci/android-release.sh sign
+          "$apksigner" lineage --in "dist/TuneMesh-$VERSION.apk" --print-certs | grep 'CN=throwaway old' >/dev/null
+          cp "$keys/unsigned.apk" "dist/TuneMesh-$VERSION-unsigned.apk"
+          # Expected to fail; GITHUB_ACTIONS unset keeps it from annotating the run.
+          if env -u GITHUB_ACTIONS ANDROID_KEYSTORE_B64="$(base64 -w0 "$keys/new.jks")" \
+              ANDROID_STORE_PASSWORD=pass-new ANDROID_KEY_ALIAS=new ANDROID_KEY_PASSWORD='' \
+              packaging/ci/android-release.sh sign; then
+            echo "::error::signing without a password must fail"; exit 1
+          fi
+          rm -rf "$keys"
+
+  android-signed:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, android]
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # A JDK only to run apksigner; no build runs in this job.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: android-unsigned
+          path: dist
+      - name: Sign with apksigner
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          ANDROID_KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_LINEAGE_B64: ${{ secrets.ANDROID_LINEAGE_B64 }}
+        run: packaging/ci/android-release.sh sign
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pkg-android
+          path: dist/*
+
+  # ----------------------------------------------------------------- tests
+
+  test-deb:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:24.04
+            arch: x86_64
+            runner: ubuntu-24.04
+          - image: debian:trixie
+            arch: x86_64
+            runner: ubuntu-24.04
+          - image: ubuntu:24.04
+            arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-deb-${{ matrix.arch }}
+          path: dist
+      - name: Install
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -yq --no-install-recommends \
+            ./dist/tunemesh_*.deb xvfb xauth dbus libglib2.0-bin pulseaudio pulseaudio-utils
+          dpkg -L tunemesh >installed.txt
+          cat installed.txt
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh deb /
+      - name: Smoke test
+        run: packaging/ci/smoke.sh
+      - name: Playback through the packaged libmpv
+        run: dbus-run-session -- packaging/ci/playback.sh
+      - name: Uninstall
+        run: |
+          apt-get purge -yq tunemesh
+          packaging/ci/check-removed.sh installed.txt
+
+  test-user-service:
+    name: test-user-service (deb on the runner)
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-deb-x86_64
+          path: dist
+      - name: Install
+        run: sudo apt-get install -yq ./dist/tunemesh_*.deb
+      - name: Run tunemesh-worker as a user service
+        run: |
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          for _ in $(seq 30); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
+          mkdir -p ~/.config/tunemesh ~/Music/Test/.tunemesh/requests
+          echo 'library_path = "~/Music/Test"' >~/.config/tunemesh/config.toml
+          systemctl --user daemon-reload
+          systemctl --user enable --now tunemesh-worker
+          sleep 15
+          journalctl --user -u tunemesh-worker --no-pager || true
+          systemctl --user status tunemesh-worker --no-pager
+          systemctl --user is-active tunemesh-worker
+          systemctl --user disable --now tunemesh-worker
+      # install.sh with a prefix full of characters that are special to the
+      # shell, sed and systemd: the unit must verify and actually start.
+      - name: User service from an awkward install.sh prefix
+        run: |
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR
+          prefix="$HOME/Tune Mesh 100% |&\$x;*"
+          packaging/linux/install.sh --prefix "$prefix" --bin-dir /usr/bin
+          unit="$prefix/lib/systemd/user/tunemesh-worker.service"
+          grep '^ExecStart=' "$unit"
+          systemd-analyze --user verify "$unit"
+          systemctl --user link "$unit"
+          systemctl --user start tunemesh-worker
+          sleep 5
+          systemctl --user status tunemesh-worker --no-pager
+          systemctl --user show -p ExecStart tunemesh-worker | grep -F "$prefix/bin/tunemesh-worker"
+          systemctl --user is-active tunemesh-worker
+          systemctl --user stop tunemesh-worker
+          systemctl --user disable tunemesh-worker
+          packaging/linux/install.sh --prefix "$prefix" --uninstall
+          test -z "$(find "$prefix" -type f)"
+          # Paths systemd cannot run are refused before anything is installed.
+          if packaging/linux/install.sh --prefix "$HOME/quote'd" --bin-dir /usr/bin; then exit 1; fi
+          test ! -e "$HOME/quote'd"
+      - name: Uninstall
+        run: |
+          dpkg -L tunemesh >installed.txt
+          sudo apt-get purge -yq tunemesh
+          packaging/ci/check-removed.sh installed.txt
+
+  test-rpm:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [fedora:latest, opensuse/tumbleweed]
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install tar for checkout
+        run: |
+          if command -v dnf >/dev/null; then dnf install -y tar gzip; else zypper --non-interactive install tar gzip; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-rpm-x86_64
+          path: dist
+      - name: Install
+        run: |
+          rpm=$(ls dist/tunemesh-[0-9]*.x86_64.rpm)
+          if command -v dnf >/dev/null; then
+            dnf install -y "$rpm" /usr/bin/xvfb-run /usr/bin/xauth /usr/bin/dbus-run-session
+          else
+            zypper --non-interactive install --allow-unsigned-rpm "$rpm" xvfb-run xauth dbus-1
+          fi
+          rpm -ql tunemesh >installed.txt
+          cat installed.txt
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh rpm /
+      - name: Smoke test
+        run: packaging/ci/smoke.sh
+      - name: Uninstall
+        run: |
+          if command -v dnf >/dev/null; then dnf remove -y tunemesh; else zypper --non-interactive remove tunemesh; fi
+          packaging/ci/check-removed.sh installed.txt
+
+  test-arch:
+    needs: build
+    runs-on: ubuntu-24.04
+    container: archlinux:latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-arch-x86_64
+          path: dist
+      - run: pacman -Syu --noconfirm xorg-server-xvfb xorg-xauth
+      - name: tunemesh (source build)
+        run: |
+          pacman -U --noconfirm dist/tunemesh-[0-9]*.pkg.tar.zst
+          pacman -Qlq tunemesh >installed.txt
+          packaging/ci/check-licences.sh arch /
+          packaging/ci/smoke.sh
+          pacman -Rns --noconfirm tunemesh
+          packaging/ci/check-removed.sh installed.txt
+      - name: tunemesh-bin
+        run: |
+          pacman -U --noconfirm dist/tunemesh-bin-*.pkg.tar.zst
+          pacman -Qlq tunemesh-bin >installed.txt
+          packaging/ci/check-licences.sh arch /
+          packaging/ci/smoke.sh
+          pacman -Rns --noconfirm tunemesh-bin
+          packaging/ci/check-removed.sh installed.txt
+
+  test-appimage:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+          - arch: x86_64
+            runner: ubuntu-24.04
+            image: fedora:latest
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: 1
+    steps:
+      # The libraries an AppImage expects from any desktop (see build-appimage.sh).
+      - name: Install test tools and desktop libraries
+        run: |
+          if command -v dnf >/dev/null; then
+            dnf install -y tar gzip /usr/bin/xvfb-run /usr/bin/xauth /usr/bin/dbus-run-session \
+              mesa-libGL mesa-libEGL mesa-libgbm libX11 libX11-xcb libxcb libdrm libwayland-client \
+              fontconfig freetype harfbuzz fribidi alsa-lib pipewire-libs libusb1 shared-mime-info \
+              glib2 pulseaudio pulseaudio-utils
+          else
+            sudo apt-get update -q
+            sudo apt-get install -yq xvfb libgl1 libegl1 libgbm1 libx11-6 libx11-xcb1 libxcb1 \
+              libxcb-dri3-0 libdrm2 libwayland-client0 libfontconfig1 libfreetype6 libharfbuzz0b \
+              libfribidi0 libasound2t64 libpipewire-0.3-0t64 libusb-1.0-0 shared-mime-info \
+              libglib2.0-bin dbus pulseaudio pulseaudio-utils
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-appimage-${{ matrix.arch }}
+          path: dist
+      - name: Smoke test
+        run: |
+          appimage=$(ls "$PWD"/dist/TuneMesh-*.AppImage)
+          chmod +x "$appimage"
+          APP="$appimage" WORKER="$appimage worker" packaging/ci/smoke.sh
+      - name: Playback through the bundled libmpv
+        run: APP="$(ls "$PWD"/dist/TuneMesh-*.AppImage)" dbus-run-session -- packaging/ci/playback.sh
+      - name: Wayland-only session (headless sway, no X server)
+        if: ${{ !matrix.image }}
+        run: |
+          sudo apt-get install -yq sway
+          APP="$(ls "$PWD"/dist/TuneMesh-*.AppImage)" packaging/ci/wayland-launch.sh
+      - name: Licence notices
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir unpacked && cd unpacked
+          "$(ls ../dist/TuneMesh-*.AppImage)" --appimage-extract >/dev/null
+          ../packaging/ci/check-licences.sh appimage squashfs-root
+          # The copy attached to the release matches the one inside (no cmp on Fedora).
+          test "$(cat squashfs-root/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md)" = \
+            "$(cat "../dist/THIRD-PARTY-SOURCES-AppImage-$ARCH.md")"
+
+  test-flatpak:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-flatpak-x86_64
+          path: dist
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq flatpak xvfb pulseaudio pulseaudio-utils
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user -y --noninteractive dist/TuneMesh-*.flatpak
+          flatpak info --user "$APP_ID"
+      - name: Licence notices
+        run: |
+          packaging/ci/check-licences.sh flatpak "$(flatpak info --user --show-location "$APP_ID")/files"
+          test "$(cat "$(flatpak info --user --show-location "$APP_ID")/files/share/licenses/$APP_ID/THIRD-PARTY-SOURCES.md")" = \
+            "$(cat dist/THIRD-PARTY-SOURCES-Flatpak-x86_64.md)"
+      - name: Smoke test
+        run: |
+          APP="flatpak run $APP_ID" WORKER="flatpak run --command=tunemesh-worker $APP_ID" \
+            LIB_PARENT="$HOME/Music/TuneMesh" packaging/ci/smoke.sh
+      - name: Playback
+        run: |
+          APP="flatpak run $APP_ID" LIB_PARENT="$HOME/Music/TuneMesh" \
+            CONFIG_HOME="$HOME/.var/app/$APP_ID/config" dbus-run-session -- packaging/ci/playback.sh
+      - name: Uninstall
+        run: |
+          flatpak uninstall --user -y --noninteractive --delete-data "$APP_ID"
+          if flatpak info --user "$APP_ID" 2>/dev/null; then exit 1; fi
+          test ! -e "$HOME/.var/app/$APP_ID"
+
+  test-snap:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: pkg-snap-${{ matrix.arch }}
+          path: dist
+      - name: Install
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq xvfb pulseaudio pulseaudio-utils
+          sudo snap install --dangerous dist/tunemesh_*.snap
+          sudo snap connect tunemesh:syncthing-config
+          snap connections tunemesh
+          snap list
+      - name: Licence notices
+        run: packaging/ci/check-licences.sh snap /snap/tunemesh/current
+      - name: Smoke test
+        # snap run needs the user's systemd and session bus, as on a desktop.
+        run: |
+          sudo loginctl enable-linger "$USER"
+          XDG_RUNTIME_DIR=/run/user/$(id -u)
+          export XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS=unix:path=$XDG_RUNTIME_DIR/bus
+          for _ in $(seq 30); do [ -S "$XDG_RUNTIME_DIR/bus" ] && break; sleep 1; done
+          APP=/snap/bin/tunemesh WORKER=/snap/bin/tunemesh.worker SESSION_BUS=user \
+            LIB_PARENT="$HOME/Music" packaging/ci/smoke.sh
+          APP=/snap/bin/tunemesh LIB_PARENT="$HOME/Music" \
+            CONFIG_HOME="$HOME/snap/tunemesh/current/.config" packaging/ci/playback.sh
+      - name: Uninstall
+        run: |
+          sudo snap remove --purge tunemesh
+          if snap list tunemesh 2>/dev/null; then exit 1; fi
+          test ! -e "$HOME/snap/tunemesh"
+
+  # Tests the packages in full distribution VMs (vm.yml); on tags only here,
+  # since it is slow (vm.yml also runs on its own).
+  vm:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    uses: ./.github/workflows/vm.yml
+    with:
+      prebuilt: true
+    permissions:
+      contents: read
+      actions: read
+
+  # --------------------------------------------------------------- publish
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, vm, android-signed, test-deb, test-user-service, test-rpm, test-arch, test-appimage, test-flatpak, test-snap]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: pkg-*
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum -- * >SHA256SUMS
+          cat SHA256SUMS
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --title "TuneMesh $VERSION" --generate-notes dist/*
