@@ -395,7 +395,11 @@ test_package() {
     appimage)
         # The runtime unmounts the image after its program exits, a moment
         # later than the program itself.
-        wait_for 15 no_appimage_mount || fail "an AppImage mount is left behind"
+        if ! wait_for 15 no_appimage_mount; then
+            grep '/tmp/.mount_' /proc/mounts
+            pgrep -a -u "$(id -u)" -f 'AppImage|\.mount_' || true
+            fail "an AppImage mount is left behind"
+        fi
         ;;
     snap)
         if snap list tunemesh >/dev/null 2>&1; then fail "the snap is still installed"; fi
