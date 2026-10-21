@@ -537,6 +537,7 @@ impl App {
         page.widget.set_vexpand(true);
         self.content.append(&page.widget);
         *self.scroller.borrow_mut() = page.scroller;
+        trim_heap_soon();
     }
 
     /// Rebuilds the current page, keeping its scroll position.
@@ -772,4 +773,22 @@ impl App {
             self.gtk_app.withdraw_notification("background");
         }
     }
+}
+
+/// Returns the memory freed by the pages just left to the system, a moment
+/// after a page change. glibc keeps freed heap memory for reuse; with large
+/// pages (a 40,000-track album, 200 download requests) that is hundreds of
+/// megabytes the process would hold until exit.
+fn trim_heap_soon() {
+    thread_local! {
+        static PENDING: Cell<bool> = const { Cell::new(false) };
+    }
+    if PENDING.with(|p| p.replace(true)) {
+        return;
+    }
+    glib::timeout_add_seconds_local_once(2, || {
+        PENDING.with(|p| p.set(false));
+        // SAFETY: malloc_trim only returns free pages; no allocation is touched.
+        unsafe { libc::malloc_trim(0) };
+    });
 }
