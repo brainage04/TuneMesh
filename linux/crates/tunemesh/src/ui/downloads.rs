@@ -464,84 +464,133 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         }
         // The final message repeats the warnings, which are listed below.
         if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
-            let l = gtk::Label::builder()
-                .label(limits::clip_text(m))
-                .xalign(0.0)
-                .wrap(true)
-                .wrap_mode(gtk::pango::WrapMode::WordChar)
-                .selectable(true)
-                .css_classes(["tm-small"])
-                .build();
-            l.add_css_class(if s.state == RequestState::Failed {
+            let class = if s.state == RequestState::Failed {
                 "tm-error"
             } else {
                 "dim"
-            });
-            b.append(&l);
+            };
+            b.append(&detail_text(m, class));
+            if is_long(m) {
+                let full = m.clone();
+                b.append(&lazy_expander(
+                    "Full message",
+                    move || vec![full.clone()],
+                    class,
+                ));
+            }
         }
-        for w in s.warnings.iter().take(limits::MAX_SHOWN_ROWS) {
-            let l = gtk::Label::builder()
-                .label(limits::clip_text(w))
-                .xalign(0.0)
-                .wrap(true)
-                .wrap_mode(gtk::pango::WrapMode::WordChar)
-                .selectable(true)
-                .css_classes(["tm-small", "tm-warning"])
-                .build();
-            b.append(&l);
+        // Warnings and failures can run to hundreds per request: the first
+        // warnings show at once, the rest and the failures are built only
+        // when their expander is opened, so the page stays quick.
+        for w in s.warnings.iter().take(INLINE_WARNINGS) {
+            b.append(&detail_text(w, "tm-warning"));
         }
-        if s.warnings.len() > limits::MAX_SHOWN_ROWS {
-            b.append(&label(
-                &format!(
-                    "…and {} more",
-                    plural(
-                        s.warnings.len() - limits::MAX_SHOWN_ROWS,
-                        "warning",
-                        "warnings"
-                    )
-                ),
-                &["tm-small", "tm-warning"],
+        if s.warnings.len() > INLINE_WARNINGS {
+            let more: Vec<String> = s.warnings[INLINE_WARNINGS..].to_vec();
+            b.append(&lazy_expander(
+                &format!("{} more", plural(more.len(), "warning", "warnings")),
+                move || {
+                    let mut lines: Vec<String> =
+                        more.iter().take(limits::MAX_SHOWN_ROWS).cloned().collect();
+                    if more.len() > limits::MAX_SHOWN_ROWS {
+                        lines.push(format!("…and {} more", more.len() - limits::MAX_SHOWN_ROWS));
+                    }
+                    lines
+                },
+                "tm-warning",
             ));
         }
         if !s.failures.is_empty() {
-            let list = gtk::Box::builder()
-                .orientation(gtk::Orientation::Vertical)
-                .spacing(4)
-                .margin_start(18)
-                .build();
-            for f in s.failures.iter().take(limits::MAX_SHOWN_ROWS) {
-                let l = gtk::Label::builder()
-                    .label(limits::clip_text(&format!(
-                        "{}: {}",
-                        limits::clip_line(&f.item),
-                        f.error
-                    )))
-                    .xalign(0.0)
-                    .wrap(true)
-                    .wrap_mode(gtk::pango::WrapMode::WordChar)
-                    .selectable(true)
-                    .css_classes(["tm-small", "dim"])
-                    .build();
-                list.append(&l);
-            }
-            if s.failures.len() > limits::MAX_SHOWN_ROWS {
-                list.append(&label(
-                    &format!("…and {} more", s.failures.len() - limits::MAX_SHOWN_ROWS),
-                    &["tm-small", "dim"],
-                ));
-            }
-            let exp = gtk::Expander::builder()
-                .label(format!(
+            let failures = s.failures.clone();
+            b.append(&lazy_expander(
+                &format!(
                     "{} could not be downloaded",
-                    plural(s.failures.len(), "song", "songs")
-                ))
-                .child(&list)
-                .css_classes(["tm-small"])
-                .build();
-            b.append(&exp);
+                    plural(failures.len(), "song", "songs")
+                ),
+                move || {
+                    let mut lines: Vec<String> = failures
+                        .iter()
+                        .take(limits::MAX_SHOWN_ROWS)
+                        .map(|f| format!("{}: {}", limits::clip_line(&f.item), f.error))
+                        .collect();
+                    if failures.len() > limits::MAX_SHOWN_ROWS {
+                        lines.push(format!(
+                            "…and {} more",
+                            failures.len() - limits::MAX_SHOWN_ROWS
+                        ));
+                    }
+                    lines
+                },
+                "dim",
+            ));
         }
     }
     b.upcast()
+}
+
+/// Warnings shown under a request before the rest fold into an expander.
+const INLINE_WARNINGS: usize = 3;
+
+/// A wrapped, selectable line of request detail.
+fn small_text(text: &str, class: &str) -> gtk::Label {
+    gtk::Label::builder()
+        .label(limits::clip_text(text))
+        .xalign(0.0)
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .selectable(true)
+        .css_classes(["tm-small", class])
+        .build()
+}
+
+/// Whether `text` is more than one short line. Laying out a 2,000
+/// character paragraph costs about 0.1 s, so with up to 200 requests on the
+/// page only short text wraps in the list; long text shows its first line.
+fn is_long(text: &str) -> bool {
+    text.contains('\n') || text.chars().nth(limits::MAX_LINE_CHARS).is_some()
+}
+
+/// Request detail in the list: wrapped when short, else one cut line.
+fn detail_text(text: &str, class: &str) -> gtk::Label {
+    if !is_long(text) {
+        return small_text(text, class);
+    }
+    gtk::Label::builder()
+        .label(limits::clip_line(text))
+        .xalign(0.0)
+        .single_line_mode(true)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .selectable(true)
+        .css_classes(["tm-small", class])
+        .build()
+}
+
+/// An expander whose lines are made the first time it is opened.
+fn lazy_expander(
+    title: &str,
+    lines: impl Fn() -> Vec<String> + 'static,
+    class: &str,
+) -> gtk::Expander {
+    let exp = gtk::Expander::builder()
+        .label(title)
+        .css_classes(["tm-small"])
+        .build();
+    let class = class.to_owned();
+    exp.connect_expanded_notify(move |e| {
+        if !e.is_expanded() || e.child().is_some() {
+            return;
+        }
+        let list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(4)
+            .margin_start(18)
+            .build();
+        for l in lines() {
+            list.append(&small_text(&l, &class));
+        }
+        e.set_child(Some(&list));
+    });
+    exp
 }
 
 // ---- the page -------------------------------------------------------------------
