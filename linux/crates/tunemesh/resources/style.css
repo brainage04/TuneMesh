@@ -244,7 +244,7 @@ scale.tm-seek slider, scale.tm-volume slider {
 scale.tm-seek:hover slider, scale.tm-volume:hover slider { opacity: 1; }
 
 /* Queue panel */
-.tm-queue { padding: 12px 8px; min-width: 320px; }
+.tm-queue { padding: 12px 8px; }
 .tm-queue-heading { font-weight: 700; font-size: 16px; margin: 4px 8px 8px 8px; }
 .tm-queue-section { font-weight: 700; color: #ffffff; margin: 12px 8px 4px 8px; }
 listview.tm-queue-list { background: transparent; }

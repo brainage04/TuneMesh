@@ -174,6 +174,8 @@ impl App {
             sidebar: RefCell::new(None),
             queue_split: adw::OverlaySplitView::builder()
                 .sidebar_position(gtk::PackType::End)
+                // The panes' contents take the width the split view gives
+                // them; a wider minimum inside would overflow the pane.
                 .min_sidebar_width(300.0)
                 .max_sidebar_width(340.0)
                 .show_sidebar(false)
@@ -228,12 +230,14 @@ impl App {
 
         let queue = ui::queue::QueuePanel::new(self);
         queue.widget.set_margin_start(8);
-        self.queue_split.set_sidebar(Some(&queue.widget));
+        self.queue_split
+            .set_sidebar(Some(&shrinkable(&queue.widget)));
         self.queue_split.set_content(Some(&self.toasts));
         *self.queue_panel.borrow_mut() = Some(queue);
 
         sidebar.widget.set_margin_end(8);
-        self.library_split.set_sidebar(Some(&sidebar.widget));
+        self.library_split
+            .set_sidebar(Some(&shrinkable(&sidebar.widget)));
         self.library_split.set_content(Some(&self.queue_split));
         self.library_split.add_css_class("tm-body");
         self.library_split.set_vexpand(true);
@@ -268,7 +272,6 @@ impl App {
         );
         narrow.add_setter(&self.queue_split, "collapsed", Some(&true.to_value()));
         narrow.add_setter(&self.library_split, "collapsed", Some(&true.to_value()));
-        narrow.add_setter(&self.library_split, "show-sidebar", Some(&false.to_value()));
 
         let bar = ui::nowplaying::NowPlaying::new(self);
         // Narrow: the slider goes; the volume button still mutes and unmutes.
@@ -773,6 +776,19 @@ impl App {
             self.gtk_app.withdraw_notification("background");
         }
     }
+}
+
+/// `child` in a pane that may be allocated narrower than the child's minimum.
+/// While a split view animates its sidebar (or the window shrinks past a
+/// breakpoint) it briefly gives the pane less than that, which GTK reports
+/// as a critical; the clipped frame is never seen.
+fn shrinkable(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::Never)
+        .propagate_natural_width(true)
+        .child(child)
+        .build()
 }
 
 /// Returns the memory freed by the pages just left to the system, a moment

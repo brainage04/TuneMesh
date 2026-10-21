@@ -48,7 +48,6 @@ impl QueuePanel {
         let widget = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["tm-panel", "tm-queue"])
-            .width_request(340)
             .hexpand(false)
             .build();
         let head = gtk::Box::builder().spacing(8).build();

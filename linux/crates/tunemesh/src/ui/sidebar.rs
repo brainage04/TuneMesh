@@ -54,7 +54,6 @@ impl Sidebar {
         let widget = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .spacing(8)
-            .width_request(280)
             .hexpand(false)
             .build();
 
