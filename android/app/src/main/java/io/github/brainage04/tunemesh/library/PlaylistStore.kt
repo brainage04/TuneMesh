@@ -108,14 +108,13 @@ class PlaylistStore(
 
     private fun read(name: String, keepExtinf: Boolean): PlaylistContents? {
         val file = file(name)
-        val entries = ArrayList<PlaylistEntry>()
+        val entries = PlaylistEntries.Builder(root.absolutePath, keepExtinf)
         try {
-            stream(file, keepExtinf) { entries += it }
+            stream(file, keepExtinf) { entries.add(it) }
         } catch (_: java.io.FileNotFoundException) {
             return null
         }
-        entries.trimToSize()
-        return PlaylistContents(name, entries, file.lastModified())
+        return PlaylistContents(name, entries.build(), file.lastModified())
     }
 
     /** Library paths in Liked Songs, without keeping its entries; empty when it does not exist. */
@@ -132,8 +131,8 @@ class PlaylistStore(
      * Entries to change. A missing file is empty; a file that cannot be read or is too large is never rewritten
      * from a partial read, so the change is refused.
      */
-    private fun entries(name: String): List<PlaylistEntry> = try {
-        read(name)?.entries ?: emptyList()
+    private fun entries(name: String): PlaylistEntries = try {
+        read(name)?.entries ?: PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
     } catch (_: PlaylistTooLargeException) {
         throw PlaylistException("\"$name\" is too large to change on this device")
     } catch (error: IOException) {
@@ -191,7 +190,10 @@ class PlaylistStore(
 
     /** Appends [tracks]; a track whose path contains a line break is skipped (see [LibraryFormat.hasLineBreak]). */
     fun add(name: String, tracks: List<Track>) {
-        write(name, entries(name) + tracks.filter { M3u8.canWrite(it.path) }.map(M3u8::entryFor))
+        val current = entries(name)
+        val updated = current.builder(current.size + tracks.size).addAll(current)
+        for (track in tracks) if (M3u8.canWrite(track.path)) updated.add(M3u8.entryFor(track), canonical(track.path))
+        write(name, updated.build())
     }
 
     /**
@@ -199,47 +201,62 @@ class PlaylistStore(
      * found by its key; one that is gone fails without writing.
      */
     fun remove(name: String, entry: EntryRef) {
-        val entries = entries(name).toMutableList()
-        entries.removeAt(locate(entries, listOf(entry))[0])
-        write(name, entries)
+        val entries = entries(name)
+        val at = locate(entries, listOf(entry))[0]
+        write(name, entries.builder(entries.size).addAll(entries, 0 until at).addAll(entries, at + 1 until entries.size).build())
     }
 
     /** Moves the entry the user saw at [from] to where the entry they saw at [to] is now (see [remove]). */
     fun move(name: String, from: EntryRef, to: EntryRef) {
-        val entries = entries(name).toMutableList()
+        val entries = entries(name)
         val (source, target) = locate(entries, listOf(from, to))
         if (source == target) return
-        entries.add(target, entries.removeAt(source))
-        write(name, entries)
+        val moved = entries.builder(entries.size)
+        if (source < target) {
+            moved.addAll(entries, 0 until source).addAll(entries, source + 1..target).add(entries, source)
+                .addAll(entries, target + 1 until entries.size)
+        } else {
+            moved.addAll(entries, 0 until target).add(entries, source).addAll(entries, target until source)
+                .addAll(entries, source + 1 until entries.size)
+        }
+        write(name, moved.build())
     }
 
     fun setLiked(track: Track, liked: Boolean) {
         val current = entries(LibraryFormat.LIKED_SONGS)
-        val updated = if (liked) like(current, track) else unlike(current, track.path)
-        if (updated != current || !file(LibraryFormat.LIKED_SONGS).exists()) write(LibraryFormat.LIKED_SONGS, updated)
+        val updated = if (liked) like(current, track, canonical(track.path)) else unlike(current, track.path)
+        if (updated !== current || !file(LibraryFormat.LIKED_SONGS).exists()) write(LibraryFormat.LIKED_SONGS, updated)
     }
 
     companion object {
         /** Candidate tracks kept per listed playlist for its cover art (the first one that is available). */
         const val ART_PATHS = 8
 
-        /** Liking inserts the track at the top unless it is already liked. */
-        fun like(entries: List<PlaylistEntry>, track: Track): List<PlaylistEntry> = when {
-            !M3u8.canWrite(track.path) || entries.any { it.path == track.path } -> entries
-            else -> listOf(M3u8.entryFor(track)) + entries
+        /**
+         * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then).
+         * [libraryPath] is the library index's string for the track's path, shared by the new entry.
+         */
+        fun like(entries: PlaylistEntries, track: Track, libraryPath: String? = null): PlaylistEntries = when {
+            !M3u8.canWrite(track.path) || (0 until entries.size).any { entries.path(it) == track.path } -> entries
+            else -> entries.builder().add(M3u8.entryFor(track), libraryPath).addAll(entries).build()
         }
 
-        /** Unliking removes every entry for the track. */
-        fun unlike(entries: List<PlaylistEntry>, path: String): List<PlaylistEntry> = entries.filter { it.path != path }
+        /** Unliking removes every entry for the track ([entries] itself is returned when there is none). */
+        fun unlike(entries: PlaylistEntries, path: String): PlaylistEntries {
+            if ((0 until entries.size).none { entries.path(it) == path }) return entries
+            val updated = entries.builder(entries.size)
+            for (index in 0 until entries.size) if (entries.path(index) != path) updated.add(entries, index)
+            return updated.build()
+        }
 
         /**
          * Finds shown entries in freshly read [entries]: at their position if it still holds the same entry, else
          * the first unclaimed entry with that key. Throws when one is gone, so nothing wrong is changed.
          */
-        fun locate(entries: List<PlaylistEntry>, refs: List<EntryRef>): List<Int> {
+        fun locate(entries: PlaylistEntries, refs: List<EntryRef>): List<Int> {
             val found = ArrayList<Int>(refs.size)
             for (ref in refs) {
-                fun same(i: Int) = i in entries.indices && entries[i].key == ref.key
+                fun same(i: Int) = i in entries.indices && entries.key(i) == ref.key
                 val at = if (same(ref.position) && ref.position !in found) {
                     ref.position
                 } else {

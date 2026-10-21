@@ -65,8 +65,9 @@ object M3u8 {
                 return
             }
             if (++entries > maxEntries) throw PlaylistTooLargeException("more than $maxEntries entries")
-            val path = resolve(text, root)?.let { canonical(it) ?: it }
-            onEntry(PlaylistEntry(path, text, pendingExtinf))
+            val resolved = resolve(text, root)
+            val shared = resolved?.let(canonical)
+            onEntry(PlaylistEntry.read(shared ?: resolved, text, pendingExtinf, shared = shared != null))
             pendingExtinf = null
         }
 

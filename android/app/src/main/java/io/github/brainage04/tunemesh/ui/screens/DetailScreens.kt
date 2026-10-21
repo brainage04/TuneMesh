@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.brainage04.tunemesh.library.EntryRef
+import io.github.brainage04.tunemesh.library.PlaylistEntry
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.CoverArt
@@ -159,8 +160,12 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         onDispose { viewModel.repository.closePlaylist(name) }
     }
     val contents = library.openPlaylist?.takeIf { it.name == name }
-    val entries = contents?.entries ?: emptyList()
-    val resolved = remember(entries, library.index) { entries.map { entry -> entry.path?.let { library.index.byPath[it] } } }
+    val entries: List<PlaylistEntry> = contents?.entries ?: emptyList()
+    // Rows make their PlaylistEntry when shown; the tracks are looked up from the stored paths.
+    val resolved = remember(contents, library.index) {
+        val stored = contents?.entries
+        if (stored == null) emptyList() else List(stored.size) { i -> stored.path(i)?.let { library.index.byPath[it] } }
+    }
     val playable = remember(resolved) { resolved.filterNotNull() }
     var editing by remember(name) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
