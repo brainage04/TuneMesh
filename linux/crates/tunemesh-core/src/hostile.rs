@@ -489,7 +489,20 @@ mod tests {
     /// the peak memory measured is the client's alone) and returns the
     /// child's report line.
     fn check_in_child(options: &Options) -> String {
-        let base = std::env::var_os("TUNEMESH_HOSTILE_DIR").unwrap_or("/var/tmp".into());
+        // Disk-backed /var/tmp when there is one (the full library is
+        // about 1.2 GB, too much for a RAM-backed /tmp), else the system
+        // temporary directory ($TMPDIR; the Nix build sandbox has no
+        // /var/tmp).
+        let base = std::env::var_os("TUNEMESH_HOSTILE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let var_tmp = Path::new("/var/tmp");
+                if var_tmp.is_dir() {
+                    var_tmp.to_owned()
+                } else {
+                    std::env::temp_dir()
+                }
+            });
         let dir = tempfile::tempdir_in(base).unwrap();
         let root = dir.path().join("lib");
         generate(&root, options).unwrap();
