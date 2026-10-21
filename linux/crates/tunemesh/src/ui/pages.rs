@@ -205,6 +205,11 @@ fn artist_tile(app: &Rc<App>, lib: &Arc<Library>, i: usize, tile: &Tile) {
 
 fn playlist_tile(app: &Rc<App>, lib: &Arc<Library>, p: &Summary) -> gtk::Widget {
     let tile = Tile::new(false);
+    bind_playlist_tile(app, lib, p, &tile);
+    tile.widget.upcast()
+}
+
+fn bind_playlist_tile(app: &Rc<App>, lib: &Arc<Library>, p: &Summary, tile: &Tile) {
     let liked = p.name == LIKED_SONGS;
     let art = if liked {
         TileArt::Liked
@@ -235,7 +240,6 @@ fn playlist_tile(app: &Rc<App>, lib: &Arc<Library>, p: &Summary) -> gtk::Widget 
             app2.player.play_tracks(&name2, paths, 0, Some(false))
         },
     );
-    tile.widget.upcast()
 }
 
 fn flow_section(
@@ -444,6 +448,7 @@ fn search(app: &Rc<App>, text: &str) -> Page {
 fn grid_page(
     app: &Rc<App>,
     title: &str,
+    action: Option<gtk::Widget>,
     count: usize,
     round: bool,
     bind: impl Fn(&Rc<App>, &Arc<Library>, usize, &Tile) + 'static,
@@ -457,7 +462,12 @@ fn grid_page(
         .margin_top(20)
         .margin_bottom(8)
         .build();
-    head.append(&label(title, &["tm-page-title"]));
+    let title = label(title, &["tm-page-title"]);
+    title.set_hexpand(true);
+    head.append(&title);
+    if let Some(w) = action {
+        head.append(&w);
+    }
     if count == 0 {
         outer.append(&head);
         outer.append(&widgets::empty("Nothing here yet."));
@@ -518,23 +528,17 @@ fn albums(app: &Rc<App>) -> Page {
     let lib = app.store.library();
     let order = Rc::new(lib.albums_by_name());
     let n = order.len();
-    grid_page(app, "Albums", n, false, move |app, lib, i, tile| {
+    grid_page(app, "Albums", None, n, false, move |app, lib, i, tile| {
         album_tile(app, lib, order[i], tile, true)
     })
 }
 
 fn artists(app: &Rc<App>) -> Page {
     let n = app.store.library().artists.len();
-    grid_page(app, "Artists", n, true, artist_tile)
+    grid_page(app, "Artists", None, n, true, artist_tile)
 }
 
 fn playlists(app: &Rc<App>) -> Page {
-    let lib = app.store.library();
-    let b = page_box();
-    let head = gtk::Box::builder().spacing(12).build();
-    let title = label("Playlists", &["tm-page-title"]);
-    title.set_hexpand(true);
-    head.append(&title);
     let create = gtk::Button::builder()
         .label("Create playlist")
         .css_classes(["tm-pill-outline"])
@@ -542,15 +546,21 @@ fn playlists(app: &Rc<App>) -> Page {
         .build();
     let a = app.clone();
     create.connect_clicked(move |_| create_playlist_dialog(&a));
-    head.append(&create);
-    b.append(&head);
-    let flow = tile_flow();
-    flow.append(&playlist_tile(app, &lib, &app.store.liked_summary()));
-    for p in app.store.playlists() {
-        flow.append(&playlist_tile(app, &lib, &p));
-    }
-    b.append(&flow);
-    simple(&b)
+    // Liked Songs first; a grid of recycled tiles, as there may be
+    // a thousand playlists.
+    let lists: Rc<Vec<Summary>> = Rc::new(
+        std::iter::once(app.store.liked_summary())
+            .chain(app.store.playlists())
+            .collect(),
+    );
+    grid_page(
+        app,
+        "Playlists",
+        Some(create.upcast()),
+        lists.len(),
+        false,
+        move |app, lib, i, tile| bind_playlist_tile(app, lib, &lists[i], tile),
+    )
 }
 
 pub fn create_playlist_dialog(app: &Rc<App>) {
