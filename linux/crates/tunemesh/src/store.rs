@@ -91,10 +91,7 @@ impl Store {
             root: RefCell::new(root),
             lib: RefCell::new(Arc::new(Library::default())),
             playlists: RefCell::new(Vec::new()),
-            liked: RefCell::new(Playlist {
-                name: LIKED_SONGS.into(),
-                entries: Vec::new(),
-            }),
+            liked: RefCell::new(Playlist::new(LIKED_SONGS)),
             liked_set: RefCell::new(HashSet::new()),
             too_large: RefCell::new(HashSet::new()),
             playlist_stamps: RefCell::new(HashMap::new()),
@@ -138,10 +135,7 @@ impl Store {
         self.playlists.borrow_mut().clear();
         self.too_large.borrow_mut().clear();
         self.playlist_stamps.borrow_mut().clear();
-        self.set_liked(Playlist {
-            name: LIKED_SONGS.into(),
-            entries: Vec::new(),
-        });
+        self.set_liked(Playlist::new(LIKED_SONGS));
         self.open();
         self.emit(StoreChange::Library);
         self.emit(StoreChange::Playlists);
@@ -732,10 +726,7 @@ fn read_playlists(root: &Path, known: PlaylistsRead) -> PlaylistsRead {
                 } else if e.kind() != io::ErrorKind::NotFound {
                     eprintln!("tunemesh: cannot read Liked Songs: {e}");
                 }
-                Playlist {
-                    name: LIKED_SONGS.into(),
-                    entries: Vec::new(),
-                }
+                Playlist::new(LIKED_SONGS)
             }
         };
         let set = liked_paths(&liked);
@@ -767,7 +758,7 @@ fn summarize(p: &Playlist) -> Summary {
 /// or the line as written when it points outside the library).
 pub type EntryRef = (usize, String);
 
-pub fn entry_key(e: &tunemesh_core::playlist::PlaylistEntry) -> &str {
+pub fn entry_key<'a>(e: tunemesh_core::playlist::PlaylistEntry<'a>) -> &'a str {
     e.key()
 }
 
@@ -1157,16 +1148,12 @@ mod tests {
 
     #[test]
     fn locating_many_moved_entries_is_linear() {
-        use tunemesh_core::playlist::PlaylistEntry;
         let n = 100_000;
         let names: Vec<String> = (0..n).map(|i| format!("A/{i}.opus")).collect();
         // Shown in this order; the file now has every entry one place later.
-        let mut entries: Vec<PlaylistEntry> = vec![PlaylistEntry::for_track("A/new.opus")];
-        entries.extend(names.iter().map(|t| PlaylistEntry::for_track(t)));
-        let p = Playlist {
-            name: "P".into(),
-            entries,
-        };
+        let mut p = Playlist::new("P");
+        p.append(["A/new.opus"]);
+        p.append(names.iter().map(String::as_str));
         let refs: Vec<EntryRef> = names.iter().cloned().enumerate().collect();
         let start = std::time::Instant::now();
         let found = locate(&p, &refs).unwrap();
