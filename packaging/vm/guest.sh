@@ -135,6 +135,7 @@ leftover_processes() { pgrep -u "$(id -u)" -x 'tunemesh|tunemesh-worker'; }
 not_running() { ! leftover_processes; }
 app_gone() { ! pgrep -u "$(id -u)" -x tunemesh; }
 worker_running() { pgrep -u "$(id -u)" -x tunemesh-worker; }
+no_appimage_mount() { ! grep -q '/tmp/.mount_' /proc/mounts; }
 
 # The program's own scopes: `flatpak run` and `snap run` move it out of the
 # service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
@@ -375,7 +376,9 @@ test_package() {
             fail "the tunemesh-worker enable link is left behind"
         ;;
     appimage)
-        if grep -q '/tmp/.mount_' /proc/mounts; then fail "an AppImage mount is left behind"; fi
+        # The runtime unmounts the image after its program exits, a moment
+        # later than the program itself.
+        wait_for 15 no_appimage_mount || fail "an AppImage mount is left behind"
         ;;
     snap)
         if snap list tunemesh >/dev/null 2>&1; then fail "the snap is still installed"; fi
