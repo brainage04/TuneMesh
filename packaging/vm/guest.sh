@@ -289,8 +289,13 @@ test_package() {
         systemctl --user enable --now tunemesh-worker.service
     else
         # No systemd unit in this format: the same command as a transient unit.
+        # ExitType=cgroup: the AppImage runtime execs the program in the main
+        # process and serves the image from a child that unmounts it after
+        # the program exits; by default systemd kills that child as soon as
+        # the main process ends, and the mount is left behind.
         # shellcheck disable=SC2086
-        systemd-run --user --unit=tunemesh-worker -p Restart=no -- $worker --library "$LIB"
+        systemd-run --user --unit=tunemesh-worker -p Restart=no -p ExitType=cgroup -- \
+            $worker --library "$LIB"
     fi
     sleep 15
     journalctl --user -u tunemesh-worker --no-pager >"$out/worker.log" 2>&1 || true
@@ -328,8 +333,9 @@ test_package() {
     local app_start
     app_start=$(date +%s)
     # shellcheck disable=SC2086
-    systemd-run --user --unit=tm-app -E WAYLAND_DISPLAY="$wl" -E XDG_SESSION_TYPE=wayland \
-        -E XDG_CURRENT_DESKTOP=sway -E GDK_BACKEND=wayland -- $app --library "$LIB"
+    systemd-run --user --unit=tm-app -p ExitType=cgroup -E WAYLAND_DISPLAY="$wl" \
+        -E XDG_SESSION_TYPE=wayland -E XDG_CURRENT_DESKTOP=sway -E GDK_BACKEND=wayland -- \
+        $app --library "$LIB"
     wait_for 90 app_on_bus || fail "the app did not take $APP_ID on the session bus"
     wait_for 30 mpris_on_bus || fail "the app did not register $MPRIS"
     log "app on the session bus with MPRIS"
