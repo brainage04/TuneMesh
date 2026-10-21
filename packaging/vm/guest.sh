@@ -30,7 +30,7 @@ deps() {
     local distro=$1
     log "installing the test stack on $distro"
     case $distro in
-    ubuntu-24.04 | debian-13)
+    ubuntu-24.04 | ubuntu-26.04 | debian-13)
         local apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -yq)
         "${apt[@]}" update
         "${apt[@]}" install --no-install-recommends sway grim pipewire pipewire-pulse \
@@ -39,10 +39,6 @@ deps() {
     fedora)
         sudo dnf -y -q --setopt=install_weak_deps=False install sway grim pipewire \
             pipewire-pulseaudio pipewire-utils wireplumber dejavu-sans-fonts python3
-        ;;
-    opensuse-tumbleweed)
-        sudo zypper -n -q --gpg-auto-import-keys install --no-recommends sway grim pipewire \
-            pipewire-pulseaudio pipewire-tools wireplumber dejavu-fonts python3
         ;;
     arch)
         sudo pacman -Sy --noconfirm --needed archlinux-keyring
@@ -160,13 +156,7 @@ uninstall() {
     native)
         case $name in
         *.deb) sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -yq purge "$pkgname" ;;
-        *.rpm)
-            if [ "$distro" = opensuse-tumbleweed ]; then
-                sudo zypper -n remove "$pkgname"
-            else
-                sudo dnf -y remove "$pkgname"
-            fi
-            ;;
+        *.rpm) sudo dnf -y remove "$pkgname" ;;
         *) sudo pacman -Rns --noconfirm "$pkgname" ;;
         esac
         ;;
@@ -209,11 +199,7 @@ test_package() {
     *.rpm)
         kind=native
         pkgname=$(rpm -qp --qf '%{NAME}' "$pkg")
-        if [ "$distro" = opensuse-tumbleweed ]; then
-            sudo zypper -n install --allow-unsigned-rpm "$pkg"
-        else
-            sudo dnf -y install "$pkg"
-        fi
+        sudo dnf -y install "$pkg"
         rpm -ql "$pkgname" >"$out/installed.txt"
         ;;
     *.pkg.tar.zst)

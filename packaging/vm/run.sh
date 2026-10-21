@@ -28,7 +28,7 @@ set -euo pipefail
 
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/../.." && pwd)
-distros="ubuntu-24.04 debian-13 fedora opensuse-tumbleweed arch"
+distros="ubuntu-24.04 ubuntu-26.04 debian-13 fedora arch"
 
 usage() {
     echo "usage: $0 <distro> <package-file>..." >&2
