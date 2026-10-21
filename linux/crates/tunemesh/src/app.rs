@@ -28,6 +28,9 @@ pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
 /// Narrowest window, in pixels: about a tiled half of a 1366-pixel screen.
 const MIN_WIDTH: i32 = 600;
+/// Lowest window, in pixels: fits a 1280 x 800 screen at 200 % scale
+/// (400 logical pixels) under a title bar.
+const MIN_HEIGHT: i32 = 360;
 /// Up to this width (sp) the queue opens over the page instead of beside it.
 const QUEUE_BESIDE: u32 = 1180;
 /// Up to this width (sp) the library sidebar folds away as well.
@@ -130,7 +133,7 @@ impl App {
             // Narrow windows (a tiled half screen) fold the sidebar and the
             // queue over the page; see the breakpoints in build_window.
             .width_request(MIN_WIDTH)
-            .height_request(480)
+            .height_request(MIN_HEIGHT)
             .build();
         window.add_css_class("tunemesh");
 
@@ -778,15 +781,17 @@ impl App {
     }
 }
 
-/// `child` in a pane that may be allocated narrower than the child's minimum.
+/// `child` in a pane that may be allocated smaller than the child's minimum
+/// (the window's minimum height leaves a short pane on a 400-pixel screen).
 /// While a split view animates its sidebar (or the window shrinks past a
 /// breakpoint) it briefly gives the pane less than that, which GTK reports
 /// as a critical; the clipped frame is never seen.
 fn shrinkable(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
     gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::External)
-        .vscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::External)
         .propagate_natural_width(true)
+        .propagate_natural_height(true)
         .child(child)
         .build()
 }
