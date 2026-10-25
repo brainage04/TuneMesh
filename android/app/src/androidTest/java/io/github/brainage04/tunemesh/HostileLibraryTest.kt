@@ -1,5 +1,6 @@
 package io.github.brainage04.tunemesh
 
+import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.os.Debug
@@ -9,6 +10,8 @@ import android.os.SystemClock
 import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry
+import androidx.test.runner.lifecycle.Stage
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.StaleObjectException
@@ -65,6 +68,7 @@ class HostileLibraryTest {
     @After
     fun tearDown() {
         watchdog.stop()
+        finishActivities()
         app.repository.setLibraryRoot(previousRoot.absolutePath)
         root.deleteRecursively()
         File(context.filesDir, "tag-cache.json").delete()
@@ -153,6 +157,19 @@ class HostileLibraryTest {
         }
         report("worst main-thread stall ${watchdog.worst} ms; ${heap()}")
         assertTrue("main thread stalled ${watchdog.worst} ms (${watchdog.worstAt})", watchdog.worst < MAX_STALL_MS)
+    }
+
+    /** Finishes the app's activities and waits until they are destroyed, so LeakCanary's check after the test covers them. */
+    private fun finishActivities() {
+        val monitor = ActivityLifecycleMonitorRegistry.getInstance()
+        fun alive(): List<Activity> = Stage.entries.filter { it != Stage.DESTROYED }.flatMap { monitor.getActivitiesInStage(it) }
+        instrumentation.runOnMainSync { alive().forEach(Activity::finish) }
+        val end = SystemClock.uptimeMillis() + 10_000
+        var remaining = true
+        while (remaining && SystemClock.uptimeMillis() < end) {
+            instrumentation.runOnMainSync { remaining = alive().isNotEmpty() }
+            if (remaining) SystemClock.sleep(100)
+        }
     }
 
     private fun runBlockingRefresh() = kotlinx.coroutines.runBlocking { app.repository.refresh() }
