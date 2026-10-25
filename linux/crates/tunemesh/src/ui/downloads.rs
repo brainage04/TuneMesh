@@ -1,6 +1,7 @@
 //! Downloads: write request files for the worker and show their status.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
@@ -28,6 +29,10 @@ struct ListState {
     /// Request and status files are read on a thread, one load at a time.
     loading: Cell<bool>,
     again: Cell<bool>,
+    /// The rows on screen with their widgets, newest first.
+    shown: RefCell<Vec<(Row, gtk::Widget)>>,
+    /// Bumped by every `show`; a fill still running for an older one stops.
+    fill: Cell<u64>,
 }
 
 /// Re-renders the request list if the Downloads page is open (called when
@@ -205,6 +210,7 @@ fn fmt_time(rfc3339: &str) -> String {
         .unwrap_or_default()
 }
 
+#[derive(Clone, PartialEq)]
 struct Row {
     id: String,
     request: Option<Request>,
@@ -256,33 +262,120 @@ impl ListState {
         });
     }
 
-    fn show(&self, app: &Rc<App>, rows: Vec<Row>, total: usize) {
+    /// Shows `rows`: a row whose request and status are unchanged keeps its
+    /// widget, and new rows are built `ROWS_PER_PASS` at a time, so neither
+    /// opening the page nor a status update holds up the window.
+    fn show(self: &Rc<Self>, app: &Rc<App>, rows: Vec<Row>, total: usize) {
         let Some(container) = self.container.upgrade() else {
             return;
         };
-        while let Some(c) = container.first_child() {
-            container.remove(&c);
-        }
+        let fill = self.fill.get() + 1;
+        self.fill.set(fill);
         if rows.is_empty() {
+            while let Some(c) = container.first_child() {
+                container.remove(&c);
+            }
+            self.shown.borrow_mut().clear();
             container.append(&widgets::empty(
                 "No downloads yet. Paste links or type a song above.",
             ));
             return;
         }
-        let shown = rows.len();
-        for row in rows {
-            container.append(&request_row(app, row));
+        let old = self
+            .shown
+            .take()
+            .into_iter()
+            .map(|(r, w)| (r.id.clone(), (r, w)))
+            .collect();
+        let f = Rc::new(Fill {
+            rows,
+            total,
+            old: RefCell::new(old),
+            placed: RefCell::new(Vec::new()),
+        });
+        self.fill_rows(app.clone(), f, 0, fill);
+    }
+
+    fn fill_rows(self: &Rc<Self>, app: Rc<App>, f: Rc<Fill>, start: usize, fill: u64) {
+        if self.fill.get() != fill {
+            return;
         }
-        if total > shown {
+        let Some(container) = self.container.upgrade() else {
+            return;
+        };
+        let mut prev = f.placed.borrow().last().map(|(_, w)| w.clone());
+        let (mut i, mut built) = (start, 0);
+        while i < f.rows.len() && built < ROWS_PER_PASS {
+            let row = &f.rows[i];
+            let w = match f.old.borrow_mut().remove(&row.id) {
+                Some((old, w)) if old == *row => w,
+                stale => {
+                    if let Some((_, w)) = stale {
+                        container.remove(&w);
+                    }
+                    built += 1;
+                    request_row(&app, row.clone())
+                }
+            };
+            if w.parent().is_some() {
+                container.reorder_child_after(&w, prev.as_ref());
+            } else {
+                container.insert_child_after(&w, prev.as_ref());
+            }
+            prev = Some(w.clone());
+            f.placed.borrow_mut().push((row.clone(), w));
+            i += 1;
+        }
+        if i < f.rows.len() {
+            // The next pass waits for the next frame: idle passes ran several
+            // times between frames, and the frame then measured all the rows
+            // they had added (over 100 ms on the first visit, shaping text).
+            let me = self.clone();
+            let next = Cell::new(Some((app, f)));
+            container.add_tick_callback(move |_, _| {
+                if let Some((app, f)) = next.take() {
+                    me.fill_rows(app, f, i, fill);
+                }
+                glib::ControlFlow::Break
+            });
+            return;
+        }
+        // Done: drop what is no longer listed (and the old footer).
+        let placed: HashSet<gtk::Widget> =
+            f.placed.borrow().iter().map(|(_, w)| w.clone()).collect();
+        let mut child = container.first_child();
+        while let Some(c) = child {
+            child = c.next_sibling();
+            if !placed.contains(&c) {
+                container.remove(&c);
+            }
+        }
+        let shown = f.rows.len();
+        if f.total > shown {
             container.append(&label(
                 &format!(
                     "…and {} older",
-                    plural(total - shown, "request", "requests")
+                    plural(f.total - shown, "request", "requests")
                 ),
                 &["dim", "tm-small"],
             ));
         }
+        *self.shown.borrow_mut() = f.placed.take();
     }
+}
+
+/// Request rows built per frame; a row with long warnings takes a
+/// millisecond or two to build and lay out.
+const ROWS_PER_PASS: usize = 12;
+
+/// A `show` in progress.
+struct Fill {
+    rows: Vec<Row>,
+    total: usize,
+    /// Widgets shown before, by request id, until reused or dropped.
+    old: RefCell<HashMap<String, (Row, gtk::Widget)>>,
+    /// Rows placed so far, in order.
+    placed: RefCell<Vec<(Row, gtk::Widget)>>,
 }
 
 /// "3 of 12 songs" once the worker knows how many items a request has.
@@ -732,15 +825,23 @@ pub fn page(app: &Rc<App>) -> Page {
         }
     });
 
+    // Weak: the text view's own key controller runs this, so a strong
+    // reference would keep the view and the whole form alive after the page
+    // is gone.
     let submit = {
         let (a, view, dropdown, switch, choices) = (
             app.clone(),
-            view.clone(),
-            dropdown.clone(),
-            switch.clone(),
+            view.downgrade(),
+            dropdown.downgrade(),
+            switch.downgrade(),
             choices.clone(),
         );
         move || {
+            let (Some(view), Some(dropdown), Some(switch)) =
+                (view.upgrade(), dropdown.upgrade(), switch.upgrade())
+            else {
+                return;
+            };
             let buf = view.buffer();
             let lines = input_lines(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
             if lines.is_empty() {
@@ -844,6 +945,8 @@ pub fn page(app: &Rc<App>) -> Page {
         container: container.downgrade(),
         loading: Cell::new(false),
         again: Cell::new(false),
+        shown: RefCell::new(Vec::new()),
+        fill: Cell::new(0),
     });
     state.render();
     LIST.with(|l| *l.borrow_mut() = Rc::downgrade(&state));

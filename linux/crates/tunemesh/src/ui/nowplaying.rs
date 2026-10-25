@@ -241,10 +241,9 @@ impl NowPlaying {
         });
         let a = app.clone();
         self.heart.connect_clicked(move |_| {
-            if let Some(p) = a.player.current_path()
-                && let Err(e) = a.store.toggle_like(&p)
-            {
-                a.error("Could not update Liked Songs", e);
+            if let Some(p) = a.player.current_path() {
+                a.store
+                    .toggle_like(&p, a.on_error("Could not update Liked Songs"));
             }
         });
         let a = app.clone();

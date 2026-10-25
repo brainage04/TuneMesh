@@ -1967,7 +1967,6 @@ dependencies = [
 name = "tunemesh"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "async-channel",
  "fastrand",
  "glib-build-tools",

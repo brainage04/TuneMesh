@@ -29,6 +29,76 @@ cargo run -p tunemesh
 cargo run -p tunemesh-worker -- --library ~/Music/TuneMesh   # work dir: ~/.cache/tunemesh/worker
 ```
 
+### Desktop GUI checks
+
+Two tests in `crates/tunemesh/src/gui_tests` drive the real window from inside
+the test process. Both need a display, so they are `#[ignore]`d in a plain
+`cargo test`; `crates/tunemesh/scripts/gui-checks.sh` runs them in a private
+headless sway with a session bus of its own (no portals, none of the
+desktop's GTK settings):
+
+```sh
+# from the repository root
+nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks    # or: stalls, all
+```
+
+- `leaks` (debug build, about a minute, also in CI): opens every page three
+  times on a small generated library, with the keyboard focus inside it, and
+  checks through weak references that each page's widgets, list models and
+  items are freed once it is left; likewise the queue panel's rows, the
+  now-playing bar and the setup assistant. A failure lists what is still
+  alive by type and page.
+- `stalls` (release build, about 5 minutes plus the build): generates the
+  hostile library of `docs/library-format.md` "Limits" (1.5 GB under
+  `/var/tmp`), walks every page and action three times and prints the longest
+  main-loop stall each caused. It fails when an action exceeds
+  `TUNEMESH_STALL_BUDGET_MS` (100 ms) in more than one round (a single late
+  round is the machine, not the app). The script draws with
+  `GSK_RENDERER=cairo`, so stalls include software rendering; in perf
+  profiles most of the 40-50 ms on the grid pages is cairo drawing.
+  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuses a library made with
+  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`,
+  `TUNEMESH_STALL_ROUNDS=1` shortens the walk and `TUNEMESH_STALL_REPORT=<file>`
+  writes the table to a file.
+
+On a shared machine run them through `heavy` (`--mem 4G` for `leaks`, `--mem
+8G` for `stalls`). To profile a slow action, record with perf enabled only
+around it:
+
+```sh
+mkfifo /var/tmp/ctl /var/tmp/ack
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -g --call-graph dwarf \
+  --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
+TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+  linux/crates/tunemesh/scripts/gui-checks.sh stalls
+```
+
+The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`
+with `TUNEMESH_STALL_BUDGET_MS=1000000`, as heaptrack slows the walk down
+(without `--record-only` it opens heaptrack_gui inside the headless session
+and waits there). Read the result with `heaptrack_print -f /var/tmp/walk.zst`.
+The heap in use after each round, printed under the table, should stay
+level from the second round on.
+
+Both checks also run under AddressSanitizer with a nightly toolchain
+(`nix shell nixpkgs#rustup`, then `rustup toolchain install nightly`):
+
+```sh
+PATH=$(rustup +nightly which rustc | xargs dirname):$PATH \
+RUSTFLAGS=-Zsanitizer=address CARGO_TARGET_DIR=/var/tmp/target-asan \
+ASAN_OPTIONS=detect_leaks=1:log_path=/var/tmp/asan \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks --target x86_64-unknown-linux-gnu
+```
+
+`--target` keeps the sanitizer out of build scripts and proc macros.
+LeakSanitizer then lists about 0.9 MB that fontconfig keeps for pango's
+font map until exit; anything with a `tunemesh` frame in its stack is a
+real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
+`llvm-symbolizer` (`nixpkgs#llvm`).
+
 ## The app
 
 ```sh

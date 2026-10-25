@@ -3,7 +3,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
 use gtk::{gdk, gio, glib};
@@ -13,9 +13,11 @@ use crate::config::{self, expand_home};
 use crate::syncthing::{self, Client, Endpoint, Overview, Probe};
 use crate::ui::downloads;
 
+/// The assistant's state. The dialog owns it; the dialog's widgets reach it
+/// weakly (a strong reference from any of them would keep the dialog alive
+/// after it closes).
 struct Setup {
     app: Rc<App>,
-    dialog: adw::Dialog,
     nav: adw::NavigationView,
     toasts: adw::ToastOverlay,
     sync_body: gtk::Box,
@@ -37,7 +39,6 @@ pub fn open(app: &Rc<App>) {
     dialog.set_child(Some(&toasts));
     let s = Rc::new(Setup {
         app: app.clone(),
-        dialog: dialog.clone(),
         nav: nav.clone(),
         toasts,
         sync_body: gtk::Box::new(gtk::Orientation::Vertical, 18),
@@ -45,6 +46,8 @@ pub fn open(app: &Rc<App>) {
         busy: Cell::new(false),
     });
     nav.add(&s.library_page());
+    // SAFETY: never read back; the value only lives as long as the dialog.
+    unsafe { dialog.set_data("tm-setup", s) };
     let a = app.clone();
     dialog.connect_closed(move |_| {
         if !a.config.borrow().setup_done {
@@ -188,10 +191,7 @@ impl Setup {
 
     fn skip_button(self: &Rc<Self>, label: &str) -> gtk::Button {
         let b = pill(label, false);
-        let d = self.dialog.clone();
-        b.connect_clicked(move |_| {
-            d.close();
-        });
+        b.connect_clicked(close_dialog);
         b
     }
 
@@ -224,8 +224,12 @@ impl Setup {
             config::default_library().display()
         )));
 
-        let (s, e) = (self.clone(), entry.clone());
+        // The button sits inside the entry: it holds the entry weakly.
+        let (s, e) = (Rc::downgrade(self), entry.downgrade());
         choose.connect_clicked(move |_| {
+            let (Some(s), Some(e)) = (s.upgrade(), e.upgrade()) else {
+                return;
+            };
             let dialog = gtk::FileDialog::builder()
                 .title("Choose the library folder")
                 .modal(true)
@@ -248,8 +252,9 @@ impl Setup {
         });
 
         let next = pill("Continue", true);
-        let (s, e) = (self.clone(), entry.clone());
+        let (s, e) = (Rc::downgrade(self), entry.clone());
         next.connect_clicked(move |_| {
+            let Some(s) = s.upgrade() else { return };
             let path = expand_home(e.text().trim());
             if path.as_os_str().is_empty() || !path.is_absolute() {
                 s.toast("Enter the full path of a folder");
@@ -288,11 +293,9 @@ impl Setup {
         }
         body.append(&self.sync_body);
         let next = pill("Continue", true);
-        let s = self.clone();
-        next.connect_clicked(move |_| s.nav.push(&s.downloads_page()));
+        next.connect_clicked(on(self, |s| s.nav.push(&s.downloads_page())));
         let skip = pill("Skip", false);
-        let s = self.clone();
-        skip.connect_clicked(move |_| s.nav.push(&s.downloads_page()));
+        skip.connect_clicked(on(self, |s| s.nav.push(&s.downloads_page())));
         page("syncthing", "Syncthing", &body, &[&skip, &next])
     }
 
@@ -352,8 +355,7 @@ impl Setup {
             .halign(gtk::Align::Start)
             .css_classes(["pill"])
             .build();
-        let s = self.clone();
-        b.connect_clicked(move |_| s.probe());
+        b.connect_clicked(on(self, |s| s.probe()));
         b
     }
 
@@ -447,8 +449,9 @@ impl Setup {
         let box_ = gtk::Box::new(gtk::Orientation::Vertical, 12);
         box_.append(&group);
         box_.append(&connect);
-        let s = self.clone();
+        let s = Rc::downgrade(self);
         connect.connect_clicked(move |_| {
+            let Some(s) = s.upgrade() else { return };
             let Some(base) = syncthing::normalize_address(&address.text(), false) else {
                 s.toast("Enter an address like http://127.0.0.1:8384");
                 return;
@@ -499,8 +502,13 @@ impl Setup {
                     .valign(gtk::Align::Center)
                     .css_classes(["suggested-action"])
                     .build();
-                let (s, ep, id) = (self.clone(), client.endpoint().clone(), o.my_id.clone());
+                let (s, ep, id) = (
+                    Rc::downgrade(self),
+                    client.endpoint().clone(),
+                    o.my_id.clone(),
+                );
                 share.connect_clicked(move |_| {
+                    let Some(s) = s.upgrade() else { return };
                     let (root, ep2, id) = (s.app.store.root(), ep.clone(), id.clone());
                     s.run(
                         "Adding the folder to Syncthing…",
@@ -537,8 +545,9 @@ impl Setup {
                     .label("Use That Folder")
                     .valign(gtk::Align::Center)
                     .build();
-                let (s, path) = (self.clone(), PathBuf::from(&f.path));
+                let (s, path) = (Rc::downgrade(self), PathBuf::from(&f.path));
                 use_it.connect_clicked(move |_| {
+                    let Some(s) = s.upgrade() else { return };
                     if !path.is_dir() {
                         s.toast(&format!(
                             "{} does not exist on this computer yet",
@@ -576,8 +585,9 @@ impl Setup {
             .tooltip_text("Copy device ID")
             .valign(gtk::Align::Center)
             .build();
-        let (s, id) = (self.clone(), o.my_id.clone());
+        let (s, id) = (Rc::downgrade(self), o.my_id.clone());
         copy.connect_clicked(move |btn| {
+            let Some(s) = s.upgrade() else { return };
             btn.clipboard().set_text(&id);
             s.toast("Device ID copied");
         });
@@ -631,8 +641,9 @@ impl Setup {
         if o.folder.is_none() {
             add.set_tooltip_text(Some("Share the folder first"));
         }
-        let (s, ep) = (self.clone(), client.endpoint().clone());
+        let (s, ep) = (Rc::downgrade(self), client.endpoint().clone());
         add.connect_clicked(move |_| {
+            let Some(s) = s.upgrade() else { return };
             let (id, name) = (new_id.text().to_string(), new_name.text().to_string());
             if id.trim().is_empty() {
                 s.toast("Enter the other device's ID");
@@ -680,14 +691,16 @@ impl Setup {
         body.append(&group);
         // Updates itself when the downloader starts, fails or hands over.
         body.append(&downloads::status_label(&self.app));
-        let s = self.clone();
-        row.connect_active_notify(move |r| s.app.set_downloader(r.is_active()));
+        let s = Rc::downgrade(self);
+        row.connect_active_notify(move |r| {
+            if let Some(s) = s.upgrade() {
+                s.app.set_downloader(r.is_active());
+            }
+        });
         let next = pill("Continue", true);
-        let s = self.clone();
-        next.connect_clicked(move |_| s.nav.push(&s.done_page()));
+        next.connect_clicked(on(self, |s| s.nav.push(&s.done_page())));
         let skip = pill("Skip", false);
-        let s = self.clone();
-        skip.connect_clicked(move |_| s.nav.push(&s.done_page()));
+        skip.connect_clicked(on(self, |s| s.nav.push(&s.done_page())));
         page("downloads", "Downloads", &body, &[&skip, &next])
     }
 
@@ -701,10 +714,27 @@ impl Setup {
             self.app.store.root().display()
         )));
         let finish = pill("Start Listening", true);
-        let d = self.dialog.clone();
-        finish.connect_clicked(move |_| {
-            d.close();
-        });
+        finish.connect_clicked(close_dialog);
         page("done", "Done", &body, &[&finish])
+    }
+}
+
+/// A button handler running `f` while the assistant is open.
+fn on(s: &Rc<Setup>, f: impl Fn(&Rc<Setup>) + 'static) -> impl Fn(&gtk::Button) + 'static {
+    let weak: Weak<Setup> = Rc::downgrade(s);
+    move |_| {
+        if let Some(s) = weak.upgrade() {
+            f(&s);
+        }
+    }
+}
+
+/// Closes the dialog the button is in.
+fn close_dialog(b: &gtk::Button) {
+    if let Some(d) = b
+        .ancestor(adw::Dialog::static_type())
+        .and_downcast::<adw::Dialog>()
+    {
+        d.close();
     }
 }

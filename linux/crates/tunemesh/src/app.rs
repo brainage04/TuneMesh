@@ -26,6 +26,31 @@ pub fn cap_search(text: &str) -> String {
 
 pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
+/// The app's colour scheme, style sheets and icons, for the default display
+/// (on application startup).
+pub fn load_style() {
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let display = gdk::Display::default().expect("display");
+    // libadwaita 1.6 moved its named colours to CSS variables; 1.5 still
+    // uses @define-color.
+    let colors = if adw::minor_version() >= 6 {
+        "colors.css"
+    } else {
+        "colors-adw15.css"
+    };
+    for name in [colors, "style.css"] {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_resource(&format!("/io/github/brainage04/TuneMesh/{name}"));
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+    gtk::IconTheme::for_display(&display).add_resource_path("/io/github/brainage04/TuneMesh/icons");
+    gtk::Window::set_default_icon_name(APP_ID);
+}
+
 /// Narrowest window, in pixels: about a tiled half of a 1366-pixel screen.
 const MIN_WIDTH: i32 = 600;
 /// Lowest window, in pixels: fits a 1280 x 800 screen at 200 % scale
@@ -136,6 +161,15 @@ impl App {
             .height_request(MIN_HEIGHT)
             .build();
         window.add_css_class("tunemesh");
+        // Drawn on the CPU (no GPU, or GSK_RENDERER=cairo): see `.tm-software`
+        // in style.css.
+        window.connect_realize(|w| {
+            if w.renderer()
+                .is_some_and(|r| r.is::<gtk::gsk::CairoRenderer>())
+            {
+                w.add_css_class("tm-software");
+            }
+        });
 
         let search_entry = gtk::SearchEntry::builder()
             .max_width_chars(40)
@@ -537,11 +571,23 @@ impl App {
     }
 
     fn set_page(&self, page: Page) {
+        // A page removed while the keyboard focus is inside it is never
+        // freed (GTK 4.22 keeps its scrolled window and the focus chain
+        // below it alive). Take the focus out first and give it to the new
+        // page.
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|f| f.is_ancestor(&self.content));
+        if focus {
+            gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
+        }
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
         page.widget.set_vexpand(true);
         self.content.append(&page.widget);
+        if focus {
+            page.widget.grab_focus();
+        }
         *self.scroller.borrow_mut() = page.scroller;
         trim_heap_soon();
     }
@@ -554,9 +600,22 @@ impl App {
             .as_ref()
             .map(|s| s.vadjustment().value());
         self.set_page(ui::pages::build(&self.rc(), &self.route()));
-        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone()) {
-            // The new page has no size yet; restore once laid out.
-            glib::idle_add_local_once(move || s.vadjustment().set_value(v));
+        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone())
+            && v > 0.0
+        {
+            // The new page has no size yet (a playlist's entries even arrive
+            // from a thread): restore once it is tall enough.
+            let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let h = handler.clone();
+            let id = s.vadjustment().connect_upper_notify(move |adj| {
+                if adj.upper() - adj.page_size() >= v {
+                    adj.set_value(v);
+                    if let Some(id) = h.borrow_mut().take() {
+                        adj.disconnect(id);
+                    }
+                }
+            });
+            *handler.borrow_mut() = Some(id);
         }
     }
 
@@ -652,6 +711,17 @@ impl App {
     pub fn error(&self, context: &str, e: impl std::fmt::Display) {
         eprintln!("tunemesh: {context}: {e}");
         self.toast(&format!("{context}: {e}"));
+    }
+
+    /// The callback for a background store edit: shows `context` and the
+    /// error if it failed.
+    pub fn on_error(&self, context: &'static str) -> impl FnOnce(std::io::Result<()>) + 'static {
+        let me = self.me.clone();
+        move |result| {
+            if let (Err(e), Some(app)) = (result, me.upgrade()) {
+                app.error(context, e);
+            }
+        }
     }
 
     /// Switches to another library folder and remembers it.
@@ -812,4 +882,19 @@ fn trim_heap_soon() {
         // SAFETY: malloc_trim only returns free pages; no allocation is touched.
         unsafe { libc::malloc_trim(0) };
     });
+}
+
+/// What the GUI tests look at.
+#[cfg(test)]
+impl App {
+    /// The root widget of the page shown.
+    pub fn page_widget(&self) -> Option<gtk::Widget> {
+        self.content.first_child()
+    }
+
+    /// The queue panel's widget.
+    pub fn queue_widget(&self) -> gtk::Widget {
+        let q = self.queue_panel.borrow();
+        q.as_ref().expect("queue panel").widget.clone().upcast()
+    }
 }

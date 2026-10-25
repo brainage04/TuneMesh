@@ -12,11 +12,14 @@ mod store;
 mod syncthing;
 mod ui;
 
+#[cfg(test)]
+mod gui_tests;
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use adw::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gio, glib};
 
 use crate::app::{APP_ID, App};
 use crate::config::{Config, expand_home};
@@ -69,29 +72,7 @@ fn main() -> glib::ExitCode {
     let application = adw::Application::builder().application_id(APP_ID).build();
     let instance: Rc<RefCell<Option<Rc<App>>>> = Rc::new(RefCell::new(None));
 
-    application.connect_startup(|_| {
-        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
-        let display = gdk::Display::default().expect("display");
-        // libadwaita 1.6 moved its named colours to CSS variables; 1.5 still
-        // uses @define-color.
-        let colors = if adw::minor_version() >= 6 {
-            "colors.css"
-        } else {
-            "colors-adw15.css"
-        };
-        for name in [colors, "style.css"] {
-            let provider = gtk::CssProvider::new();
-            provider.load_from_resource(&format!("/io/github/brainage04/TuneMesh/{name}"));
-            gtk::style_context_add_provider_for_display(
-                &display,
-                &provider,
-                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
-            );
-        }
-        gtk::IconTheme::for_display(&display)
-            .add_resource_path("/io/github/brainage04/TuneMesh/icons");
-        gtk::Window::set_default_icon_name(APP_ID);
-    });
+    application.connect_startup(|_| app::load_style());
 
     let inst = instance.clone();
     application.connect_activate(move |gtk_app| {
