@@ -1,0 +1,5 @@
+#EXTM3U
+#EXTINF:213,Artist - Title
+../Artist/Album/Title [dQw4w9WgXcQ].opus
+#EXTINF:-1,Missing
+../Gone/Missing.mp3

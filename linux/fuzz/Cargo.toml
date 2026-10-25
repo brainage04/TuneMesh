@@ -1,0 +1,106 @@
+[package]
+name = "tunemesh-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace (nightly only; excluded from `linux/Cargo.toml`).
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+serde_json = "1"
+tunemesh-core = { path = "../crates/tunemesh-core" }
+tunemesh-worker = { path = "../crates/tunemesh-worker" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "playlist_parse"
+path = "fuzz_targets/playlist_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "playlist_edits"
+path = "fuzz_targets/playlist_edits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "json_files"
+path = "fuzz_targets/json_files.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "status_limits"
+path = "fuzz_targets/status_limits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "links"
+path = "fuzz_targets/links.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "netguard"
+path = "fuzz_targets/netguard.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "ffshim_args"
+path = "fuzz_targets/ffshim_args.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sanitize"
+path = "fuzz_targets/sanitize.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "stignore"
+path = "fuzz_targets/stignore.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_limits"
+path = "fuzz_targets/text_limits.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "remote_metadata"
+path = "fuzz_targets/remote_metadata.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "worker_args"
+path = "fuzz_targets/worker_args.rs"
+test = false
+doc = false
+bench = false

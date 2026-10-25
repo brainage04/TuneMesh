@@ -1,0 +1,11 @@
+--library
+/l
+--work-dir=/w
+--max-items
+2
+--max-file-size
+1.5G
+--max-duration
+90m
+--poll-seconds
+5

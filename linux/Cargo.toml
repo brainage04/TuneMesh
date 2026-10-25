@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/tunemesh-core", "crates/tunemesh", "crates/tunemesh-worker"]
+# cargo-fuzz targets: their own workspace, built with nightly (fuzz/README.md).
+exclude = ["fuzz"]
 
 [workspace.package]
 version = "0.1.0"
