@@ -2,9 +2,18 @@
   description = "TuneMesh: a Syncthing-backed personal music player and its download worker";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/c5c4a43b0e8056328ec4529f735cabdb8f1942bb";
+  # Only for the `nightly` dev shell (fuzzing, Miri, sanitizers).
+  inputs.rust-overlay = {
+    url = "github:oxalica/rust-overlay";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
 
   outputs =
-    { self, nixpkgs }:
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+    }:
     let
       system = "x86_64-linux";
       pkgs = nixpkgs.legacyPackages.${system};
@@ -195,23 +204,42 @@
         };
       };
 
-      devShells.${system}.default = pkgs.mkShell {
-        inputsFrom = [
-          tunemesh
-          tunemesh-worker
-        ];
-        packages = with pkgs; [
-          cargo
-          rustc
-          clippy
-          rustfmt
-          rust-analyzer
-          yt-dlp
-          ffmpeg
-        ];
-        shellHook = ''
-          export XDG_DATA_DIRS="${pkgs.adwaita-icon-theme}/share:${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:$XDG_DATA_DIRS"
-        '';
+      devShells.${system} = {
+        default = pkgs.mkShell {
+          inputsFrom = [
+            tunemesh
+            tunemesh-worker
+          ];
+          packages = with pkgs; [
+            cargo
+            rustc
+            clippy
+            rustfmt
+            rust-analyzer
+            yt-dlp
+            ffmpeg
+            cargo-deny
+            cargo-mutants
+          ];
+          shellHook = ''
+            export XDG_DATA_DIRS="${pkgs.adwaita-icon-theme}/share:${pkgs.gtk4}/share/gsettings-schemas/${pkgs.gtk4.name}:$XDG_DATA_DIRS"
+          '';
+        };
+
+        # Nightly Rust for the checks that need it: cargo-fuzz (linux/fuzz),
+        # Miri and AddressSanitizer runs. Pinned to one dated nightly.
+        nightly = pkgs.mkShell {
+          packages = [
+            ((rust-overlay.lib.mkRustBin { } pkgs).nightly."2026-10-20".default.override {
+              extensions = [
+                "miri"
+                "rust-src"
+              ];
+            })
+            pkgs.cargo-fuzz
+            pkgs.ffmpeg
+          ];
+        };
       };
 
       nixosModules.worker =
