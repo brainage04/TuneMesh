@@ -265,3 +265,61 @@ filesystem is read-only except the library and the work directory, and
 `IPAddressDeny` blocks private ranges for the whole service, with exceptions
 for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
 `allowedAddresses` (systemd cannot restrict these to one port).
+
+## Development checks
+
+Besides `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test`, CI runs these on `tunemesh-core` and `tunemesh-worker`. The
+nightly ones use the flake's `nightly` dev shell (a pinned nightly Rust with
+Miri, plus cargo-fuzz). Run them from the repository root:
+
+```sh
+# RustSec advisories, licences, duplicate crates, sources (linux/deny.toml)
+nix develop -c bash -c 'cd linux && cargo deny check'
+
+# Miri: undefined behaviour in the pure logic
+nix develop .#nightly -c bash -c 'cd linux && cargo miri test -p tunemesh-core --lib'
+
+# AddressSanitizer and LeakSanitizer over the core and worker tests
+nix develop .#nightly -c bash -c 'cd linux &&
+  RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address \
+  cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
+    -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
+    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
+
+# Every fuzz target for 60 s (CI), or one target for longer
+nix develop .#nightly -c linux/fuzz/smoke.sh 60
+nix develop .#nightly -c bash -c 'cd linux/fuzz && cargo fuzz run -O playlist_parse -- -max_total_time=900'
+
+# Mutation testing (slow): tests that would not notice a changed line
+nix develop -c bash -c 'cd linux && cargo mutants -p tunemesh-core -f src/limits.rs -f src/playlist.rs'
+```
+
+Tests that use the file system or child processes are marked
+`#[cfg_attr(miri, ignore = "...")]`; every other new core test runs under
+Miri as well. The two tests skipped under AddressSanitizer check time and
+memory bounds, which the sanitizer's overhead breaks.
+
+The fuzz targets (`linux/fuzz/fuzz_targets/`, a separate Cargo workspace)
+cover everything the core and the worker parse from the synced folder or
+the network:
+
+| Target | Input |
+| --- | --- |
+| `playlist_parse` | A playlist file: limits, and written entries read back the same |
+| `playlist_edits` | Like, unlike, append, remove and move, against a plain list |
+| `json_files` | Request, status and `worker.json` files |
+| `status_limits` | Status files the worker writes stay under 1 MiB |
+| `links` | Request input: classification, Spotify and YouTube links |
+| `netguard` | The worker's address and URL checks, against `IpAddr::is_global` |
+| `ffshim_args` | The ffmpeg and ffprobe shim's argument filter, read as ffmpeg reads it |
+| `sanitize` | File and playlist names |
+| `stignore` | `.stignore` upkeep |
+| `text_limits` | Text cutting and clipping, cover headers, search |
+| `remote_metadata` | Spotify embed pages, yt-dlp JSON and progress lines |
+| `worker_args` | The worker's command line |
+
+A crash leaves its input in `linux/fuzz/artifacts/<target>/`; `cargo fuzz run
+-O <target> <file>` replays it. After the fix, add the input as
+`linux/fuzz/corpus/<target>/regression-<what>` (the corpus is replayed on
+every run) next to a unit test.
