@@ -4,21 +4,6 @@
 //! at a time, and reports progress in `<root>/.tunemesh/status/`. See
 //! `--help` for the options.
 
-mod child;
-mod config;
-mod ffshim;
-mod http;
-mod job;
-mod leader;
-mod netguard;
-mod proxy;
-mod rundir;
-mod selftest;
-mod signals;
-mod spotify;
-mod tools;
-mod ytdlp;
-
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::ExitCode;
@@ -26,14 +11,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tunemesh_core::request::{self, Request, RequestState, Status};
-
-use crate::config::{Args, Parsed, USAGE, VERSION};
-use crate::job::Ctx;
+use tunemesh_worker::config::{self, Args, Parsed, USAGE, VERSION};
+use tunemesh_worker::job::{self, Ctx};
+use tunemesh_worker::{ffshim, http, leader, proxy, rundir, selftest, signals, tools};
 
 macro_rules! log {
     ($($arg:tt)*) => { eprintln!($($arg)*) };
 }
-pub(crate) use log;
 
 /// How often statuses are checked for requests cancelled while no worker
 /// was watching.

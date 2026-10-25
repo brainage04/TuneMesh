@@ -118,7 +118,7 @@ impl Net {
         Self { addr, prefix }
     }
 
-    fn new(addr: IpAddr, prefix: u8) -> Self {
+    pub fn new(addr: IpAddr, prefix: u8) -> Self {
         let addr = canonical(addr);
         let (min, max) = if addr.is_ipv4() {
             (MIN_PREFIX_V4, 32)
@@ -216,7 +216,7 @@ fn interface_networks() -> Vec<Net> {
 /// Normalises IPv6 addresses that reach an IPv4 address (IPv4-mapped
 /// `::ffff:0:0/96`, NAT64 `64:ff9b::/96`, SIIT `::ffff:0:0:0/96`, 6to4
 /// `2002::/16`) to that address, so they compare equal to it.
-fn canonical(ip: IpAddr) -> IpAddr {
+pub fn canonical(ip: IpAddr) -> IpAddr {
     match ip {
         IpAddr::V6(v6) => {
             let s = v6.segments();
@@ -241,7 +241,7 @@ const RTF_GATEWAY: u32 = 0x2;
 
 /// On-link networks from `/proc/net/route`: routes without a gateway,
 /// other than on `lo`.
-fn routes_v4(table: &str) -> Vec<Net> {
+pub fn routes_v4(table: &str) -> Vec<Net> {
     let mut out = Vec::new();
     for line in table.lines().skip(1) {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -267,7 +267,7 @@ fn routes_v4(table: &str) -> Vec<Net> {
 
 /// On-link networks from `/proc/net/ipv6_route`: routes without a next hop,
 /// other than on `lo`.
-fn routes_v6(table: &str) -> Vec<Net> {
+pub fn routes_v6(table: &str) -> Vec<Net> {
     let mut out = Vec::new();
     for line in table.lines() {
         let f: Vec<&str> = line.split_whitespace().collect();
@@ -355,7 +355,7 @@ pub fn resolve_checked_with(
 }
 
 /// The host and port of an `http(s)://` URL; IPv6 literals lose their brackets.
-fn host_port(url: &str) -> Option<(String, u16)> {
+pub fn host_port(url: &str) -> Option<(String, u16)> {
     let (scheme, rest) = url.split_once("://")?;
     let default_port = match scheme.to_ascii_lowercase().as_str() {
         "http" => 80,
