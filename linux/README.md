@@ -29,6 +29,52 @@ cargo run -p tunemesh
 cargo run -p tunemesh-worker -- --library ~/Music/TuneMesh   # work dir: ~/.cache/tunemesh/worker
 ```
 
+### Desktop GUI checks
+
+Two tests in `crates/tunemesh/src/gui_tests` drive the real window from inside
+the test process. Both need a display, so they are `#[ignore]`d in a plain
+`cargo test`; `crates/tunemesh/scripts/gui-checks.sh` runs them in a private
+headless sway with a session bus of its own (no portals, none of the
+desktop's GTK settings):
+
+```sh
+# from the repository root
+nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks    # or: stalls, all
+```
+
+- `leaks` (debug build, about a minute, also in CI): opens every page three
+  times on a small generated library, with the keyboard focus inside it, and
+  checks through weak references that each page's widgets, list models and
+  items are freed once it is left; likewise the queue panel's rows, the
+  now-playing bar and the setup assistant. A failure lists what is still
+  alive by type and page.
+- `stalls` (release build, about 5 minutes plus the build): generates the
+  hostile library of `docs/library-format.md` "Limits" (1.5 GB under
+  `/var/tmp`), walks every page and action three times and prints the longest
+  main-loop stall each caused. It fails when an action exceeds
+  `TUNEMESH_STALL_BUDGET_MS` (100 ms) in more than one round (a single late
+  round is the machine, not the app). The script draws with
+  `GSK_RENDERER=cairo`, so stalls include software rendering; in perf
+  profiles most of the 40-50 ms on the grid pages is cairo drawing.
+  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuses a library made with
+  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`,
+  `TUNEMESH_STALL_ROUNDS=1` shortens the walk and `TUNEMESH_STALL_REPORT=<file>`
+  writes the table to a file.
+
+On a shared machine run them through `heavy` (`--mem 4G` for `leaks`, `--mem
+8G` for `stalls`). To profile a slow action, record with perf enabled only
+around it:
+
+```sh
+mkfifo /var/tmp/ctl /var/tmp/ack
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -g --call-graph dwarf \
+  --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
+TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+  linux/crates/tunemesh/scripts/gui-checks.sh stalls
+```
+
 ## The app
 
 ```sh

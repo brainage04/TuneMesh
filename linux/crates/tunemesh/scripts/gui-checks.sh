@@ -4,7 +4,7 @@
 #
 #   leaks   every page, panel and dialog is freed once closed (debug build)
 #   stalls  the hostile-library walk stays under the main-loop stall budget
-#           (release build; generates a 1.2 GB library under /var/tmp)
+#           (release build; generates a 1.5 GB library under /var/tmp)
 #   all     both (the default)
 #
 # Run from the dev shell, with sway and dbus on PATH:
@@ -12,8 +12,9 @@
 #     linux/crates/tunemesh/scripts/gui-checks.sh [leaks|stalls|all]
 #
 # Extra arguments go to `cargo test`. Environment: TUNEMESH_STALL_BUDGET_MS
-# (default 100), TUNEMESH_HOSTILE_LIBRARY (reuse a generated library),
-# TUNEMESH_STALL_REPORT (also write the stall table to this file).
+# (default 100), TUNEMESH_STALL_ROUNDS (default 3), TUNEMESH_HOSTILE_LIBRARY
+# (reuse a generated library), TUNEMESH_STALL_REPORT (also write the stall
+# table to this file), GSK_RENDERER (default cairo).
 set -euo pipefail
 
 what=${1:-all}
@@ -58,15 +59,32 @@ done
 }
 export WAYLAND_DISPLAY=wayland-1 GDK_BACKEND=wayland
 unset DISPLAY
-# None of the desktop's GTK settings or portals.
-export XDG_CONFIG_HOME=$run/config GDK_DEBUG=no-portals
+# None of the desktop's GTK settings or portals. Software rendering with
+# cairo: the headless compositor has no GPU, and GL through llvmpipe spends
+# most of a frame copying pixels.
+export XDG_CONFIG_HOME=$run/config GDK_DEBUG=no-portals GSK_RENDERER=${GSK_RENDERER:-cairo}
+# A session bus that starts no services (no portals, no keyring).
+cat >"$run/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$run</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+bus() { dbus-run-session --config-file="$run/bus.conf" -- "$@"; }
 
 cd "$linux"
 if [ "$what" != stalls ]; then
-	dbus-run-session -- cargo test -p tunemesh "$@" -- --ignored --exact \
+	bus cargo test -p tunemesh "$@" -- --ignored --exact \
 		gui_tests::leaks::closed_pages_are_freed
 fi
 if [ "$what" != leaks ]; then
-	dbus-run-session -- cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \
+	bus cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \
 		gui_tests::stalls::hostile_walk_stays_responsive
 fi
