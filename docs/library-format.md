@@ -196,6 +196,9 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - `warnings` (optional, default empty): strings the user should see although
   the request went on, for example "Imported the first 100 tracks: ..." when
   a source was cut short. Final `message`s repeat them.
+- The worker keeps every status file within the 1 MiB file limit (see
+  "Limits"): when one would be larger, it drops entries from the end of
+  `tracks`, then `failures`, then `warnings` until it fits.
 - After writing a final state the worker deletes the request file.
 - Clients show a request with no status file yet as "Waiting for the
   downloader". Clients may delete status files in a final state ("Clear").
