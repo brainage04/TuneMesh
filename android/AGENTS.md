@@ -47,7 +47,8 @@ it exists, apply as well.
     -Pandroid.testInstrumentationRunnerArguments.hostileScale=small
   ```
 
-  Measurements go to logcat (tag `HostileLibrary`) and the test output.
+  Measurements go to logcat (tag `HostileLibrary`) and the test output. The generator, `hostile-library/`, is shared
+  with the macrobenchmarks (see "Development checks").
 - Signing: `android/.signing/` (git-ignored) holds the app's key, described in `app/build.gradle.kts`. Never
   delete, regenerate or replace it. Without it builds use the machine's debug key and cannot update an install
   signed with the app's key.
@@ -82,3 +83,22 @@ Run these from this directory before committing (they also run in CI):
   `@get:Rule val leaks = DetectLeaksAfterTestSuccess()`: a test fails when an activity, view model, service or view it
   destroyed is still reachable afterwards (the heap analysis is in the test output). `ActivityLeakTest` opens every tab,
   an album and the share sheet, and recreates them as a rotation does. Give a new instrumented test class the same rule.
+- Stalls: `baselineprofile/` holds the macrobenchmarks (`HostileLibraryBenchmark`: start, search, the 40,000-track
+  album, a 250,000-entry playlist, Downloads, scrolling Your Library) and the baseline profile generator. Both run on
+  the hostile library, which `HostileSetup` generates once in the emulator's `/sdcard/Music/TuneMesh` (it refuses a
+  folder holding anything else), against the minified `benchmarkRelease` build. Emulator only, through `heavy`; the
+  first run generates the library and scans it, about 45 minutes in all:
+
+  ```sh
+  ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :baselineprofile:connectedBenchmarkReleaseAndroidTest \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
+    -Pandroid.testInstrumentationRunnerArguments.class=io.github.brainage04.tunemesh.baselineprofile.HostileLibraryBenchmark
+  ```
+
+  Results (JSON) and a Perfetto trace per iteration land in
+  `baselineprofile/build/outputs/connected_android_test_additional_output/`; open a trace at ui.perfetto.dev.
+  `MainThreadStallMetric` reports the longest main-thread stall (`mainThreadStallMaxMs`), the same without the time
+  the main thread waits for its render thread (`mainThreadWorkMaxMs`: on the emulator's software renderer a frame
+  can wait 250 ms there, which no app change removes) and the longest frame. Budget: no stall of the app's own
+  work over 100 ms; profile anything over 50 ms. `./gradlew --no-daemon :app:generateBaselineProfile` regenerates
+  `app/src/main/generated/baselineProfiles/` after UI changes; commit the result.
