@@ -136,7 +136,7 @@ object M3u8 {
         return segments.takeIf { it.isNotEmpty() }?.joinToString("/")
     }
 
-    /** Whether `value[from..]` is non-empty and none of its `/`-separated components is empty, `.` or `..`. */
+    /** Whether [value] from index [from] on is non-empty and none of its `/`-separated components is empty, `.` or `..`. */
     private fun isClean(value: String, from: Int): Boolean {
         if (from >= value.length) return false
         var start = from

@@ -56,3 +56,12 @@ it exists, apply as well.
   `./gradlew -q :app:printVersion` prints both.
 - F-Droid/Obtainium metadata lives in `fastlane/metadata/android/en-US/`. Add
   `changelogs/<versionCode>.txt` for every release.
+
+## Development checks
+
+Run these from this directory before committing (they also run in CI):
+
+- Formatting: ktfmt (kotlinlang style, 140 columns) through Spotless, for every `.kt` and `.gradle.kts` file.
+  `./gradlew spotlessCheck` fails on a difference, `./gradlew spotlessApply` rewrites the files. ktfmt was chosen
+  over ktlint because it is a pretty-printer: its output is deterministic and it always fixes what it reports,
+  while ktlint leaves long lines to fix by hand and wraps some of them mid-expression.
