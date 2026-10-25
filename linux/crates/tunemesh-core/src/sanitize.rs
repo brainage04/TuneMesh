@@ -13,7 +13,8 @@ fn replace_chars(s: &str) -> String {
         .collect()
 }
 
-/// Cuts `s` to at most `max` bytes on a character boundary.
+/// Cuts `s` to at most `max` bytes on a character boundary, dropping white
+/// space the cut leaves at the end (sanitising again would trim it).
 fn truncate_bytes(s: &mut String, max: usize) {
     if s.len() > max {
         let mut end = max;
@@ -21,6 +22,7 @@ fn truncate_bytes(s: &mut String, max: usize) {
             end -= 1;
         }
         s.truncate(end);
+        s.truncate(s.trim_end().len());
     }
 }
 
@@ -55,13 +57,15 @@ pub fn file_name(stem: &str, suffix: &str) -> String {
     if stem.starts_with('.') {
         stem.replace_range(0..1, "_");
     }
-    if stem.is_empty() {
-        stem.push('_');
-    }
     truncate_bytes(
         &mut stem,
         MAX_COMPONENT_BYTES.saturating_sub(suffix.len()).max(1),
     );
+    // Empty, or cut to nothing (a multi-byte first character and a suffix
+    // that leaves one byte).
+    if stem.is_empty() {
+        stem.push('_');
+    }
     let mut name = stem + &suffix;
     truncate_bytes(&mut name, MAX_COMPONENT_BYTES);
     fix_ends(&mut name);
@@ -113,5 +117,30 @@ mod tests {
             let once = component(s);
             assert_eq!(component(&once), once);
         }
+    }
+
+    /// Found by `fuzz/fuzz_targets/sanitize.rs`: a cut that ended in white
+    /// space left it at the end of a playlist name (`"x    "`), which the
+    /// next rename sanitised to a different name.
+    #[test]
+    fn cuts_never_end_in_white_space() {
+        let name = format!("{}    \u{3000}tail", "x".repeat(110));
+        let p = crate::playlist::sanitize_name(&name);
+        assert_eq!(p, "x".repeat(110));
+        assert_eq!(crate::playlist::sanitize_name(&p), p);
+        let c = component(&format!("{} \u{3000}tail", "y".repeat(118)));
+        assert_eq!(c, "y".repeat(118));
+        assert_eq!(component(&c), c);
+    }
+
+    /// Found by `fuzz/fuzz_targets/sanitize.rs`: a suffix that leaves one
+    /// byte cut a multi-byte stem to nothing; with a blank suffix the name
+    /// was empty.
+    #[test]
+    fn file_names_are_never_empty() {
+        let suffix = " ".repeat(MAX_COMPONENT_BYTES);
+        assert_eq!(file_name("ઇx", &suffix), "_");
+        let suffix = format!("{}.opus", "a".repeat(MAX_COMPONENT_BYTES - 6));
+        assert_eq!(file_name("ઇx", &suffix), format!("_{suffix}"));
     }
 }
