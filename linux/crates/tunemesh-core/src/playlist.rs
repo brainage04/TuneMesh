@@ -54,8 +54,10 @@ const NO_DURATION: u32 = OUTSIDE - 1;
 /// `start..start + path_len`, directly followed by its `#EXTINF` label
 /// (`label_len` bytes, 0 for none). 12 bytes per entry; both lengths fit
 /// in 16 bits because readers refuse longer lines and cut labels to
-/// `MAX_LABEL_BYTES` (`push` enforces it for every entry).
+/// `MAX_LABEL_BYTES` (`push` enforces it for every entry). `repr(C)` keeps
+/// the declared field order, so the layout (and its 12 bytes) is fixed.
 #[derive(Debug, Clone, Copy)]
+#[repr(C)]
 struct Span {
     start: u32,
     path_len: u16,
@@ -441,10 +443,19 @@ pub fn parse(text: &str, root: &Path) -> io::Result<Entries> {
     read_entries(text.as_bytes(), root)
 }
 
-/// `label` cut to `MAX_LABEL_BYTES` at a character boundary, line breaks
-/// replaced.
+/// Parses a playlist file's bytes exactly as `Playlist::read` does (invalid
+/// UTF-8 replaced).
+pub fn parse_bytes(bytes: &[u8], root: &Path) -> io::Result<Entries> {
+    read_entries(bytes, root)
+}
+
+/// `label` as readers read it back (`parse_extinf`): line breaks replaced,
+/// white space trimmed, cut to `MAX_LABEL_BYTES` at a character boundary.
 fn clean_label(label: &str) -> String {
-    limits::cut(label, MAX_LABEL_BYTES).replace(['\n', '\r'], " ")
+    let label = label.replace(['\n', '\r'], " ");
+    limits::cut(label.trim(), MAX_LABEL_BYTES)
+        .trim_end()
+        .to_owned()
 }
 
 /// Serialises entries: `#EXTM3U`, then `#EXTINF` + path per entry, LF endings.
@@ -761,6 +772,7 @@ mod tests {
     /// Audit finding 1: a synced symlink must not turn a secret file into
     /// playlist entries, and writing must replace the link, not the target.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn symlinked_playlists_are_refused() {
         let outside = tempfile::tempdir().unwrap();
         let secret = outside.path().join("id_ed25519");
@@ -871,6 +883,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn file_operations() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -909,6 +922,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn names_never_differ_only_in_case() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -980,9 +994,106 @@ mod tests {
         );
     }
 
+    /// cargo-mutants: `contains`, `is_empty`, equality, out-of-range moves,
+    /// `parse_bytes`, the duration cap and the error type had no test that
+    /// noticed them changed.
+    #[test]
+    fn entries_api_edges() {
+        let root = Path::new("/r");
+        let mut p = Playlist::new("x");
+        assert!(p.entries.is_empty());
+        p.append(["a", "b"]);
+        assert!(!p.entries.is_empty());
+        assert!(p.contains("a") && !p.contains("c"));
+        p.move_entry(2, 0);
+        p.move_entry(0, 2);
+        assert_eq!(
+            p.entries.iter().map(PlaylistEntry::key).collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        let outside = parse("/elsewhere/x.mp3\n", root).unwrap();
+        let q = Playlist {
+            name: "y".to_owned(),
+            entries: outside,
+        };
+        assert!(!q.contains("/elsewhere/x.mp3"));
+
+        assert_eq!(
+            parse("../a\n", root).unwrap(),
+            parse("../a\n", root).unwrap()
+        );
+        assert_ne!(
+            parse("../a\n", root).unwrap(),
+            parse("../b\n", root).unwrap()
+        );
+        assert_ne!(
+            parse("../a\n", root).unwrap(),
+            parse("../a\n../a\n", root).unwrap()
+        );
+
+        let lossy = parse_bytes(b"../a/\xff.mp3\n", root).unwrap();
+        assert_eq!(lossy.get(0).unwrap().track(), Some("a/\u{fffd}.mp3"));
+        let capped = parse("#EXTINF:99999999999,L\n../a.mp3\n", root).unwrap();
+        assert_eq!(
+            capped.get(0).unwrap().duration(),
+            Some(u64::from(NO_DURATION - 1))
+        );
+
+        let e = too_large("x");
+        assert!(is_too_large(&e));
+        assert_eq!(
+            e.to_string(),
+            "the playlist is too large (x), so it is left unchanged"
+        );
+        assert!(!is_too_large(&io::Error::from(io::ErrorKind::NotFound)));
+        assert!(!is_too_large(&io::Error::other("x")));
+    }
+
+    /// Dropping most entries compacts the text, labels included.
+    /// cargo-mutants: no test noticed compaction switched off.
+    #[test]
+    fn removals_reclaim_their_text() {
+        let text: String = (0..1_000)
+            .map(|i| format!("#EXTINF:{i},Label {i}\n../A/{i:04}.mp3\n"))
+            .collect();
+        let mut p = Playlist {
+            name: "x".to_owned(),
+            entries: parse(&text, Path::new("/r")).unwrap(),
+        };
+        let full = p.entries.text.len();
+        p.remove_positions(&(0..900).collect::<Vec<_>>());
+        assert_eq!(p.entries.text.len(), p.entries.live_bytes());
+        assert!(p.entries.text.len() < full / 5);
+        let first = p.entries.get(0).unwrap();
+        assert_eq!(
+            (first.track(), first.label(), first.duration()),
+            (Some("A/0900.mp3"), Some("Label 900"), Some(900))
+        );
+        // 51 of 100 (all the same size): fewer than half are left.
+        let last: Vec<String> = (949..1_000).map(|i| format!("A/{i:04}.mp3")).collect();
+        p.unlike_all(last.iter().map(String::as_str));
+        assert_eq!(p.entries.len(), 49);
+        assert_eq!(p.entries.text.len(), p.entries.live_bytes());
+        assert_eq!(p.entries.get(48).unwrap().label(), Some("Label 948"));
+    }
+
+    /// A playlist of exactly 32 MiB is read; one byte more is too large.
+    /// cargo-mutants: only files far over the limit were tested.
+    #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
+    fn playlist_size_limit_is_inclusive() {
+        let line = format!("#{}\n", "x".repeat(MAX_LINE_BYTES - 2));
+        let exact = line.repeat(MAX_PLAYLIST_BYTES as usize / line.len());
+        assert_eq!(exact.len() as u64, MAX_PLAYLIST_BYTES);
+        assert!(parse(&exact, Path::new("/r")).is_ok());
+        let over = format!("{exact}\n");
+        assert!(is_too_large(&parse(&over, Path::new("/r")).unwrap_err()));
+    }
+
     /// `summary` agrees with `parse` on count and first resolvable tracks,
     /// and follows `read`'s rules.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn summary_matches_parse() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1036,6 +1147,7 @@ mod tests {
     /// Over any of the three limits, a playlist is refused by `read`,
     /// `summary` and the writers, and its file is left byte for byte.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn too_large_playlists_are_refused_and_never_rewritten() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1088,6 +1200,24 @@ mod tests {
             fs::read_to_string(root.join("Playlists/Many.m3u8")).unwrap(),
             entries_ok
         );
+        // cargo-mutants: exactly at the entry limit is still written, and a
+        // text over 32 MiB is not.
+        let at_limit = Playlist {
+            name: "AtLimit".to_owned(),
+            entries: Playlist::read(root, "Many").unwrap().entries,
+        };
+        at_limit.write(root, &|_| None).unwrap();
+        let mut big = Playlist::new("Big");
+        let tracks: Vec<String> = (0..40_000).map(|i| format!("A/{i}.mp3")).collect();
+        big.append(tracks.iter().map(String::as_str));
+        let long_label = |_: &str| {
+            Some(TrackInfo {
+                duration_secs: None,
+                label: "l".repeat(MAX_LABEL_BYTES),
+            })
+        };
+        assert!(is_too_large(&big.write(root, &long_label).unwrap_err()));
+        assert!(!root.join("Playlists/Big.m3u8").exists());
         // Labels are cut so a written line always fits.
         let mut q = Playlist::create(root, "Labels").unwrap();
         q.append(["c.mp3"]);
@@ -1099,6 +1229,52 @@ mod tests {
         })
         .unwrap();
         assert!(Playlist::read(root, "Labels").is_ok());
+    }
+
+    /// Found by `fuzz/fuzz_targets/playlist_parse.rs`: a label with
+    /// surrounding white space (the fallback title of `\t1`) was written as
+    /// is and read back trimmed, so writing what was read changed the file.
+    #[test]
+    fn written_labels_read_back_unchanged() {
+        let root = Path::new("/r");
+        let e = parse("\t1\n#EXTINF:3, a\rb \n../x.mp3\n", root).unwrap();
+        let out = serialize(&e, &|_| None);
+        assert_eq!(
+            out,
+            "#EXTM3U\n#EXTINF:-1,1\n../Playlists/\t1\n#EXTINF:3,a b\n../x.mp3\n"
+        );
+        assert_eq!(serialize(&parse(&out, root).unwrap(), &|_| None), out);
+        // Android's Jazzer run: a fallback title ending in U+000B.
+        let e = parse("ĂP\u{b}\n", root).unwrap();
+        assert_eq!(
+            serialize(&e, &|_| None),
+            "#EXTM3U\n#EXTINF:-1,ĂP\n../Playlists/ĂP\u{b}\n"
+        );
+        // Trimmed before the cut, as readers do.
+        let mut p = Playlist::new("x");
+        p.append(["a.mp3"]);
+        let padded = |_: &str| {
+            Some(TrackInfo {
+                duration_secs: None,
+                label: format!("{}x ", " ".repeat(2 * MAX_LABEL_BYTES)),
+            })
+        };
+        assert_eq!(
+            serialize(&p.entries, &padded),
+            "#EXTM3U\n#EXTINF:-1,x\n../a.mp3\n"
+        );
+    }
+
+    /// `Span` is `repr(C)`: 12 bytes, fields in declared order.
+    #[test]
+    fn span_layout_is_fixed() {
+        use std::mem::{align_of, offset_of, size_of};
+        assert_eq!(size_of::<Span>(), 12);
+        assert_eq!(align_of::<Span>(), 4);
+        assert_eq!(offset_of!(Span, start), 0);
+        assert_eq!(offset_of!(Span, path_len), 4);
+        assert_eq!(offset_of!(Span, label_len), 6);
+        assert_eq!(offset_of!(Span, meta), 8);
     }
 
     /// Entries stay small: a track line keeps only its path, and `line()`
@@ -1135,6 +1311,7 @@ mod tests {
     /// like any other, so what is written can be read again; a label read
     /// from the file is cut as well.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn long_entries_without_metadata_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1158,6 +1335,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn lists_at_most_max_playlists() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1174,6 +1352,7 @@ mod tests {
     /// Bulk edits are linear: removing or unliking 100,000 entries is quick
     /// (they were quadratic: 11 s for 100,000 unlikes).
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn bulk_edits_are_linear() {
         let tracks: Vec<String> = (0..100_000).map(|i| format!("A/B/{i}.mp3")).collect();
         let mut p = Playlist::new(LIKED_SONGS);
@@ -1203,7 +1382,9 @@ mod tests {
         let mut rng = fastrand::Rng::with_seed(3);
         let mut p = Playlist::new("x");
         let mut model: Vec<String> = Vec::new();
-        for step in 0..2_000 {
+        // Miri is far slower: fewer steps keep it to minutes.
+        let steps = if cfg!(miri) { 150 } else { 2_000 };
+        for step in 0..steps {
             let t = format!("A/{}.mp3", rng.u32(..300));
             match rng.u8(..6) {
                 0 => {
