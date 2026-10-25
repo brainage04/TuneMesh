@@ -93,7 +93,15 @@ storage cannot hold symlinks.
   deleted from the UI.
 - Writers write atomically: write `.~tunemesh-<random>.tmp` in the same
   directory, then rename it over the target. Never edit in place.
-- Readers ignore `*.sync-conflict-*` copies.
+- Edits on one machine: a writer re-reads the playlist, changes it and writes
+  it while holding an exclusive `flock` on an open handle of the
+  `Playlists/` directory. The atomic rename replaces the playlist file, so a
+  lock on the file itself would not serialise anything. Creating, renaming,
+  deleting and merging playlists take the same lock, so the desktop app and
+  a worker on the same machine never lose each other's edit. Android has a
+  single process and serialises its edits inside it.
+- Readers ignore `*.sync-conflict-*` copies when listing and reading; the
+  apps merge playlist conflict copies back (see "Playlist conflict copies").
 - Writers never write an entry whose path contains LF or CR: adding such a
   track to a playlist skips that entry and adds the rest.
 - Size limits, in all implementations: a playlist larger than 32 MiB, with
@@ -105,6 +113,80 @@ storage cannot hold symlinks.
   a full playlist fails), cut `#EXTINF` labels to 1 KiB and trim Unicode
   White_Space from both ends of a label, as readers do, so rewriting a
   playlist does not change it.
+
+### Playlist conflict copies
+
+When two devices change one playlist before Syncthing has synced either
+change, Syncthing keeps one version as `Playlists/<Name>.m3u8` (the winner)
+and renames the other to
+`Playlists/<Name>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<ID7>.m3u8` (the copy),
+where `<ID7>` is the first 7 characters of the Syncthing device ID of the
+device whose version lost. The apps merge each copy into the playlist and
+delete it, so neither device's edit is lost, and a removal (an unlike, a
+removed entry) is never undone by the other device's unchanged entries.
+
+Base. Each device keeps, per library and per playlist, a base: the
+playlist's entries as they were before this device's own edits since it
+last saw another device's version. When a device edits a playlist (re-read,
+change, write, under the lock above), it first sets the base to the version
+it re-read, unless that version is exactly the one this device wrote last
+(then the base stays, so several own edits in a row keep the version they
+started from). After a merge the base is the merged playlist. Bases are
+never inside `<root>`, never synced and not backed up: the desktop app and
+the worker keep them in `$XDG_STATE_HOME/tunemesh/playlist-base/` (default
+`~/.local/state/tunemesh/playlist-base/`), shared by the app and a worker of
+the same user and changed under the lock; Android keeps them in app-private
+storage (`filesDir/playlist-base/`). A base follows the playlist limits (a
+too-large playlist has none); renaming a playlist moves its base, deleting
+one removes it.
+
+Who merges. The device whose short ID a copy names merges it as soon as it
+sees it, if it knows its own Syncthing device ID (the desktop app asks its
+Syncthing). Any other device, and a device that does not know its ID
+(Android, the worker), merges a copy once the copy's modification time is at
+least 10 minutes in the past. Several devices may merge the same copy; with
+the same base they write the same bytes, and Syncthing does not turn two
+identical files into a conflict.
+
+How. A copy is merged only if its name is exactly as above and the playlist
+`<Name>.m3u8` exists; the winner and the copy are read with the playlist
+rules, and a too-large or unreadable one leaves both files alone. Copies of
+one playlist are merged one at a time, in byte order of their names, each
+into the result of the one before. An entry's key is its root-relative track
+path, or its line as written when it points outside the root. With base B,
+winner W and copy C, and b, w and c the number of entries with key k in
+each:
+
+1. The result has r = max(0, w + c - b) entries with key k: an entry one
+   side removed stays removed even where the other side kept it, and what
+   either side added is kept. Without a base (none kept yet, or unreadable)
+   r = max(w, c): removals made on another device before this device's
+   first edit of the playlist can come back.
+2. Order: the result starts from W's entries, or from C's when C changed the
+   order and W did not. A side changed the order when its keys in order,
+   leaving out keys whose count differs from B's, differ from B's keys in
+   order leaving out the same keys. Without a base it starts from W. Of that
+   side's entries the first r with each key are kept, in order, and the rest
+   dropped.
+3. Keys still short of r get entries from the other side, in its order:
+   going through it, its j-th entry with key k is matched to the j-th kept
+   entry with key k, if there is one, and becomes the anchor. An unmatched
+   entry whose key is still short of r is inserted directly after the anchor
+   (and after entries inserted there before it), or at the top while there
+   is no anchor yet, and becomes the anchor.
+4. Every entry keeps the `#EXTINF` duration and label of the file it came
+   from. The result is written in the writers' format (`#EXTM3U`, then per
+   entry `#EXTINF:<seconds, or -1>,<label>` and its line, LF endings; an
+   entry without a label gets its file name's title, see "Audio files")
+   without looking anything up in the library, so every device writes the
+   same bytes. Liked Songs is merged the same way: a like at the top of the
+   copy stays at the top.
+5. The merged playlist is written only if it is within the limits, then the
+   copy is deleted, and the base set. A merge that would be too large
+   leaves both files as they are.
+
+Shared test cases (base, winner, copy and the expected bytes) are in
+`docs/test-vectors/playlist-merge/`; every implementation runs them.
 
 ## Download requests
 
@@ -134,6 +216,11 @@ A client asks for a download by creating
 - `playlistFromSource`: when true and `playlist` is null, the worker creates or
   appends to a playlist named after the source playlist/album title.
 - `requestedBy`: device name, for display only.
+- `requestedAt`: RFC 3339 UTC time the request was made, for display only.
+
+The JSON `id` of a request or status file is ignored: the file name decides.
+Clients do not write a request whose `input` (after trimming) is longer than
+8 KiB; they tell the user it is too long instead (see "Limits").
 
 A client cancels a request by deleting its request file. The worker treats a
 missing request file as cancellation between tracks.
@@ -183,6 +270,7 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - `state`: `queued` → `downloading` → `done` | `failed` | `cancelled`. A
   worker that stops mid-request (shutdown, or another device took over)
   sets `queued` again and keeps the request file; the next worker resumes it.
+  A status file with any other `state` is invalid and skipped.
 - `title`: resolved title of the item or source playlist, once known.
 - `progress`: 0–1 for the whole request, or null.
 - `message`: human-readable error or note (for example "2 of 30 tracks
@@ -203,7 +291,17 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
   `tracks`, then `failures`, then `warnings` until it fits.
 - After writing a final state the worker deletes the request file.
 - Clients show a request with no status file yet as "Waiting for the
-  downloader". Clients may delete status files in a final state ("Clear").
+  downloader". Clients may delete status files in a final state ("Clear");
+  "Clear" deletes every status file in a final state whose request file is
+  gone, not only the listed ones, reading one status file at a time.
+- Clients listing downloads keep only what the list shows of each file (see
+  "Limits"): of a status's `tracks` only their number. A client that needs
+  the paths, to play a finished request, reads that one status file again.
+- Every 60 seconds the worker looks at the status files whose request file
+  is gone, one file at a time and reading only their `state`: one that is
+  not final is set to `cancelled` (its request was cancelled while no worker
+  was watching); a final one whose id is not among the newest 200 status ids
+  is deleted, since no client lists it (see "Limits").
 
 ## One downloader per library
 
@@ -311,7 +409,10 @@ library, as a service or as a child process of the desktop app. It:
     the options yt-dlp's postprocessing uses (no other file-taking options
     such as `-filter_script` or `-progress`), so a download that is really
     a playlist or script referring to other files (HLS, ffconcat, DASH)
-    fails instead of copying local files into the library.
+    fails instead of copying local files into the library. A `-vf` filter
+    graph may name only the filters `crop`, `scale`, `pad`, `format` and
+    `setsar` (filters such as `movie` or `subtitles` open files of their
+    own).
 
 ## Limits
 
@@ -321,18 +422,31 @@ all implementations (Rust: `tunemesh_core::limits`; Android: `Limits`).
 Real libraries stay far below them. Sizes are bytes of UTF-8; text is cut
 at a character boundary.
 
+Every field of a synced JSON file is listed here; fields a reader does not
+know are ignored and not kept. `version`, `pid`, `itemsDone` and
+`itemsTotal` are integers from 0 to 2^32 - 1 and `progress` a number;
+another value makes the file invalid (read as described in the first row).
+
 | Input | Limit | Past the limit |
 | --- | --- | --- |
 | A request, status or `worker.json` file | 1 MiB | Not read: a request is reported as an invalid request file, a status file is skipped, `worker.json` counts as absent |
-| `<root>/.stignore` | 1 MiB | Left unchanged (not read or rewritten) |
-| Request `input`; request `playlist` | 8 KiB; 1 KiB | The worker fails the request ("too long"); readers cut them (also a status file's `input`) |
+| `<root>/.stignore` | 1 MiB | Left unchanged (not read or rewritten); the reader logs it |
+| Request `input` | 8 KiB | Clients do not write it; the worker fails the request ("too long"); readers cut it and keep only that it was too long |
+| Request `playlist` | 1 KiB | Cut |
+| Request `requestedBy`; `worker.json` `device` | 1 KiB | Cut |
+| Request `requestedAt`; status `updatedAt`; `worker.json` `heartbeatAt` | 64 B | Cut |
+| The JSON `id` of a request or status file | 64 B | Cut; ignored (the file name is the id) |
+| `worker.json` `machine`, `instance` and `workerVersion` | 64 B each | Cut |
+| Request `playlistFromSource` | a boolean | Otherwise invalid |
 | Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
 | Request and status files clients read | the newest 200 ids (a request with its status file counts once) | Older ones are counted but not read or shown |
+| Status files the worker reads | one at a time: the `state` of those whose request file is gone | Final ones past the newest 200 status ids are deleted (see "Download status") |
+| Status `input` | 8 KiB | Cut |
 | Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |
 | Status `message` | 4 KiB | Cut |
 | Status `warnings` | 50 entries | The rest is dropped |
 | Status `failures` | 200 entries | The rest is dropped (`itemsDone` and `message` still count all) |
-| Status `tracks` | 10,000 paths | The rest is dropped |
+| Status `tracks` | 10,000 paths of 4 KiB each | The rest is dropped and longer paths are cut. Clients listing downloads keep only the number of paths (at most 10,000); a client reading one status to play it keeps the paths |
 | A playlist file | 32 MiB, 250,000 entries, lines of 32 KiB (without the line ending) | Too large: listed as too large, not opened for playing or editing, never rewritten or truncated (see "Playlists") |
 | Playlists listed | 1,000 (by name, case-insensitively), Liked Songs not counted | The others are not listed; Liked Songs is always shown |
 | An `#EXTINF` label | 1 KiB | Cut when read and when written |

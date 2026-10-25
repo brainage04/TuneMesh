@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:100,X - A
+../X/Album/a.mp3
+#EXTINF:200,X - B
+../X/Album/b.mp3
+#EXTINF:-1,Z - Y
+../Z/Singles/y [0123456789a].m4a

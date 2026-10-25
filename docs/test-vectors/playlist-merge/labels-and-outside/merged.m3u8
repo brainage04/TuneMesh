@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:5,Other label
+../../outside.mp3
+#EXTINF:7,Spaced
+../X/Album/b.mp3
+#EXTINF:-1,song
+../X/Album/song [abc123].opus
