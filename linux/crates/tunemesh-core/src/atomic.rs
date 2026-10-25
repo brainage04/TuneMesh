@@ -42,6 +42,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn write_replaces_and_leaves_no_temp_files() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sub/file.txt");

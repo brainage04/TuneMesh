@@ -201,83 +201,119 @@ fn option_name(arg: &OsStr) -> Option<&[u8]> {
     Some(b.split(|c| *c == b':').next().unwrap_or(b))
 }
 
-/// Checks every argument and returns how many positional arguments
-/// (outputs, ffprobe's input) there are:
+/// One argument as ffmpeg and ffprobe read their command line.
+#[derive(Debug, Clone, Copy)]
+enum Arg<'a> {
+    /// An option as given (`-c:v`), its name (`c`) and its value, if it
+    /// takes one.
+    Option {
+        name: &'static str,
+        arg: &'a OsString,
+        value: Option<&'a OsString>,
+    },
+    /// An output (ffmpeg), the input (ffprobe), or `-`.
+    Positional(&'a OsString),
+}
+
+impl Arg<'_> {
+    fn is_input_option(&self) -> bool {
+        matches!(self, Arg::Option { name: "i", .. })
+    }
+
+    fn push_to(&self, out: &mut Vec<OsString>) {
+        match *self {
+            Arg::Option { arg, value, .. } => {
+                out.extend([Some(arg), value].into_iter().flatten().cloned())
+            }
+            Arg::Positional(a) => out.push(a.clone()),
+        }
+    }
+}
+
+/// Splits `args` the way ffmpeg does (an option takes the next argument as
+/// its value whatever it looks like; `-i:x` is `-i`) and checks them:
 /// unknown options are refused, every value of a file-taking option and
 /// every positional argument (outputs, ffprobe's input) must be a `file:`
 /// path inside `root`.
-fn check_args(args: &[OsString], root: &Path) -> Result<usize, String> {
-    let mut positional = 0;
+fn check_args<'a>(args: &'a [OsString], root: &Path) -> Result<Vec<Arg<'a>>, String> {
+    let mut out = Vec::with_capacity(args.len());
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match option_name(a) {
             Some(name) => {
                 let known = OPTIONS.iter().find(|(o, _)| o.as_bytes() == name);
-                let Some((name, takes_value)) = known else {
+                let Some(&(name, takes_value)) = known else {
                     return Err(format!(
                         "refusing option {}: not one yt-dlp's postprocessing uses",
                         a.to_string_lossy()
                     ));
                 };
-                if *takes_value {
+                let value = if takes_value {
                     let value = it
                         .next()
                         .ok_or_else(|| format!("-{name} without a value"))?;
-                    if FILE_OPTIONS.contains(name) {
+                    if FILE_OPTIONS.contains(&name) {
                         check_input(value, root)?;
                     }
-                }
+                    Some(value)
+                } else {
+                    None
+                };
+                out.push(Arg::Option {
+                    name,
+                    arg: a,
+                    value,
+                });
             }
-            None if a == "-" => positional += 1,
             None => {
-                check_input(a, root)?;
-                positional += 1;
+                if a != "-" {
+                    check_input(a, root)?;
+                }
+                out.push(Arg::Positional(a));
             }
         }
     }
-    Ok(positional)
+    Ok(out)
 }
 
 /// The real program's arguments, after `check_args`. ffmpeg gets the
-/// confinement options right before every `-i`, so they come after any
-/// option the caller gave for that input. ffprobe gets the caller's
-/// options, then the confinement options, then `-i <input>` (its input is
-/// the last argument). A call with no input (`-version`) passes unchanged.
+/// confinement options right before every input option (`-i`, `-i:x`), so
+/// they come after any option the caller gave for that input. ffprobe gets
+/// the caller's options, then the confinement options, then `-i <input>`
+/// (its input is the last argument). A call with no input (`-version`)
+/// passes unchanged.
 pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
-    let positional = check_args(args, root)?;
+    let parsed = check_args(args, root)?;
+    let positional = parsed
+        .iter()
+        .filter(|a| matches!(a, Arg::Positional(_)))
+        .count();
     let mut out: Vec<OsString> = Vec::with_capacity(args.len() + 8);
     if program == "ffprobe" {
-        if args.iter().any(|a| a == "-i") {
+        if parsed.iter().any(Arg::is_input_option) {
             return Err("ffprobe takes its input as the last argument, not -i".to_owned());
         }
         if positional == 0 {
             return Ok(args.to_vec()); // -version
         }
-        let (input, rest) = args.split_last().ok_or("no arguments")?;
-        if positional > 1
-            || option_name(input).is_some()
-            || rest
-                .last()
-                .and_then(|o| option_name(o))
-                .is_some_and(|name| OPTIONS.iter().any(|(o, v)| *v && o.as_bytes() == name))
-        {
+        let Some((Arg::Positional(input), rest)) = parsed.split_last() else {
+            return Err("ffprobe takes exactly one input, as the last argument".to_owned());
+        };
+        if positional > 1 {
             return Err("ffprobe takes exactly one input, as the last argument".to_owned());
         }
-        out.extend(rest.iter().cloned());
+        for a in rest {
+            a.push_to(&mut out);
+        }
         out.extend(CONFINE.iter().map(OsString::from));
         out.push("-i".into());
-        out.push(input.clone());
+        out.push((*input).clone());
     } else {
-        let mut it = args.iter();
-        while let Some(a) = it.next() {
-            if a == "-i" {
-                let input = it.next().ok_or("-i without a value")?;
+        for a in &parsed {
+            if a.is_input_option() {
                 out.extend(CONFINE.iter().map(OsString::from));
-                out.push(a.clone());
-                out.push(input.clone());
-            } else {
-                out.push(a.clone());
             }
+            a.push_to(&mut out);
         }
     }
     Ok(out)
@@ -469,6 +505,35 @@ mod tests {
         }
         assert!(rewrite("ffprobe", &os(&["-format_whitelist", "hls", &a]), &r).is_err());
         assert!(rewrite("ffprobe", &os(&["-show_streams", "-i", &a]), &r).is_err());
+    }
+
+    /// Found by `fuzz/fuzz_targets/ffshim_args.rs`: ffmpeg reads `-i:x` as
+    /// `-i`, and an option's value is never an option. `-i:x` got no
+    /// confinement (ffprobe passed it through unchanged), and a value
+    /// `-i` made the shim insert the confinement options where they shift
+    /// every argument after them.
+    #[test]
+    fn inputs_are_found_as_ffmpeg_reads_them() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path().canonicalize().unwrap();
+        let a = format!("file:{}/a.m3u8", r.display());
+        let out = format!("file:{}/b.m4a", r.display());
+        assert!(rewrite("ffprobe", &os(&["-i:0", &a]), &r).is_err());
+        assert!(rewrite("ffprobe", &os(&["-show_streams", "-i:v", &a]), &r).is_err());
+        assert_eq!(
+            rewrite("ffmpeg", &os(&["-i:0", &a, &out]), &r).unwrap(),
+            os(&[
+                "-format_whitelist",
+                FORMATS,
+                "-protocol_whitelist",
+                "file",
+                "-i:0",
+                &a,
+                &out
+            ])
+        );
+        let value = os(&["-metadata", "-i", &out]);
+        assert_eq!(rewrite("ffmpeg", &value, &r).unwrap(), value);
     }
 
     /// Review item 3: after an upgrade `/proc/self/exe` ends in

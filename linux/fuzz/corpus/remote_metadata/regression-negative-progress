@@ -1,0 +1,3 @@
+TMPROG -7 8 NA
+TMPROG NaN 8 NA
+TMPROG inf inf NA

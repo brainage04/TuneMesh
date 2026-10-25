@@ -1,4 +1,4 @@
-# TuneMesh for Fedora and openSUSE. Builds offline from two sources: the
+# TuneMesh for Fedora. Builds offline from two sources: the
 # source tarball and a cargo-vendor tarball of the crates.io dependencies
 # (packaging/rpm/build-rpm.sh makes both, and so does the release workflow).
 # Library dependencies come from rpm's automatic soname requirements.

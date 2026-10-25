@@ -1,5 +1,8 @@
 package io.github.brainage04.tunemesh.library
 
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -7,14 +10,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
-import java.io.IOException
-import java.nio.file.Files
 
 /** Mirrors the tests of tunemesh-core's `stignore.rs`. */
 class StignoreTest {
-    @get:Rule
-    val temp = TemporaryFolder()
+    @get:Rule val temp = TemporaryFolder()
 
     @Test
     fun createsAppendsAndKeepsUserLines() {

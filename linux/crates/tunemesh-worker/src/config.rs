@@ -141,7 +141,11 @@ pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed> {
             "--max-pending" => a.limits.max_pending = value()?.parse().context("--max-pending")?,
             "--min-free-space" => a.limits.min_free_space = parse_size(&value()?)?,
             "--poll-seconds" => {
-                let n: f64 = value()?.parse().context("--poll-seconds")?;
+                let v = value()?;
+                let n: f64 = v.parse().context("--poll-seconds")?;
+                if n.is_nan() {
+                    bail!("--poll-seconds: {v:?} is not a number");
+                }
                 a.poll = Duration::from_secs_f64(n.clamp(0.1, 3600.0));
             }
             "--self-test" => a.self_test = true,
@@ -365,6 +369,20 @@ mod tests {
         assert_eq!(parse_size("800K").unwrap(), 800 * 1024);
         assert_eq!(parse_size("12345").unwrap(), 12345);
         assert!(parse_size("5X").is_err());
+    }
+
+    /// Found by `fuzz/fuzz_targets/worker_args.rs`: `--poll-seconds NaN`
+    /// panicked (NaN survives `clamp`).
+    #[test]
+    fn poll_interval_is_a_number() {
+        assert!(args("--poll-seconds NaN").is_err());
+        let poll = |s: &str| match args(&format!("--poll-seconds {s}")).unwrap() {
+            Parsed::Run(a) => a.poll,
+            _ => panic!(),
+        };
+        assert_eq!(poll("inf"), Duration::from_secs(3600));
+        assert_eq!(poll("-inf"), Duration::from_millis(100));
+        assert_eq!(poll("5"), Duration::from_secs(5));
     }
 
     #[test]

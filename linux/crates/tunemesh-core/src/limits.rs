@@ -111,7 +111,8 @@ pub fn clip_line(s: &str) -> Cow<'_, str> {
 }
 
 /// For display: a message of at most `MAX_TEXT_CHARS` characters and
-/// `MAX_TEXT_LINES` lines, ending in `…` when cut.
+/// `MAX_TEXT_LINES` lines, ending in `…` when text was cut (blank lines
+/// past the limit are dropped without one).
 pub fn clip_text(s: &str) -> Cow<'_, str> {
     // Byte index where the text must end, if it is too long.
     let by_chars = s
@@ -122,13 +123,14 @@ pub fn clip_text(s: &str) -> Cow<'_, str> {
     let by_lines = s
         .match_indices('\n')
         .nth(MAX_TEXT_LINES - 1)
-        .map(|(i, _)| i)
-        .filter(|&i| !s[i..].trim().is_empty());
+        .map(|(i, _)| i);
     match by_chars.into_iter().chain(by_lines).min() {
         None => Cow::Borrowed(s),
         Some(end) => {
             let mut out = s[..end].trim_end().to_owned();
-            out.push('…');
+            if !s[end..].trim().is_empty() {
+                out.push('…');
+            }
             Cow::Owned(out)
         }
     }
@@ -242,6 +244,14 @@ mod tests {
             clip_text(&"z".repeat(MAX_TEXT_CHARS)),
             Cow::Borrowed(_)
         ));
+        // Found by `fuzz/fuzz_targets/text_limits.rs`: blank lines past the
+        // limit were all kept (a 2,000-line label for a synced message).
+        let blank = format!("a{}", "\n".repeat(1_500));
+        assert_eq!(clip_text(&blank), "a");
+        let full = format!("{}\n \n \n", "l\n".repeat(MAX_TEXT_LINES));
+        let t = clip_text(&full);
+        assert_eq!(t.lines().count(), MAX_TEXT_LINES);
+        assert!(!t.ends_with('…'));
     }
 
     /// Headers as image libraries write them.
@@ -274,5 +284,85 @@ mod tests {
         assert!(!cover_ok(&jpeg(20_000, 20_000)));
         assert!(!cover_ok(&jpeg(0, 10)));
         assert!(!cover_ok(b"garbage"));
+    }
+
+    /// The numbers are the contract's ("Limits"), shared with Android.
+    /// cargo-mutants: no test noticed a changed constant.
+    #[test]
+    fn limits_match_the_contract() {
+        assert_eq!(MAX_JSON_BYTES, 1 << 20);
+        assert_eq!(MAX_STIGNORE_BYTES, 1 << 20);
+        assert_eq!(MAX_INPUT_BYTES, 8 << 10);
+        assert_eq!(MAX_REQUEST_PLAYLIST_BYTES, 1 << 10);
+        assert_eq!(MAX_LISTED_REQUESTS, 200);
+        assert_eq!(MAX_TEXT_BYTES, 1 << 10);
+        assert_eq!(MAX_MESSAGE_BYTES, 4 << 10);
+        assert_eq!(
+            (MAX_WARNINGS, MAX_FAILURES, MAX_STATUS_TRACKS),
+            (50, 200, 10_000)
+        );
+        assert_eq!(MAX_PLAYLIST_BYTES, 32 << 20);
+        assert_eq!(MAX_PLAYLIST_ENTRIES, 250_000);
+        assert_eq!(MAX_PLAYLIST_LINE_BYTES, 32 << 10);
+        assert_eq!((MAX_PLAYLISTS, MAX_LABEL_BYTES), (1_000, 1 << 10));
+        assert_eq!((MAX_TAG_TEXT_BYTES, MAX_ARTISTS), (1 << 10, 32));
+        assert_eq!(MAX_TAG_ITEM_BYTES, 16 << 20);
+        assert_eq!((MAX_COVER_BYTES, MAX_COVER_SIDE), (16 << 20, 5_000));
+        assert_eq!(
+            (MAX_DEPTH, MAX_DIR_ENTRIES, MAX_TRACKS),
+            (64, 100_000, 250_000)
+        );
+        assert_eq!(
+            (MAX_LINE_CHARS, MAX_TEXT_CHARS, MAX_TEXT_LINES),
+            (300, 2_000, 20)
+        );
+        assert_eq!(MAX_SHOWN_ROWS, 200);
+    }
+
+    /// Every header layout `image_size` reads, and look-alikes it must
+    /// not. cargo-mutants: the WebP VP8 and VP8L branches, 24-bit VP8X
+    /// sizes and the JPEG marker walk were untested.
+    #[test]
+    fn reads_every_header_layout() {
+        let riff = |chunk: &[u8], rest: &[u8]| {
+            let mut v = b"RIFF\0\0\0\0WEBP".to_vec();
+            v.extend_from_slice(chunk);
+            v.extend_from_slice(b"\0\0\0\0");
+            v.extend_from_slice(rest);
+            v
+        };
+        // VP8 (lossy): frame tag, start code, 14-bit sizes plus scale bits.
+        let vp8 = riff(b"VP8 ", b"\0\0\0\x9d\x01\x2a\x80\x42\xe0\xc1");
+        assert_eq!(image_size(&vp8), Some((640, 480)));
+        let bad_start = riff(b"VP8 ", b"\0\0\0\x9d\x01\x2b\x80\x42\xe0\xc1");
+        assert_eq!(image_size(&bad_start), None);
+        // VP8L (lossless): signature, then width - 1 and height - 1 in 14 bits.
+        let bits: u32 = 799 | (599 << 14);
+        let mut rest = vec![0x2f];
+        rest.extend_from_slice(&bits.to_le_bytes());
+        assert_eq!(image_size(&riff(b"VP8L", &rest)), Some((800, 600)));
+        rest[0] = 0x2e;
+        assert_eq!(image_size(&riff(b"VP8L", &rest)), None);
+        // VP8X: 24-bit sizes.
+        let vp8x = riff(b"VP8X", b"\0\0\0\0\x00\x00\x01\x02\x00\x00");
+        assert_eq!(image_size(&vp8x), Some((65_537, 3)));
+        // Look-alikes: another RIFF format with a WebP-like chunk, IHDR
+        // without the PNG signature.
+        let avi = b"RIFF\0\0\0\0AVI VP8X\0\0\0\0\0\0\0\0\x01\0\0\x01\0\0";
+        assert_eq!(image_size(avi), None);
+        assert_eq!(image_size(b"not a png!!!IHDR\0\0\0\x01\0\0\0\x01"), None);
+
+        // JPEG: junk between segments, fill bytes, standalone markers, a
+        // Huffman table (0xc4, not a frame) before a progressive frame.
+        let mut j = b"\xff\xd8".to_vec();
+        j.extend_from_slice(b"\xff\xc4\x00\x08\x00\x01\x02\x03\x04\x05");
+        j.extend_from_slice(b"\x00\x00\xff\xff\xd0\xff\x01");
+        j.extend_from_slice(b"\xff\xc2\x00\x11\x08\x01\xe0\x02\x80\x03");
+        assert_eq!(image_size(&j), Some((640, 480)));
+        // Scan data or the end before any frame: no size.
+        let sos = b"\xff\xd8\xff\xda\x00\x02\xff\xc0\x00\x11\x08\x01\xe0\x02\x80\x03";
+        assert_eq!(image_size(sos), None);
+        let eoi = b"\xff\xd8\xff\xd9\xff\xc0\x00\x11\x08\x01\xe0\x02\x80\x03";
+        assert_eq!(image_size(eoi), None);
     }
 }

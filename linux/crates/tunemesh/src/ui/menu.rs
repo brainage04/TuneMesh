@@ -78,10 +78,11 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
             );
             let (a, p) = (app.clone(), paths.clone());
             action(&group, &action_name, move || {
-                match a.store.add_to_playlist(&name, &p) {
-                    Ok(()) => a.toast(&format!("Added to {name}")),
-                    Err(e) => a.error("Could not add to playlist", e),
-                }
+                let (a2, n) = (a.clone(), name.clone());
+                a.store.add_to_playlist(&name, &p, move |r| match r {
+                    Ok(()) => a2.toast(&format!("Added to {n}")),
+                    Err(e) => a2.error("Could not add to playlist", e),
+                });
             });
         }
         sub.append_section(None, &lists);
@@ -90,13 +91,19 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         action(&group, "new-playlist", move || {
             let (a2, p2) = (a.clone(), p.clone());
             ask_text(&a, "New playlist", "", "Create", move |name| {
-                match a2.store.create_playlist(&name) {
-                    Ok(name) => match a2.store.add_to_playlist(&name, &p2) {
-                        Ok(()) => a2.toast(&format!("Added to {name}")),
-                        Err(e) => a2.error("Could not add to playlist", e),
-                    },
-                    Err(e) => a2.error("Could not create playlist", e),
-                }
+                let a3 = a2.clone();
+                let p3 = p2.clone();
+                a2.store.create_playlist(&name, move |r| match r {
+                    Ok(name) => {
+                        let a4 = a3.clone();
+                        a3.store
+                            .add_to_playlist(&name.clone(), &p3, move |r| match r {
+                                Ok(()) => a4.toast(&format!("Added to {name}")),
+                                Err(e) => a4.error("Could not add to playlist", e),
+                            });
+                    }
+                    Err(e) => a3.error("Could not create playlist", e),
+                });
             });
         });
 
@@ -106,9 +113,8 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
             section.append(Some("Remove from this playlist"), Some("tm.remove-pl"));
             let (a, n, pos) = (app.clone(), name.clone(), positions.clone());
             action(&group, "remove-pl", move || {
-                if let Err(e) = a.store.remove_from_playlist(&n, &pos) {
-                    a.error("Could not update playlist", e);
-                }
+                a.store
+                    .remove_from_playlist(&n, &pos, a.on_error("Could not update playlist"));
             });
         }
         let all_liked = paths.iter().all(|p| app.store.is_liked(p));
@@ -117,18 +123,13 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         } else {
             section.append(Some("Save to Liked Songs"), Some("tm.like"));
         }
-        let (a, p) = (app.clone(), paths.clone());
-        action(&group, "like", move || {
-            if let Err(e) = a.store.set_liked_paths(&p, true) {
-                a.error("Could not update Liked Songs", e);
-            }
-        });
-        let (a, p) = (app.clone(), paths.clone());
-        action(&group, "unlike", move || {
-            if let Err(e) = a.store.set_liked_paths(&p, false) {
-                a.error("Could not update Liked Songs", e);
-            }
-        });
+        for (id, like) in [("like", true), ("unlike", false)] {
+            let (a, p) = (app.clone(), paths.clone());
+            action(&group, id, move || {
+                a.store
+                    .set_liked_paths(&p, like, a.on_error("Could not update Liked Songs"));
+            });
+        }
         menu.append_section(None, &section);
 
         if paths.len() == 1 {
@@ -165,9 +166,8 @@ pub fn popup(app: &Rc<App>, parent: &gtk::Widget, x: f64, y: f64, ctx: MenuCtx) 
         menu.append_section(None, &section);
         let (a, n, pos) = (app.clone(), name.clone(), positions.clone());
         action(&group, "remove-pl", move || {
-            if let Err(e) = a.store.remove_from_playlist(&n, &pos) {
-                a.error("Could not update playlist", e);
-            }
+            a.store
+                .remove_from_playlist(&n, &pos, a.on_error("Could not update playlist"));
         });
     }
 

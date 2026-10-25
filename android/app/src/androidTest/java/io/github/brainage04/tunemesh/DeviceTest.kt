@@ -18,6 +18,15 @@ import io.github.brainage04.tunemesh.data.LibraryScanner
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlaybackService
 import io.github.brainage04.tunemesh.playback.QueueItems
+import java.io.File
+import java.io.FileNotFoundException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.util.Locale
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import kotlin.math.sin
+import leakcanary.DetectLeaksAfterTestSuccess
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -25,32 +34,38 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
-import java.io.FileNotFoundException
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import kotlin.math.sin
 
 /**
- * Exercises the real MediaMetadataRetriever scan, the real ExoPlayer media session and the cover provider on a
- * device. The app's library root points at a scratch directory in the app cache for the duration of each test.
+ * Exercises the real MediaMetadataRetriever scan, the real ExoPlayer media session and the cover provider on a device. The app's library
+ * root points at a scratch directory in the app cache for the duration of each test.
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceTest {
+    @get:Rule val leaks = DetectLeaksAfterTestSuccess()
+
     private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
-    private val app get() = context.applicationContext as TuneMeshApp
+    private val app
+        get() = context.applicationContext as TuneMeshApp
+
     private lateinit var root: File
     private lateinit var outside: File
     private lateinit var previousRoot: File
 
     @Before
     fun setUp() {
-        root = File(context.cacheDir, "test-library").apply { deleteRecursively(); mkdirs() }
-        outside = File(context.cacheDir, "test-outside").apply { deleteRecursively(); mkdirs() }
+        root =
+            File(context.cacheDir, "test-library").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+        outside =
+            File(context.cacheDir, "test-outside").apply {
+                deleteRecursively()
+                mkdirs()
+            }
         previousRoot = app.settings.libraryRoot
         app.repository.setLibraryRoot(root.absolutePath)
     }
@@ -93,12 +108,13 @@ class DeviceTest {
     /** "Limits": folders deeper than 64 levels are not scanned; tag fields are cut and artists limited. */
     @Test
     fun scannerFollowsTheFolderAndTagLimits() {
-        val level64 = (1..64).joinToString("/") { "d%02d".format(it) }
+        val level64 = (1..64).joinToString("/") { "d%02d".format(Locale.ROOT, it) }
         File(root, "$level64/ok.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deep", "A", "B", 1))
         File(root, "$level64/d65/too deep.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deeper", "A", "B", 1))
         // Android's ID3 reader returns only the first of NUL-separated values, so the limit is checked with `;`.
         val artists = (1..40).joinToString("; ") { "Artist $it" }
-        File(root, "Huge/Tags/long tag.mp3").apply { parentFile!!.mkdirs() }
+        File(root, "Huge/Tags/long tag.mp3")
+            .apply { parentFile!!.mkdirs() }
             .writeBytes(HostileLibrary.mp3("t".repeat(5000), artists, "a".repeat(5000), 1))
         // MediaMetadataRetriever itself drops a 1 MiB frame; either way nothing longer than the limit is kept.
         File(root, "Huge/Tags/big tag.mp3").writeBytes(HostileLibrary.mp3("t".repeat(1024 * 1024), "A", "a".repeat(1024 * 1024), 1))
@@ -119,7 +135,11 @@ class DeviceTest {
     fun coversFollowTheLimits() {
         val loader = io.github.brainage04.tunemesh.data.CoverLoader(File(context.cacheDir, "test-covers").apply { deleteRecursively() })
         fun track(path: String, bytes: ByteArray): Track {
-            val file = File(root, path).apply { parentFile!!.mkdirs(); writeBytes(bytes) }
+            val file =
+                File(root, path).apply {
+                    parentFile!!.mkdirs()
+                    writeBytes(bytes)
+                }
             return Track.fromTags(path, io.github.brainage04.tunemesh.library.RawTags(), file.length(), file.lastModified())
         }
         val small = track("S/A/small.mp3", HostileLibrary.mp3("s", "S", "A", 1, picture = HostileLibrary.smallJpeg()))
@@ -148,7 +168,10 @@ class DeviceTest {
         Thread.sleep(500)
         assertEquals(tracks.map { it.path }.toSet(), store.likedPaths())
         // Liking inserts at the top: the order of the taps is kept.
-        assertEquals(tracks.reversed().map { it.path }, store.read(io.github.brainage04.tunemesh.library.LibraryFormat.LIKED_SONGS)!!.entries.map { it.path })
+        assertEquals(
+            tracks.reversed().map { it.path },
+            store.read(io.github.brainage04.tunemesh.library.LibraryFormat.LIKED_SONGS)!!.entries.map { it.path },
+        )
     }
 
     /** Audit finding 7: `path` must not reach audio files outside the library. */
@@ -163,18 +186,18 @@ class DeviceTest {
             assertNotNull(it)
             assertTrue(it!!.statSize > 0)
         }
-        for (path in listOf(
-            "../test-outside/Private/Secret.wav",
-            "Artist/../../test-outside/Private/Secret.wav",
-            File(outside, "Private/Secret.wav").absolutePath,
-            "Artist/Album/cover.jpg",
-            "Artist/Album/Missing.wav",
-        )) {
+        for (path in
+            listOf(
+                "../test-outside/Private/Secret.wav",
+                "Artist/../../test-outside/Private/Secret.wav",
+                File(outside, "Private/Secret.wav").absolutePath,
+                "Artist/Album/cover.jpg",
+                "Artist/Album/Missing.wav",
+            )) {
             try {
                 context.contentResolver.openFileDescriptor(CoverProvider.uri(context, path), "r")?.close()
                 fail("served a cover for $path")
-            } catch (_: FileNotFoundException) {
-            }
+            } catch (_: FileNotFoundException) {}
         }
     }
 
@@ -184,21 +207,22 @@ class DeviceTest {
         val path = "Artist/Album/Song [abc].wav"
         val file = File(root, path)
         writeWav(file, seconds = 1)
-        val spoofed = MediaItem.Builder()
-            .setMediaId("q1|Somewhere/Else.mp3")
-            .setUri(Uri.fromFile(file))
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle("Spoofed")
-                    .setArtworkUri(Uri.parse("file:///sdcard/DCIM/Camera/private.jpg"))
-                    .setArtworkData(byteArrayOf(1, 2, 3), MediaMetadata.PICTURE_TYPE_FRONT_COVER)
-                    .build(),
-            )
-            .build()
+        val spoofed =
+            MediaItem.Builder()
+                .setMediaId("q1|Somewhere/Else.mp3")
+                .setUri(Uri.fromFile(file))
+                .setMediaMetadata(
+                    MediaMetadata.Builder()
+                        .setTitle("Spoofed")
+                        .setArtworkUri(Uri.parse("file:///sdcard/DCIM/Camera/private.jpg"))
+                        .setArtworkData(byteArrayOf(1, 2, 3), MediaMetadata.PICTURE_TYPE_FRONT_COVER)
+                        .build()
+                )
+                .build()
         val resolved = QueueItems.resolve(context, spoofed, root, app.repository::track)!!
         assertEquals("q1|$path", resolved.mediaId)
         assertEquals(Uri.fromFile(File(root, path)), resolved.localConfiguration!!.uri)
-        assertEquals("Song", resolved.mediaMetadata.title.toString())
+        assertEquals("Song", resolved.mediaMetadata.title?.toString())
         assertEquals(CoverProvider.uri(context, path), resolved.mediaMetadata.artworkUri)
         assertNull(resolved.mediaMetadata.artworkData)
 
@@ -214,8 +238,10 @@ class DeviceTest {
         writeWav(File(root, path), seconds = 1)
         val dup = MediaItem.Builder().setMediaId("dup|x").setUri(Uri.fromFile(File(root, path))).build()
         val used = hashSetOf("taken")
-        val ids = listOf(dup, dup, dup, dup.buildUpon().setMediaId("taken|x").build(), dup.buildUpon().setMediaId("fresh|x").build())
-            .map { QueueItems.id(QueueItems.resolve(context, it, root, app.repository::track, used)!!) }
+        val ids =
+            listOf(dup, dup, dup, dup.buildUpon().setMediaId("taken|x").build(), dup.buildUpon().setMediaId("fresh|x").build()).map {
+                QueueItems.id(QueueItems.resolve(context, it, root, app.repository::track, used)!!)
+            }
         assertEquals("dup", ids[0])
         assertEquals("fresh", ids[4])
         assertEquals(ids.size, ids.toSet().size)
@@ -225,17 +251,21 @@ class DeviceTest {
         // Through the real session, as another app's controller would send them.
         val main = Handler(Looper.getMainLooper())
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
-        val controller = MediaController.Builder(context, token).setApplicationLooper(Looper.getMainLooper()).buildAsync().get(10, TimeUnit.SECONDS)
+        val controller =
+            MediaController.Builder(context, token).setApplicationLooper(Looper.getMainLooper()).buildAsync().get(10, TimeUnit.SECONDS)
         try {
             val done = CountDownLatch(1)
             var queued = emptyList<String>()
             main.post {
                 controller.setMediaItems(listOf(dup, dup, dup))
                 controller.addMediaItems(listOf(dup))
-                main.postDelayed({
-                    queued = (0 until controller.mediaItemCount).map { controller.getMediaItemAt(it).mediaId }
-                    done.countDown()
-                }, 1_000)
+                main.postDelayed(
+                    {
+                        queued = (0 until controller.mediaItemCount).map { controller.getMediaItemAt(it).mediaId }
+                        done.countDown()
+                    },
+                    1_000,
+                )
             }
             assertTrue(done.await(10, TimeUnit.SECONDS))
             assertEquals(4, queued.size)
@@ -265,11 +295,13 @@ class DeviceTest {
         val file = File(root, path)
         writeWav(file, seconds = 8)
         val track = Track(path, "Long Tone", "Test Artist", "Test Album", "Test Artist", 1, null, 8_000, file.length(), file.lastModified())
-        val sent = QueueItems.build(context, root, track).let { item ->
-            item.buildUpon()
-                .setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(Uri.parse("https://tracker.example/pixel.png")).build())
-                .build()
-        }
+        val sent =
+            QueueItems.build(context, root, track).let { item ->
+                item
+                    .buildUpon()
+                    .setMediaMetadata(item.mediaMetadata.buildUpon().setArtworkUri(Uri.parse("https://tracker.example/pixel.png")).build())
+                    .build()
+            }
         val main = Handler(Looper.getMainLooper())
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).setApplicationLooper(Looper.getMainLooper()).buildAsync()
@@ -277,11 +309,13 @@ class DeviceTest {
         try {
             val playing = CountDownLatch(1)
             main.post {
-                controller.addListener(object : Player.Listener {
-                    override fun onIsPlayingChanged(isPlaying: Boolean) {
-                        if (isPlaying) playing.countDown()
+                controller.addListener(
+                    object : Player.Listener {
+                        override fun onIsPlayingChanged(isPlaying: Boolean) {
+                            if (isPlaying) playing.countDown()
+                        }
                     }
-                })
+                )
                 controller.setMediaItem(sent)
                 controller.prepare()
                 controller.play()

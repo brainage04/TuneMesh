@@ -1,18 +1,17 @@
 package io.github.brainage04.tunemesh.library
 
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
-import java.io.IOException
-import java.nio.file.Files
 
 class LimitsTest {
-    @get:Rule
-    val temp = TemporaryFolder()
+    @get:Rule val temp = TemporaryFolder()
 
     @Test
     fun boundedReadsRefuseLargerFilesAndSymlinksWhenAsked() {
@@ -53,12 +52,13 @@ class LimitsTest {
     @Test
     fun tagsAreCutAndArtistsLimited() {
         val artists = (1..40).joinToString("; ") { "Artist $it" }
-        val track = Track.fromTags(
-            "Huge/Tags/big tag.mp3",
-            RawTags(title = "t".repeat(1024 * 1024), artist = artists, album = "a".repeat(2000)),
-            1,
-            1,
-        )
+        val track =
+            Track.fromTags(
+                "Huge/Tags/big tag.mp3",
+                RawTags(title = "t".repeat(1024 * 1024), artist = artists, album = "a".repeat(2000)),
+                1,
+                1,
+            )
         assertEquals(Limits.MAX_TAG_TEXT_BYTES, track.title.length)
         assertEquals(Limits.MAX_TAG_TEXT_BYTES, track.album.length)
         assertEquals((1..32).joinToString("; ") { "Artist $it" }, track.artist)

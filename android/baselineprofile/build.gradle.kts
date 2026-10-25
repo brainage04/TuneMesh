@@ -11,11 +11,15 @@ android {
         minSdk = 30
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        // The emulator is the only test device (see AGENTS.md): its numbers compare builds, not phones.
         testInstrumentationRunnerArguments["androidx.benchmark.suppressErrors"] = "EMULATOR"
     }
 
     targetProjectPath = ":app"
     experimentalProperties["android.experimental.self-instrumenting"] = true
+
+    // The hostile-library generator, shared with the app's instrumented tests.
+    sourceSets.getByName("main").kotlin.srcDir("../hostile-library/java")
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

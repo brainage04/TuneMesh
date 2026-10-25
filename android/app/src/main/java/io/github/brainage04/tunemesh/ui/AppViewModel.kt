@@ -12,21 +12,34 @@ import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlayerConnection
 
-enum class Tab(val label: String) { Home("Home"), Search("Search"), Library("Your Library"), Downloads("Downloads") }
+enum class Tab(val label: String) {
+    Home("Home"),
+    Search("Search"),
+    Library("Your Library"),
+    Downloads("Downloads"),
+}
 
 sealed interface Screen {
     data object Root : Screen
+
     data class AlbumDetail(val key: String) : Screen
+
     data class ArtistDetail(val name: String) : Screen
+
     data class PlaylistDetail(val name: String) : Screen
+
     data object Settings : Screen
 }
 
 sealed interface DialogRequest {
     data class AddToPlaylist(val tracks: List<Track>) : DialogRequest
+
     data class CreatePlaylist(val tracks: List<Track>) : DialogRequest
+
     data class RenamePlaylist(val name: String) : DialogRequest
+
     data class DeletePlaylist(val name: String) : DialogRequest
+
     data class DeleteTrack(val track: Track) : DialogRequest
 }
 
@@ -39,11 +52,12 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
 
     var tab by mutableStateOf(Tab.Home)
         private set
+
     private val stacks: Map<Tab, SnapshotStateList<Screen>> = Tab.entries.associateWith { mutableStateListOf<Screen>(Screen.Root) }
     var playerExpanded by mutableStateOf(false)
     var queueOpen by mutableStateOf(false)
     var dialog by mutableStateOf<DialogRequest?>(null)
-    var playingFrom by mutableStateOf(app.getSharedPreferences("playback", 0).getString(KEY_CONTEXT, "") ?: "")
+    var playingFrom by mutableStateOf(app.getSharedPreferences("playback", 0).getString(KEY_CONTEXT, "").orEmpty())
         private set
 
     /** The onboarding's Syncthing step: shown once after All files access is granted, reopened from Settings. */
@@ -59,7 +73,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         syncthingSetupOpen = false
     }
 
-    val screen: Screen get() = stacks.getValue(tab).last()
+    val screen: Screen
+        get() = stacks.getValue(tab).last()
 
     fun select(target: Tab) {
         if (target == tab) {
@@ -87,7 +102,8 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         return true
     }
 
-    private val root get() = repository.root
+    private val root
+        get() = repository.root
 
     fun play(context: String, tracks: List<Track>, index: Int, shuffle: Boolean? = null) {
         playingFrom = context

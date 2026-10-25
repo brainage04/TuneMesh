@@ -10,9 +10,9 @@ import io.github.brainage04.tunemesh.TuneMeshApp
 import java.io.FileNotFoundException
 
 /**
- * Serves cached album art to the media session, notification and lock screen so queue items only carry a URI
- * and covers are extracted lazily. Exported only to holders of MEDIA_CONTENT_CONTROL (System UI), read-only,
- * and only for audio files inside the library: `path` cannot reach other files the app can read.
+ * Serves cached album art to the media session, notification and lock screen so queue items only carry a URI and covers are extracted
+ * lazily. Exported only to holders of MEDIA_CONTENT_CONTROL (System UI), read-only, and only for audio files inside the library: `path`
+ * cannot reach other files the app can read.
  */
 class CoverProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
@@ -29,7 +29,13 @@ class CoverProvider : ContentProvider() {
 
     override fun getType(uri: Uri): String = "image/jpeg"
 
-    override fun query(uri: Uri, projection: Array<out String>?, selection: String?, selectionArgs: Array<out String>?, sortOrder: String?): Cursor? = null
+    override fun query(
+        uri: Uri,
+        projection: Array<out String>?,
+        selection: String?,
+        selectionArgs: Array<out String>?,
+        sortOrder: String?,
+    ): Cursor? = null
 
     override fun insert(uri: Uri, values: ContentValues?): Uri? = null
 
@@ -40,11 +46,12 @@ class CoverProvider : ContentProvider() {
     companion object {
         private const val PARAM_PATH = "path"
 
-        fun uri(context: Context, path: String): Uri = Uri.Builder()
-            .scheme("content")
-            .authority("${context.packageName}.covers")
-            .path("cover")
-            .appendQueryParameter(PARAM_PATH, path)
-            .build()
+        fun uri(context: Context, path: String): Uri =
+            Uri.Builder()
+                .scheme("content")
+                .authority("${context.packageName}.covers")
+                .path("cover")
+                .appendQueryParameter(PARAM_PATH, path)
+                .build()
     }
 }

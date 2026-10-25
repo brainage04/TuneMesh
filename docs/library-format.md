@@ -102,7 +102,9 @@ storage cannot hold symlinks.
   opened for playing or editing, and is never rewritten or truncated; the
   worker does not add downloads to it and says so in the request's status
   (`warnings`). Writers never write a playlist over these limits (adding to
-  a full playlist fails) and cut `#EXTINF` labels to 1 KiB.
+  a full playlist fails), cut `#EXTINF` labels to 1 KiB and trim Unicode
+  White_Space from both ends of a label, as readers do, so rewriting a
+  playlist does not change it.
 
 ## Download requests
 
@@ -196,6 +198,9 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - `warnings` (optional, default empty): strings the user should see although
   the request went on, for example "Imported the first 100 tracks: ..." when
   a source was cut short. Final `message`s repeat them.
+- The worker keeps every status file within the 1 MiB file limit (see
+  "Limits"): when one would be larger, it drops entries from the end of
+  `tracks`, then `failures`, then `warnings` until it fits.
 - After writing a final state the worker deletes the request file.
 - Clients show a request with no status file yet as "Waiting for the
   downloader". Clients may delete status files in a final state ("Clear").

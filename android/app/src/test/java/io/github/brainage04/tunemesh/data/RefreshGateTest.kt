@@ -42,8 +42,17 @@ class RefreshGateTest {
         first.join()
         assertEquals(1, runs)
         // A failing refresh releases the lock and the gate.
-        runCatching { gate.run { error("scan failed") } }
+        val failure =
+            try {
+                gate.run { throw ScanFailed() }
+                null
+            } catch (error: ScanFailed) {
+                error
+            }
+        assertTrue(failure != null)
         gate.run { runs++ }
         assertEquals(2, runs)
     }
+
+    private class ScanFailed : Exception("scan failed")
 }

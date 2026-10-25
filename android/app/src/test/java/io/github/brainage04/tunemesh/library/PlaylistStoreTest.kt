@@ -1,5 +1,7 @@
 package io.github.brainage04.tunemesh.library
 
+import java.io.File
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -9,13 +11,12 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
 
 class PlaylistStoreTest {
-    @get:Rule
-    val temp = TemporaryFolder()
+    @get:Rule val temp = TemporaryFolder()
 
-    private fun track(path: String) = Track(path, path.substringAfterLast('/').substringBefore('.'), "Artist", "Album", "Artist", null, null, 60_000, 1, 1)
+    private fun track(path: String) =
+        Track(path, path.substringAfterLast('/').substringBefore('.'), "Artist", "Album", "Artist", null, null, 60_000, 1, 1)
 
     private val a = track("Artist/Album/A [1].opus")
     private val b = track("Artist/Album/B [2].opus")
@@ -42,9 +43,10 @@ class PlaylistStoreTest {
     @Test
     fun unlikeRemovesEveryEntryAndKeepsMissingOnes() {
         File(temp.root, "Playlists").mkdirs()
-        File(temp.root, "Playlists/Liked Songs.m3u8").writeText(
-            "#EXTM3U\n../Artist/Album/A [1].opus\n#EXTINF:42,Gone - Away\n../Gone/X/Away [9].opus\n../Artist/Album/B [2].opus\n../Artist/Album/A [1].opus\n",
-        )
+        File(temp.root, "Playlists/Liked Songs.m3u8")
+            .writeText(
+                "#EXTM3U\n../Artist/Album/A [1].opus\n#EXTINF:42,Gone - Away\n../Gone/X/Away [9].opus\n../Artist/Album/B [2].opus\n../Artist/Album/A [1].opus\n"
+            )
         val store = store()
         store.setLiked(a, false)
         assertEquals(
@@ -170,10 +172,11 @@ class PlaylistStoreTest {
 
     @Test
     fun likeAndUnlikeHelpers() {
-        val existing = listOf(M3u8.entryFor(b), M3u8.entryFor(a), M3u8.entryFor(b))
+        val existing = entries(M3u8.entryFor(b), M3u8.entryFor(a), M3u8.entryFor(b))
         assertEquals(listOf(c.path, b.path, a.path, b.path), PlaylistStore.like(existing, c).map { it.path })
-        assertEquals(existing, PlaylistStore.like(existing, a))
+        assertSame(existing, PlaylistStore.like(existing, a))
         assertEquals(listOf(a.path), PlaylistStore.unlike(existing, b.path).map { it.path })
+        assertSame(existing, PlaylistStore.unlike(existing, c.path))
     }
 
     @Test
@@ -186,7 +189,7 @@ class PlaylistStoreTest {
         assertEquals(listOf(a.path, b.path), store.read("Mix")!!.entries.map { it.path })
         store.setLiked(broken, true)
         assertEquals("#EXTM3U\n", liked())
-        assertEquals(emptyList<PlaylistEntry>(), PlaylistStore.like(emptyList(), carriage))
+        assertEquals(emptyList<PlaylistEntry>(), PlaylistStore.like(entries(), carriage))
     }
 
     @Test
@@ -277,7 +280,7 @@ class PlaylistStoreTest {
     @Test
     fun listsLikedSongsAndTheFirstThousandByName() {
         val dir = File(temp.root, "Playlists").apply { mkdirs() }
-        for (n in 0 until Limits.MAX_PLAYLISTS_LISTED + 50) File(dir, "p%04d.m3u8".format(n)).writeText("../A.wav\n")
+        for (n in 0 until Limits.MAX_PLAYLISTS_LISTED + 50) File(dir, "p%04d.m3u8".format(Locale.ROOT, n)).writeText("../A.wav\n")
         File(dir, "Liked Songs.m3u8").writeText("../A.wav\n")
         File(dir, "Zzz.m3u8").writeText("../A.wav\n")
         File(dir, "aaa.m3u8").writeText("../A.wav\n")
@@ -294,7 +297,10 @@ class PlaylistStoreTest {
         val file = File(dir, "Mix.m3u8").apply { writeText("../A.wav\n") }
         val summaries = PlaylistSummaries()
         var reads = 0
-        val lookup: (String) -> Track? = { reads++; null }
+        val lookup: (String) -> Track? = {
+            reads++
+            null
+        }
         val store = PlaylistStore(temp.root, summaries, lookup)
         fun readsFor(block: () -> Unit): Int {
             val before = reads
@@ -307,8 +313,58 @@ class PlaylistStoreTest {
         assertTrue(readsFor { assertEquals(2, store.list().single().size) } > 0)
         assertEquals(0, readsFor { store.list() })
         // Another lookup (a new library index) reads again, and so does everything after clear().
-        assertTrue(readsFor { PlaylistStore(temp.root, summaries) { reads++; null }.list() } > 0)
+        assertTrue(
+            readsFor {
+                PlaylistStore(temp.root, summaries) {
+                        reads++
+                        null
+                    }
+                    .list()
+            } > 0
+        )
         summaries.clear()
         assertTrue(readsFor { store.list() } > 0)
+    }
+
+    private fun entries(vararg entries: PlaylistEntry): PlaylistEntries {
+        val builder = PlaylistEntries.Builder(temp.root.absolutePath, keepExtinf = true)
+        entries.forEach { builder.add(it) }
+        return builder.build()
+    }
+
+    /** Compact storage: what each kind of entry keeps, and that rows come back exactly as read. */
+    @Test
+    fun compactEntriesKeepEveryLineAsRead() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        val root = temp.root.absolutePath
+        File(dir, "Mix.m3u8")
+            .writeText(
+                "#EXTM3U\n#EXTINF:60,Artist - A\n../${a.path}\n" + // library, canonical: nothing stored but a reference
+                    "${root}/${b.path}\n" + // library, absolute line: the line is kept
+                    "../Gone/Missing [x].opus\n" + // inside the library, no such track
+                    "/outside/Ünïcödé.mp3\n" + // outside
+                    "../${a.path}\n"
+            )
+        val store = store()
+        val read = store.read("Mix")!!.entries
+        val shown = store.contents("Mix")!!.entries
+        assertTrue(read.hasExtinf)
+        assertFalse(shown.hasExtinf)
+        assertEquals(listOf(a.path, b.path, "Gone/Missing [x].opus", null, a.path), (0 until read.size).map(read::path))
+        assertEquals(
+            listOf("../${a.path}", "$root/${b.path}", "../Gone/Missing [x].opus", "/outside/Ünïcödé.mp3", "../${a.path}"),
+            read.map { it.raw },
+        )
+        assertEquals(listOf(a.path, b.path, "Gone/Missing [x].opus", "/outside/Ünïcödé.mp3", a.path), (0 until read.size).map(read::key))
+        assertEquals("#EXTINF:60,Artist - A", read.extinf(0))
+        assertNull(shown.extinf(0))
+        // Library paths are the index's own strings, not copies.
+        assertSame(tracks.getValue(a.path).path, read.path(0))
+        assertSame(tracks.getValue(a.path).path, read[4].path)
+        assertEquals((0 until read.size).map { read[it] }, read.builder().addAll(read).build().toList())
+        assertThrows(IndexOutOfBoundsException::class.java) { read.path(5) }
+        // Writing it back changes nothing but the labels the library knows.
+        store.move("Mix", EntryRef(3, "/outside/Ünïcödé.mp3"), EntryRef(0, a.path))
+        assertEquals(listOf(null, a.path, b.path, "Gone/Missing [x].opus", a.path), store.read("Mix")!!.entries.map { it.path })
     }
 }

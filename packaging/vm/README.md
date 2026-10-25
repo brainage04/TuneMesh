@@ -9,9 +9,9 @@ PipeWire audio, snapd, Flatpak, and the NixOS module.
 | Distribution | Packages |
 | --- | --- |
 | `ubuntu-24.04` | `.deb`, AppImage, Snap |
+| `ubuntu-26.04` | `.deb`, AppImage, Snap (built on 24.04) |
 | `debian-13` | `.deb` |
 | `fedora` (newest stable release) | `.rpm`, Flatpak |
-| `opensuse-tumbleweed` | `.rpm` |
 | `arch` | `tunemesh`, `tunemesh-bin` |
 | NixOS | the `worker-module` nixosTest in `flake.nix` |
 
@@ -25,7 +25,7 @@ logind session:
 1. installs sway, PipeWire, WirePlumber and pipewire-pulse, and a PipeWire
    null sink `tm-null` as the only audio output (`guest.sh deps`);
 2. for each package, one after another (`guest.sh test`):
-   - installs it with the distribution's tool (`apt`, `dnf`, `zypper`,
+   - installs it with the distribution's tool (`apt`, `dnf`,
      `pacman`, `snap`, `flatpak`; the AppImage is copied to `~/Applications`
      after installing the desktop libraries it expects from the system, which
      a server cloud image lacks) and prints both `--version`s;
@@ -75,10 +75,10 @@ as the artifact `vm-logs-<distro>` when a job fails.
 
 ## Image checksums and SSH trust
 
-- Ubuntu, Debian and Fedora images are pinned in `images.sh`, URL and
+- Ubuntu (24.04 and 26.04), Debian and Fedora images are pinned in `images.sh`, URL and
   checksum both; the comment there says where new values come from and which
   signature to check when moving a pin.
-- Arch and openSUSE Tumbleweed are rolling and keep no old images, so
+- Arch is rolling and keeps old images only for a few months, so
   `images.sh` takes the current snapshot and requires a good signature on its
   checksum file from the release key in `keys/` (`gpgv`).
 - `run.sh` makes the guest's SSH host key itself and hands it over in the

@@ -379,10 +379,7 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
     let name = playlist::existing_name(root, &name).unwrap_or(name);
     let mut p = match Playlist::read(root, &name) {
         Ok(p) => p,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist {
-            name: name.clone(),
-            entries: Vec::new(),
-        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist::new(&name),
         Err(e) => return Err(e),
     };
     if name == LIKED_SONGS {

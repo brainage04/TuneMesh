@@ -10,14 +10,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -34,12 +34,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -60,11 +60,13 @@ import androidx.compose.ui.unit.sp
 import io.github.brainage04.tunemesh.data.LibraryState
 import io.github.brainage04.tunemesh.library.EntryRef
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Playlist
-import io.github.brainage04.tunemesh.playback.PlayerUiState
 import io.github.brainage04.tunemesh.library.Track
+import io.github.brainage04.tunemesh.playback.PlayerUiState
 import io.github.brainage04.tunemesh.ui.theme.Accent
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -77,9 +79,7 @@ private val coverDispatcher = Dispatchers.IO.limitedParallelism(3)
 /** Deterministic dark gradient used when a track, album or playlist has no art. */
 fun placeholderBrush(seed: String): Brush {
     val hue = ((seed.hashCode() and 0x7fffffff) % 360).toFloat()
-    return Brush.linearGradient(
-        listOf(Color.hsv(hue, 0.55f, 0.55f), Color.hsv((hue + 40f) % 360f, 0.65f, 0.25f)),
-    )
+    return Brush.linearGradient(listOf(Color.hsv(hue, 0.55f, 0.55f), Color.hsv((hue + 40f) % 360f, 0.65f, 0.25f)))
 }
 
 /** Album art with memory/disk caching and a gradient placeholder. */
@@ -93,25 +93,28 @@ fun CoverArt(
     placeholderIcon: ImageVector = AppIcons.MusicNote,
 ) {
     val viewModel = LocalAppViewModel.current
-    val sizePx = when {
-        sizeHint <= 64.dp -> 160
-        sizeHint <= 200.dp -> 400
-        else -> 600
-    }
-    val bitmap by produceState<ImageBitmap?>(
-        initialValue = track?.let { viewModel.covers.cached(it, sizePx)?.asImageBitmap() },
-        track?.path,
-        track?.modifiedMs,
-        sizePx,
-    ) {
-        // Keys changed (or first run): never keep showing the previous track's art.
-        value = track?.let { viewModel.covers.cached(it, sizePx)?.asImageBitmap() }
-        if (value == null && track != null) {
-            value = withContext(coverDispatcher) {
-                viewModel.covers.load(viewModel.repository.root, track, sizePx)?.asImageBitmap()
+    val sizePx =
+        when {
+            sizeHint <= 64.dp -> 160
+            sizeHint <= 200.dp -> 400
+            else -> 600
+        }
+    val bitmap by
+        produceState<ImageBitmap?>(
+            initialValue = track?.let { viewModel.covers.cached(it, sizePx)?.asImageBitmap() },
+            track?.path,
+            track?.modifiedMs,
+            sizePx,
+        ) {
+            // Keys changed (or first run): never keep showing the previous track's art.
+            value = track?.let { viewModel.covers.cached(it, sizePx)?.asImageBitmap() }
+            if (value == null && track != null) {
+                value =
+                    withContext(coverDispatcher) {
+                        viewModel.covers.load(viewModel.repository.root, track, sizePx)?.asImageBitmap()
+                    }
             }
         }
-    }
     Box(modifier.clip(shape).background(placeholderBrush(seed)), contentAlignment = Alignment.Center) {
         val image = bitmap
         if (image != null) {
@@ -163,7 +166,14 @@ fun BackBar(title: String = "", onBack: () -> Unit, actions: @Composable () -> U
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onBack) { Icon(AppIcons.Back, "Back") }
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Text(
+            Limits.shownLine(title),
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
         actions()
     }
 }
@@ -202,8 +212,7 @@ fun TrackRow(
     val isCurrent = playing.currentPath == track.path
     var menuOpen by remember { mutableStateOf(false) }
     Row(
-        Modifier
-            .fillMaxWidth()
+        Modifier.fillMaxWidth()
             .combinedClickable(onClick = onPlay, onLongClick = { menuOpen = true })
             .padding(start = 16.dp, end = 0.dp, top = 6.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -212,14 +221,14 @@ fun TrackRow(
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                track.title,
+                Limits.shownLine(track.title),
                 color = if (isCurrent) Accent else Color.White,
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                if (context.showAlbum && context.showArtist) "${track.artist} • ${track.album}" else track.artist,
+                Limits.shownLine(if (context.showAlbum && context.showArtist) "${track.artist} • ${track.album}" else track.artist),
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
@@ -240,21 +249,44 @@ fun TrackMenu(track: Track, context: RowContext, expanded: Boolean, onDismiss: (
     val library = LocalLibrary.current
     val liked = track.path in library.liked
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
-        MenuItem("Play next", AppIcons.Queue) { viewModel.playNext(listOf(track)); onDismiss() }
-        MenuItem("Add to queue", AppIcons.Queue) { viewModel.addToQueue(listOf(track)); onDismiss() }
-        MenuItem(if (liked) "Remove from Liked Songs" else "Save to Liked Songs", if (liked) AppIcons.Favorite else AppIcons.FavoriteBorder) {
-            viewModel.toggleLike(track); onDismiss()
+        MenuItem("Play next", AppIcons.Queue) {
+            viewModel.playNext(listOf(track))
+            onDismiss()
         }
-        MenuItem("Add to playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(listOf(track)); onDismiss() }
+        MenuItem("Add to queue", AppIcons.Queue) {
+            viewModel.addToQueue(listOf(track))
+            onDismiss()
+        }
+        MenuItem(
+            if (liked) "Remove from Liked Songs" else "Save to Liked Songs",
+            if (liked) AppIcons.Favorite else AppIcons.FavoriteBorder,
+        ) {
+            viewModel.toggleLike(track)
+            onDismiss()
+        }
+        MenuItem("Add to playlist", AppIcons.PlaylistAdd) {
+            viewModel.dialog = DialogRequest.AddToPlaylist(listOf(track))
+            onDismiss()
+        }
         if (context.playlistName != null && context.playlistName != LibraryFormat.LIKED_SONGS) {
             MenuItem("Remove from this playlist", AppIcons.Close) {
-                viewModel.repository.removeFromPlaylist(context.playlistName, EntryRef(context.index, track.path)); onDismiss()
+                viewModel.repository.removeFromPlaylist(context.playlistName, EntryRef(context.index, track.path))
+                onDismiss()
             }
         }
-        if (context.showAlbum) MenuItem("Go to album", AppIcons.Album) { viewModel.openAlbum(track); onDismiss() }
-        if (context.showArtist) MenuItem("Go to artist", AppIcons.Person) { viewModel.openArtist(track.albumArtist); onDismiss() }
+        if (context.showAlbum)
+            MenuItem("Go to album", AppIcons.Album) {
+                viewModel.openAlbum(track)
+                onDismiss()
+            }
+        if (context.showArtist)
+            MenuItem("Go to artist", AppIcons.Person) {
+                viewModel.openArtist(track.albumArtist)
+                onDismiss()
+            }
         MenuItem("Delete from library", AppIcons.Delete, color = MaterialTheme.colorScheme.error) {
-            viewModel.dialog = DialogRequest.DeleteTrack(track); onDismiss()
+            viewModel.dialog = DialogRequest.DeleteTrack(track)
+            onDismiss()
         }
     }
 }
@@ -280,7 +312,12 @@ fun UnavailableRow(raw: String, onRemove: (() -> Unit)?) {
         }
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(LibraryFormat.titleFromFileName(raw.substringAfterLast('/')), color = Color(0xFF6A6A6A), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                Limits.shownLine(LibraryFormat.titleFromFileName(raw.substringAfterLast('/'))),
+                color = Color(0xFF6A6A6A),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
             Text("Unavailable on this device", color = Color(0xFF6A6A6A), style = MaterialTheme.typography.bodyMedium)
         }
         if (onRemove != null) IconButton(onClick = onRemove) { Icon(AppIcons.Close, "Remove", tint = TextSecondary) }
@@ -301,7 +338,7 @@ fun MediaTile(
         art(Modifier.fillMaxWidth().aspectSquare())
         Spacer(Modifier.height(8.dp))
         Text(
-            title,
+            Limits.shownLine(title),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = if (circle) 1 else 2,
@@ -309,7 +346,7 @@ fun MediaTile(
             modifier = if (circle) Modifier.align(Alignment.CenterHorizontally) else Modifier,
         )
         Text(
-            subtitle,
+            Limits.shownLine(subtitle),
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             maxLines = 1,
@@ -339,15 +376,14 @@ fun DetailHeader(
 ) {
     val hue = ((seed.hashCode() and 0x7fffffff) % 360).toFloat()
     Column(
-        Modifier.fillMaxWidth().background(
-            Brush.verticalGradient(listOf(Color.hsv(hue, 0.45f, 0.42f), MaterialTheme.colorScheme.background)),
-        ),
+        Modifier.fillMaxWidth()
+            .background(Brush.verticalGradient(listOf(Color.hsv(hue, 0.45f, 0.42f), MaterialTheme.colorScheme.background)))
     ) {
         BackBar(onBack = onBack, actions = actions)
         art(Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp).size(232.dp))
         Spacer(Modifier.height(20.dp))
         Text(
-            title,
+            Limits.shownLine(title),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
@@ -356,18 +392,25 @@ fun DetailHeader(
         )
         if (subtitle.isNotEmpty()) {
             Text(
-                subtitle,
+                Limits.shownLine(subtitle),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .padding(horizontal = 16.dp, vertical = 6.dp)
-                    .then(if (onSubtitleClick != null) Modifier.clickable(onClick = onSubtitleClick) else Modifier),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier =
+                    Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
+                        .then(if (onSubtitleClick != null) Modifier.clickable(onClick = onSubtitleClick) else Modifier),
             )
         }
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text(stats, color = TextSecondary, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
             IconButton(onClick = onShuffle, enabled = playEnabled) {
-                Icon(AppIcons.Shuffle, "Shuffle play", tint = if (playEnabled) TextSecondary else Color.DarkGray, modifier = Modifier.size(28.dp))
+                Icon(
+                    AppIcons.Shuffle,
+                    "Shuffle play",
+                    tint = if (playEnabled) TextSecondary else Color.DarkGray,
+                    modifier = Modifier.size(28.dp),
+                )
             }
             Spacer(Modifier.width(8.dp))
             PlayCircle(playing = playingThis, onClick = onPlay, enabled = playEnabled)
@@ -393,7 +436,7 @@ fun formatDuration(ms: Long): String {
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+    return if (hours > 0) "%d:%02d:%02d".format(Locale.ROOT, hours, minutes, seconds) else "%d:%02d".format(Locale.ROOT, minutes, seconds)
 }
 
 fun totalLength(tracks: List<Track>): String {
@@ -420,7 +463,11 @@ fun ClearFocusWhenImeHidden() {
 
 @Composable
 fun EmptyMessage(title: String, body: String, modifier: Modifier = Modifier) {
-    Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+    Column(
+        modifier.fillMaxWidth().padding(32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
         Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(body, color = TextSecondary, style = MaterialTheme.typography.bodyMedium, fontSize = 14.sp)

@@ -20,69 +20,71 @@ import io.github.brainage04.tunemesh.MainActivity
 import io.github.brainage04.tunemesh.TuneMeshApp
 
 /**
- * Owns the ExoPlayer and its media session: background playback, the media notification, lock screen and
- * headset/Bluetooth buttons. Audio focus and becoming-noisy are handled by ExoPlayer. The queue is saved to
- * app storage and restored (paused) when the service starts again.
+ * Owns the ExoPlayer and its media session: background playback, the media notification, lock screen and headset/Bluetooth buttons. Audio
+ * focus and becoming-noisy are handled by ExoPlayer. The queue is saved to app storage and restored (paused) when the service starts again.
  */
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     private val handler = Handler(Looper.getMainLooper())
     private val state by lazy { (application as TuneMeshApp).playbackState }
 
-    private val savePosition = object : Runnable {
-        override fun run() {
-            save()
-            handler.postDelayed(this, SAVE_INTERVAL_MS)
+    private val savePosition =
+        object : Runnable {
+            override fun run() {
+                save()
+                handler.postDelayed(this, SAVE_INTERVAL_MS)
+            }
         }
-    }
 
     override fun onCreate() {
         super.onCreate()
-        val player = ExoPlayer.Builder(this)
-            .setAudioAttributes(
-                AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
-                true,
-            )
-            .setHandleAudioBecomingNoisy(true)
-            .setWakeMode(C.WAKE_MODE_LOCAL)
-            .build()
-        player.addListener(object : Player.Listener {
-            override fun onEvents(player: Player, events: Player.Events) {
-                if (events.containsAny(
-                        Player.EVENT_TIMELINE_CHANGED,
-                        Player.EVENT_MEDIA_ITEM_TRANSITION,
-                        Player.EVENT_IS_PLAYING_CHANGED,
-                        Player.EVENT_REPEAT_MODE_CHANGED,
-                        Player.EVENT_POSITION_DISCONTINUITY,
-                    )
-                ) {
-                    save()
+        val player =
+            ExoPlayer.Builder(this)
+                .setAudioAttributes(
+                    AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(),
+                    true,
+                )
+                .setHandleAudioBecomingNoisy(true)
+                .setWakeMode(C.WAKE_MODE_LOCAL)
+                .build()
+        player.addListener(
+            object : Player.Listener {
+                override fun onEvents(player: Player, events: Player.Events) {
+                    if (
+                        events.containsAny(
+                            Player.EVENT_TIMELINE_CHANGED,
+                            Player.EVENT_MEDIA_ITEM_TRANSITION,
+                            Player.EVENT_IS_PLAYING_CHANGED,
+                            Player.EVENT_REPEAT_MODE_CHANGED,
+                            Player.EVENT_POSITION_DISCONTINUITY,
+                        )
+                    ) {
+                        save()
+                    }
+                    if (events.contains(Player.EVENT_IS_PLAYING_CHANGED)) {
+                        handler.removeCallbacks(savePosition)
+                        if (player.isPlaying) handler.postDelayed(savePosition, SAVE_INTERVAL_MS)
+                    }
                 }
-                if (events.contains(Player.EVENT_IS_PLAYING_CHANGED)) {
-                    handler.removeCallbacks(savePosition)
-                    if (player.isPlaying) handler.postDelayed(savePosition, SAVE_INTERVAL_MS)
-                }
-            }
 
-            override fun onPlayerError(error: PlaybackException) {
-                // While playing, a file that vanished (deleted on another device) should not stop the whole
-                // queue. A paused player (for example a restored queue without storage access) stays put.
-                if (player.playWhenReady && player.hasNextMediaItem()) {
-                    player.seekToNextMediaItem()
-                    player.prepare()
+                override fun onPlayerError(error: PlaybackException) {
+                    // While playing, a file that vanished (deleted on another device) should not stop the whole
+                    // queue. A paused player (for example a restored queue without storage access) stays put.
+                    if (player.playWhenReady && player.hasNextMediaItem()) {
+                        player.seekToNextMediaItem()
+                        player.prepare()
+                    }
                 }
             }
-        })
-        val openApp = PendingIntent.getActivity(
-            this,
-            0,
-            Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        session = MediaSession.Builder(this, player)
-            .setSessionActivity(openApp)
-            .setCallback(Callback())
-            .build()
+        val openApp =
+            PendingIntent.getActivity(
+                this,
+                0,
+                Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+            )
+        session = MediaSession.Builder(this, player).setSessionActivity(openApp).setCallback(Callback()).build()
         restore(player)
     }
 
@@ -108,7 +110,7 @@ class PlaybackService : MediaSessionService() {
                 index = player.currentMediaItemIndex.coerceAtLeast(0),
                 positionMs = player.currentPosition.coerceAtLeast(0),
                 repeatMode = player.repeatMode,
-            ),
+            )
         )
     }
 
@@ -144,7 +146,7 @@ class PlaybackService : MediaSessionService() {
             val player = mediaSession.player
             val used = (0 until player.mediaItemCount).mapTo(HashSet()) { QueueItems.id(player.getMediaItemAt(it)) }
             return Futures.immediateFuture(
-                mediaItems.mapNotNull { QueueItems.resolve(this@PlaybackService, it, root, repository::track, used) },
+                mediaItems.mapNotNull { QueueItems.resolve(this@PlaybackService, it, root, repository::track, used) }
             )
         }
 
@@ -163,7 +165,7 @@ class PlaybackService : MediaSessionService() {
                     QueueItems.withUniqueIds(queue.items).map(QueueItems::build),
                     queue.index.coerceIn(0, queue.items.lastIndex),
                     queue.positionMs,
-                ),
+                )
             )
         }
     }

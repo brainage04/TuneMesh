@@ -33,7 +33,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,13 +43,18 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.brainage04.tunemesh.library.Album
+import io.github.brainage04.tunemesh.library.Artist
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
+import io.github.brainage04.tunemesh.library.Playlist
+import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.ClearFocusWhenImeHidden
-import io.github.brainage04.tunemesh.ui.LikedSongsArt
 import io.github.brainage04.tunemesh.ui.CoverArt
 import io.github.brainage04.tunemesh.ui.DialogRequest
 import io.github.brainage04.tunemesh.ui.EmptyMessage
+import io.github.brainage04.tunemesh.ui.LikedSongsArt
 import io.github.brainage04.tunemesh.ui.LocalAppViewModel
 import io.github.brainage04.tunemesh.ui.LocalLibrary
 import io.github.brainage04.tunemesh.ui.MediaTile
@@ -60,13 +65,38 @@ import io.github.brainage04.tunemesh.ui.TrackRow
 import io.github.brainage04.tunemesh.ui.playlistSubtitle
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Composable
-fun SearchScreen(contentPadding: PaddingValues) {
+fun SearchScreen(contentPadding: PaddingValues, background: CoroutineDispatcher = Dispatchers.Default) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     var query by rememberSaveable { mutableStateOf("") }
     val index = library.index
+    // Searching 100,000 tracks takes longer than a frame: the results are worked out off the main thread, after a pause in typing,
+    // and the previous ones stay on screen meanwhile.
+    val results by
+        produceState<SearchResults?>(null, query, index, library.playlists) {
+            if (query.isBlank()) {
+                value = null
+                return@produceState
+            }
+            delay(SEARCH_DELAY_MS)
+            val playlists = library.playlists
+            value =
+                withContext(background) {
+                    SearchResults(
+                        query = query,
+                        tracks = index.searchTracks(query),
+                        artists = index.searchArtists(query),
+                        albums = index.searchAlbums(query),
+                        playlists = index.searchPlaylists(query, playlists),
+                    )
+                }
+        }
     ClearFocusWhenImeHidden()
     Column(Modifier.fillMaxSize()) {
         ScreenTitle("Search")
@@ -81,38 +111,52 @@ fun SearchScreen(contentPadding: PaddingValues) {
             singleLine = true,
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
             shape = RoundedCornerShape(8.dp),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = Color.White,
-                unfocusedContainerColor = Color.White,
-                focusedTextColor = Color.Black,
-                unfocusedTextColor = Color.Black,
-                cursorColor = Color.Black,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-            ),
+            colors =
+                TextFieldDefaults.colors(
+                    focusedContainerColor = Color.White,
+                    unfocusedContainerColor = Color.White,
+                    focusedTextColor = Color.Black,
+                    unfocusedTextColor = Color.Black,
+                    cursorColor = Color.Black,
+                    focusedIndicatorColor = Color.Transparent,
+                    unfocusedIndicatorColor = Color.Transparent,
+                ),
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         )
         if (query.isBlank()) {
             if (index.artists.isEmpty()) return@Column
-            Text("Browse artists", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(16.dp))
+            Text(
+                "Browse artists",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(16.dp),
+            )
             LazyVerticalGrid(
                 columns = GridCells.Adaptive(150.dp),
                 contentPadding = PaddingValues(start = 10.dp, end = 10.dp, bottom = contentPadding.calculateBottomPadding()),
             ) {
                 items(index.artists, key = { it.name }) { artist ->
                     MediaTile(artist.name, songCount(artist.tracks.size), { viewModel.openArtist(artist.name) }, circle = true) {
-                        CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 150.dp, placeholderIcon = AppIcons.Person)
+                        CoverArt(
+                            artist.tracks.first(),
+                            artist.name,
+                            it,
+                            shape = CircleShape,
+                            sizeHint = 150.dp,
+                            placeholderIcon = AppIcons.Person,
+                        )
                     }
                 }
             }
             return@Column
         }
-        val tracks = remember(query, index) { index.searchTracks(query) }
-        val artists = remember(query, index) { index.searchArtists(query) }
-        val albums = remember(query, index) { index.searchAlbums(query) }
-        val playlists = remember(query, library.playlists, index) { index.searchPlaylists(query, library.playlists) }
+        val found = results ?: return@Column
+        val tracks = found.tracks
+        val artists = found.artists
+        val albums = found.albums
+        val playlists = found.playlists
         if (tracks.isEmpty() && artists.isEmpty() && albums.isEmpty() && playlists.isEmpty()) {
-            EmptyMessage("No results for \"$query\"", "Check the spelling, or request it from the Downloads tab.")
+            EmptyMessage("No results for \"${found.query}\"", "Check the spelling, or request it from the Downloads tab.")
             return@Column
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = contentPadding.calculateBottomPadding())) {
@@ -121,16 +165,33 @@ fun SearchScreen(contentPadding: PaddingValues) {
                     LazyRow(contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)) {
                         items(artists, key = { "artist:" + it.name }) { artist ->
                             MediaTile(artist.name, "Artist", { viewModel.openArtist(artist.name) }, Modifier.width(130.dp), circle = true) {
-                                CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 130.dp, placeholderIcon = AppIcons.Person)
+                                CoverArt(
+                                    artist.tracks.first(),
+                                    artist.name,
+                                    it,
+                                    shape = CircleShape,
+                                    sizeHint = 130.dp,
+                                    placeholderIcon = AppIcons.Person,
+                                )
                             }
                         }
                         items(albums, key = { "album:" + it.key }) { album ->
-                            MediaTile(album.title, "Album • ${album.artist}", { viewModel.push(Screen.AlbumDetail(album.key)) }, Modifier.width(130.dp)) {
+                            MediaTile(
+                                album.title,
+                                "Album • ${album.artist}",
+                                { viewModel.push(Screen.AlbumDetail(album.key)) },
+                                Modifier.width(130.dp),
+                            ) {
                                 CoverArt(album.tracks.first(), album.title, it, sizeHint = 130.dp)
                             }
                         }
                         items(playlists, key = { "playlist:" + it.name }) { playlist ->
-                            MediaTile(playlist.name, "Playlist", { viewModel.push(Screen.PlaylistDetail(playlist.name)) }, Modifier.width(130.dp)) {
+                            MediaTile(
+                                playlist.name,
+                                "Playlist",
+                                { viewModel.push(Screen.PlaylistDetail(playlist.name)) },
+                                Modifier.width(130.dp),
+                            ) {
                                 PlaylistArt(playlist, it, 130.dp)
                             }
                         }
@@ -140,14 +201,28 @@ fun SearchScreen(contentPadding: PaddingValues) {
             if (tracks.isNotEmpty()) {
                 item { SectionTitle("Songs") }
                 itemsIndexed(tracks, key = { _, track -> track.path }) { position, track ->
-                    TrackRow(track, onPlay = { viewModel.play("\"$query\"", tracks, position) })
+                    TrackRow(track, onPlay = { viewModel.play("\"${found.query}\"", tracks, position) })
                 }
             }
         }
     }
 }
 
-private enum class LibraryFilter(val label: String) { Playlists("Playlists"), Albums("Albums"), Artists("Artists") }
+private class SearchResults(
+    val query: String,
+    val tracks: List<Track>,
+    val artists: List<Artist>,
+    val albums: List<Album>,
+    val playlists: List<Playlist>,
+)
+
+private const val SEARCH_DELAY_MS = 150L
+
+private enum class LibraryFilter(val label: String) {
+    Playlists("Playlists"),
+    Albums("Albums"),
+    Artists("Artists"),
+}
 
 @Composable
 fun LibraryScreen(contentPadding: PaddingValues) {
@@ -157,7 +232,9 @@ fun LibraryScreen(contentPadding: PaddingValues) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             ScreenTitle("Your Library") {
-                IconButton(onClick = { viewModel.dialog = DialogRequest.CreatePlaylist(emptyList()) }) { Icon(AppIcons.Add, "Create playlist") }
+                IconButton(onClick = { viewModel.dialog = DialogRequest.CreatePlaylist(emptyList()) }) {
+                    Icon(AppIcons.Add, "Create playlist")
+                }
                 IconButton(onClick = { viewModel.push(Screen.Settings) }) { Icon(AppIcons.Settings, "Settings") }
             }
         }
@@ -169,10 +246,11 @@ fun LibraryScreen(contentPadding: PaddingValues) {
                         onClick = { filter = if (filter == option) null else option },
                         label = { Text(option.label) },
                         shape = RoundedCornerShape(50),
-                        colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = MaterialTheme.colorScheme.primary,
-                            selectedLabelColor = Color.Black,
-                        ),
+                        colors =
+                            FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                selectedLabelColor = Color.Black,
+                            ),
                     )
                 }
             }
@@ -205,7 +283,14 @@ fun LibraryScreen(contentPadding: PaddingValues) {
         if (filter == null || filter == LibraryFilter.Artists) {
             items(library.index.artists, key = { "r:" + it.name }) { artist ->
                 LibraryRow(artist.name, "Artist", { viewModel.openArtist(artist.name) }) {
-                    CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 64.dp, placeholderIcon = AppIcons.Person)
+                    CoverArt(
+                        artist.tracks.first(),
+                        artist.name,
+                        it,
+                        shape = CircleShape,
+                        sizeHint = 64.dp,
+                        placeholderIcon = AppIcons.Person,
+                    )
                 }
             }
         }
@@ -221,8 +306,14 @@ private fun LibraryRow(title: String, subtitle: String, onClick: () -> Unit, art
         art(Modifier.size(64.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(subtitle, color = TextSecondary, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(Limits.shownLine(title), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                Limits.shownLine(subtitle),
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

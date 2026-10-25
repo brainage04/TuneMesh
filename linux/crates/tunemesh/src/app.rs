@@ -26,8 +26,36 @@ pub fn cap_search(text: &str) -> String {
 
 pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
+/// The app's colour scheme, style sheets and icons, for the default display
+/// (on application startup).
+pub fn load_style() {
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let display = gdk::Display::default().expect("display");
+    // libadwaita 1.6 moved its named colours to CSS variables; 1.5 still
+    // uses @define-color.
+    let colors = if adw::minor_version() >= 6 {
+        "colors.css"
+    } else {
+        "colors-adw15.css"
+    };
+    for name in [colors, "style.css"] {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_resource(&format!("/io/github/brainage04/TuneMesh/{name}"));
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+    gtk::IconTheme::for_display(&display).add_resource_path("/io/github/brainage04/TuneMesh/icons");
+    gtk::Window::set_default_icon_name(APP_ID);
+}
+
 /// Narrowest window, in pixels: about a tiled half of a 1366-pixel screen.
 const MIN_WIDTH: i32 = 600;
+/// Lowest window, in pixels: fits a 1280 x 800 screen at 200 % scale
+/// (400 logical pixels) under a title bar.
+const MIN_HEIGHT: i32 = 360;
 /// Up to this width (sp) the queue opens over the page instead of beside it.
 const QUEUE_BESIDE: u32 = 1180;
 /// Up to this width (sp) the library sidebar folds away as well.
@@ -130,9 +158,18 @@ impl App {
             // Narrow windows (a tiled half screen) fold the sidebar and the
             // queue over the page; see the breakpoints in build_window.
             .width_request(MIN_WIDTH)
-            .height_request(480)
+            .height_request(MIN_HEIGHT)
             .build();
         window.add_css_class("tunemesh");
+        // Drawn on the CPU (no GPU, or GSK_RENDERER=cairo): see `.tm-software`
+        // in style.css.
+        window.connect_realize(|w| {
+            if w.renderer()
+                .is_some_and(|r| r.is::<gtk::gsk::CairoRenderer>())
+            {
+                w.add_css_class("tm-software");
+            }
+        });
 
         let search_entry = gtk::SearchEntry::builder()
             .max_width_chars(40)
@@ -174,6 +211,8 @@ impl App {
             sidebar: RefCell::new(None),
             queue_split: adw::OverlaySplitView::builder()
                 .sidebar_position(gtk::PackType::End)
+                // The panes' contents take the width the split view gives
+                // them; a wider minimum inside would overflow the pane.
                 .min_sidebar_width(300.0)
                 .max_sidebar_width(340.0)
                 .show_sidebar(false)
@@ -228,12 +267,14 @@ impl App {
 
         let queue = ui::queue::QueuePanel::new(self);
         queue.widget.set_margin_start(8);
-        self.queue_split.set_sidebar(Some(&queue.widget));
+        self.queue_split
+            .set_sidebar(Some(&shrinkable(&queue.widget)));
         self.queue_split.set_content(Some(&self.toasts));
         *self.queue_panel.borrow_mut() = Some(queue);
 
         sidebar.widget.set_margin_end(8);
-        self.library_split.set_sidebar(Some(&sidebar.widget));
+        self.library_split
+            .set_sidebar(Some(&shrinkable(&sidebar.widget)));
         self.library_split.set_content(Some(&self.queue_split));
         self.library_split.add_css_class("tm-body");
         self.library_split.set_vexpand(true);
@@ -268,7 +309,6 @@ impl App {
         );
         narrow.add_setter(&self.queue_split, "collapsed", Some(&true.to_value()));
         narrow.add_setter(&self.library_split, "collapsed", Some(&true.to_value()));
-        narrow.add_setter(&self.library_split, "show-sidebar", Some(&false.to_value()));
 
         let bar = ui::nowplaying::NowPlaying::new(self);
         // Narrow: the slider goes; the volume button still mutes and unmutes.
@@ -531,12 +571,25 @@ impl App {
     }
 
     fn set_page(&self, page: Page) {
+        // A page removed while the keyboard focus is inside it is never
+        // freed (GTK 4.22 keeps its scrolled window and the focus chain
+        // below it alive). Take the focus out first and give it to the new
+        // page.
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|f| f.is_ancestor(&self.content));
+        if focus {
+            gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
+        }
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
         page.widget.set_vexpand(true);
         self.content.append(&page.widget);
+        if focus {
+            page.widget.grab_focus();
+        }
         *self.scroller.borrow_mut() = page.scroller;
+        trim_heap_soon();
     }
 
     /// Rebuilds the current page, keeping its scroll position.
@@ -547,9 +600,22 @@ impl App {
             .as_ref()
             .map(|s| s.vadjustment().value());
         self.set_page(ui::pages::build(&self.rc(), &self.route()));
-        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone()) {
-            // The new page has no size yet; restore once laid out.
-            glib::idle_add_local_once(move || s.vadjustment().set_value(v));
+        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone())
+            && v > 0.0
+        {
+            // The new page has no size yet (a playlist's entries even arrive
+            // from a thread): restore once it is tall enough.
+            let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let h = handler.clone();
+            let id = s.vadjustment().connect_upper_notify(move |adj| {
+                if adj.upper() - adj.page_size() >= v {
+                    adj.set_value(v);
+                    if let Some(id) = h.borrow_mut().take() {
+                        adj.disconnect(id);
+                    }
+                }
+            });
+            *handler.borrow_mut() = Some(id);
         }
     }
 
@@ -645,6 +711,17 @@ impl App {
     pub fn error(&self, context: &str, e: impl std::fmt::Display) {
         eprintln!("tunemesh: {context}: {e}");
         self.toast(&format!("{context}: {e}"));
+    }
+
+    /// The callback for a background store edit: shows `context` and the
+    /// error if it failed.
+    pub fn on_error(&self, context: &'static str) -> impl FnOnce(std::io::Result<()>) + 'static {
+        let me = self.me.clone();
+        move |result| {
+            if let (Err(e), Some(app)) = (result, me.upgrade()) {
+                app.error(context, e);
+            }
+        }
     }
 
     /// Switches to another library folder and remembers it.
@@ -771,5 +848,53 @@ impl App {
         if self.background.borrow_mut().take().is_some() {
             self.gtk_app.withdraw_notification("background");
         }
+    }
+}
+
+/// `child` in a pane that may be allocated smaller than the child's minimum
+/// (the window's minimum height leaves a short pane on a 400-pixel screen).
+/// While a split view animates its sidebar (or the window shrinks past a
+/// breakpoint) it briefly gives the pane less than that, which GTK reports
+/// as a critical; the clipped frame is never seen.
+fn shrinkable(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
+    gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::External)
+        .vscrollbar_policy(gtk::PolicyType::External)
+        .propagate_natural_width(true)
+        .propagate_natural_height(true)
+        .child(child)
+        .build()
+}
+
+/// Returns the memory freed by the pages just left to the system, a moment
+/// after a page change. glibc keeps freed heap memory for reuse; with large
+/// pages (a 40,000-track album, 200 download requests) that is hundreds of
+/// megabytes the process would hold until exit.
+fn trim_heap_soon() {
+    thread_local! {
+        static PENDING: Cell<bool> = const { Cell::new(false) };
+    }
+    if PENDING.with(|p| p.replace(true)) {
+        return;
+    }
+    glib::timeout_add_seconds_local_once(2, || {
+        PENDING.with(|p| p.set(false));
+        // SAFETY: malloc_trim only returns free pages; no allocation is touched.
+        unsafe { libc::malloc_trim(0) };
+    });
+}
+
+/// What the GUI tests look at.
+#[cfg(test)]
+impl App {
+    /// The root widget of the page shown.
+    pub fn page_widget(&self) -> Option<gtk::Widget> {
+        self.content.first_child()
+    }
+
+    /// The queue panel's widget.
+    pub fn queue_widget(&self) -> gtk::Widget {
+        let q = self.queue_panel.borrow();
+        q.as_ref().expect("queue panel").widget.clone().upcast()
     }
 }

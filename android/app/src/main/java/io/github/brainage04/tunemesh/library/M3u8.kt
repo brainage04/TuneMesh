@@ -4,8 +4,11 @@ import java.io.ByteArrayInputStream
 import java.io.IOException
 import java.io.InputStream
 
-/** A playlist file beyond what this device reads ([Limits.MAX_PLAYLIST_BYTES], [Limits.MAX_PLAYLIST_ENTRIES], [Limits.MAX_PLAYLIST_LINE_BYTES]). */
-class PlaylistTooLargeException(message: String) : IOException(message)
+/**
+ * A playlist file beyond what this device reads ([Limits.MAX_PLAYLIST_BYTES], [Limits.MAX_PLAYLIST_ENTRIES],
+ * [Limits.MAX_PLAYLIST_LINE_BYTES]).
+ */
+class PlaylistTooLargeException(val reason: String) : IOException(reason)
 
 /** Reads and writes `Playlists/<Name>.m3u8` files as described in the library contract. */
 object M3u8 {
@@ -13,8 +16,8 @@ object M3u8 {
     private const val EXTINF = "#EXTINF:"
 
     /**
-     * Parses playlist [text] into entries (with their `#EXTINF` lines). [root] is the absolute library root; it is
-     * only used to resolve absolute entries.
+     * Parses playlist [text] into entries (with their `#EXTINF` lines). [root] is the absolute library root; it is only used to resolve
+     * absolute entries.
      */
     fun parse(text: String, root: String): List<PlaylistEntry> {
         val entries = ArrayList<PlaylistEntry>()
@@ -23,15 +26,14 @@ object M3u8 {
     }
 
     /**
-     * Streams the entries of a playlist file to [onEntry], one line at a time, without holding the file in memory.
-     * Lines are read as tunemesh-core's `parse` reads them: a leading BOM goes, LF ends a line, trailing CRs go,
-     * blank lines (Unicode White_Space only) and `#` lines are skipped, and an entry line is resolved exactly as
-     * written. [canonical] may return an existing string equal to a resolved path (the library index's), so
-     * entries share it instead of holding a copy. `#EXTINF` lines are kept only with [keepExtinf]: a writer needs
-     * them for entries whose track is missing, a screen does not.
+     * Streams the entries of a playlist file to [onEntry], one line at a time, without holding the file in memory. Lines are read as
+     * tunemesh-core's `parse` reads them: a leading BOM goes, LF ends a line, trailing CRs go, blank lines (Unicode White_Space only) and
+     * `#` lines are skipped, and an entry line is resolved exactly as written. [canonical] may return an existing string equal to a
+     * resolved path (the library index's), so entries share it instead of holding a copy. `#EXTINF` lines are kept only with [keepExtinf]:
+     * a writer needs them for entries whose track is missing, a screen does not.
      *
-     * Throws [PlaylistTooLargeException] past [maxBytes], [maxEntries] or [Limits.MAX_PLAYLIST_LINE_BYTES] (counted in bytes, without
-     * the line ending: LF and any CRs before it); nothing is truncated.
+     * Throws [PlaylistTooLargeException] past [maxBytes], [maxEntries] or [Limits.MAX_PLAYLIST_LINE_BYTES] (counted in bytes, without the
+     * line ending: LF and any CRs before it); nothing is truncated.
      */
     fun read(
         input: InputStream,
@@ -65,8 +67,9 @@ object M3u8 {
                 return
             }
             if (++entries > maxEntries) throw PlaylistTooLargeException("more than $maxEntries entries")
-            val path = resolve(text, root)?.let { canonical(it) ?: it }
-            onEntry(PlaylistEntry(path, text, pendingExtinf))
+            val resolved = resolve(text, root)
+            val shared = resolved?.let(canonical)
+            onEntry(PlaylistEntry.read(shared ?: resolved, text, pendingExtinf, shared = shared != null))
             pendingExtinf = null
         }
 
@@ -74,10 +77,12 @@ object M3u8 {
         fun append(from: Int, to: Int) {
             val keep = minOf(to - from, Limits.MAX_PLAYLIST_LINE_BYTES - lineLength)
             for (i in from + keep until to) {
-                if (buffer[i] != '\r'.code.toByte()) throw PlaylistTooLargeException("a line is longer than ${Limits.MAX_PLAYLIST_LINE_BYTES / 1024} KiB")
+                if (buffer[i] != '\r'.code.toByte())
+                    throw PlaylistTooLargeException("a line is longer than ${Limits.MAX_PLAYLIST_LINE_BYTES / 1024} KiB")
             }
             if (keep <= 0) return
-            if (lineLength + keep > line.size) line = line.copyOf(minOf(maxOf(lineLength + keep, line.size * 2), Limits.MAX_PLAYLIST_LINE_BYTES))
+            if (lineLength + keep > line.size)
+                line = line.copyOf(minOf(maxOf(lineLength + keep, line.size * 2), Limits.MAX_PLAYLIST_LINE_BYTES))
             System.arraycopy(buffer, from, line, lineLength, keep)
             lineLength += keep
         }
@@ -103,10 +108,9 @@ object M3u8 {
     }
 
     /**
-     * Library-relative path for an entry line, or null when it points outside the library: tunemesh-core's
-     * `resolve`. The line is used as written (not trimmed). An absolute line must start with [root] and `/`; a
-     * relative one is relative to `Playlists/`. `""` and `.` components are skipped, `..` goes up and may not
-     * leave the root.
+     * Library-relative path for an entry line, or null when it points outside the library: tunemesh-core's `resolve`. The line is used as
+     * written (not trimmed). An absolute line must start with [root] and `/`; a relative one is relative to `Playlists/`. `""` and `.`
+     * components are skipped, `..` goes up and may not leave the root.
      */
     fun resolve(line: String, root: String): String? {
         val rest: String
@@ -127,7 +131,8 @@ object M3u8 {
         if (relative) segments += LibraryFormat.PLAYLISTS_DIR
         for (segment in rest.split('/')) {
             when (segment) {
-                "", "." -> Unit
+                "",
+                "." -> Unit
                 ".." -> if (segments.isEmpty()) return null else segments.removeAt(segments.lastIndex)
                 else -> segments += segment
             }
@@ -135,7 +140,7 @@ object M3u8 {
         return segments.takeIf { it.isNotEmpty() }?.joinToString("/")
     }
 
-    /** Whether `value[from..]` is non-empty and none of its `/`-separated components is empty, `.` or `..`. */
+    /** Whether [value] from index [from] on is non-empty and none of its `/`-separated components is empty, `.` or `..`. */
     private fun isClean(value: String, from: Int): Boolean {
         if (from >= value.length) return false
         var start = from
@@ -162,8 +167,14 @@ object M3u8 {
 
     private fun durationSeconds(track: Track): Long? = if (track.durationMs > 0) (track.durationMs + 500) / 1000 else null
 
-    /** [label] cut to [Limits.MAX_LABEL_BYTES], line breaks replaced: tunemesh-core's `clean_label`. */
-    fun cleanLabel(label: String): String = Limits.cutUtf8(label, Limits.MAX_LABEL_BYTES).replace('\n', ' ').replace('\r', ' ')
+    /**
+     * [label] as written: line breaks replaced, cut to [Limits.MAX_LABEL_BYTES], Unicode White_Space trimmed (tunemesh-core's
+     * `clean_label`). Readers trim labels, so an untrimmed one (a file name ending in a space, say) would change on every rewrite.
+     */
+    fun cleanLabel(label: String): String =
+        LibraryFormat.trimWhiteSpace(
+            Limits.cutUtf8(LibraryFormat.trimWhiteSpace(label.replace('\n', ' ').replace('\r', ' ')), Limits.MAX_LABEL_BYTES)
+        )
 
     /** An `#EXTINF` line as kept when read: its label cut to [Limits.MAX_LABEL_BYTES] when longer. */
     private fun boundedExtinf(line: String): String {
@@ -176,28 +187,31 @@ object M3u8 {
 
     private val durationPattern = Regex("[+-]?[0-9]+")
 
+    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
+    private const val MAX_DURATION = (1L shl 31) - 2
+
     /** Duration and label of an `#EXTINF` line, as tunemesh-core's `parse_extinf` reads them. */
     private fun parseExtinf(line: String): Pair<Long?, String?> {
         val info = line.removePrefix(EXTINF)
-        val duration = LibraryFormat.trimWhiteSpace(info.substringBefore(','))
-            .takeIf(durationPattern::matches)?.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(MAX_DURATION)
+        val duration =
+            LibraryFormat.trimWhiteSpace(info.substringBefore(','))
+                .takeIf(durationPattern::matches)
+                ?.toLongOrNull()
+                ?.takeIf { it >= 0 }
+                ?.coerceAtMost(MAX_DURATION)
         val label = LibraryFormat.trimWhiteSpace(info.substringAfter(',', "")).takeIf { it.isNotEmpty() }
         return duration to label
     }
 
-    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
-    private const val MAX_DURATION = (1L shl 31) - 2
-
     /**
-     * Serialises [entries] as tunemesh-core's `serialize`: `#EXTINF` and entry line per entry, LF endings. A known
-     * track gets its own duration and `Artist - Title`; otherwise the duration and label read with the entry are
-     * kept, else the title from the file name; every label is cut to [Limits.MAX_LABEL_BYTES]. An entry inside the library is written as
-     * `../<path>`, one outside it as read. An entry with a line break (a lone CR read from an old file) is dropped:
-     * the line would turn into two.
+     * Serialises [entries] as tunemesh-core's `serialize`: `#EXTINF` and entry line per entry, LF endings. A known track gets its own
+     * duration and `Artist - Title`; otherwise the duration and label read with the entry are kept, else the title from the file name;
+     * every label is cut to [Limits.MAX_LABEL_BYTES]. An entry inside the library is written as `../<path>`, one outside it as read. An
+     * entry with a line break (a lone CR read from an old file) is dropped: the line would turn into two.
      *
-     * A playlist over the limits ([Limits.MAX_PLAYLIST_ENTRIES] entries, any line over [Limits.MAX_PLAYLIST_LINE_BYTES], [Limits.MAX_PLAYLIST_BYTES] in all) is
-     * not written: [PlaylistTooLargeException], so readers can always open what writers write. Every line is
-     * checked as it is serialised, before anything reaches the file.
+     * A playlist over the limits ([Limits.MAX_PLAYLIST_ENTRIES] entries, any line over [Limits.MAX_PLAYLIST_LINE_BYTES],
+     * [Limits.MAX_PLAYLIST_BYTES] in all) is not written: [PlaylistTooLargeException], so readers can always open what writers write. Every
+     * line is checked as it is serialised, before anything reaches the file.
      */
     fun write(entries: List<PlaylistEntry>, lookup: (String) -> Track?): String {
         if (entries.size > Limits.MAX_PLAYLIST_ENTRIES) throw PlaylistTooLargeException("more than ${Limits.MAX_PLAYLIST_ENTRIES} entries")
@@ -205,10 +219,12 @@ object M3u8 {
         val text = buildString {
             fun line(value: String) {
                 val length = Limits.utf8Length(value)
-                if (length > Limits.MAX_PLAYLIST_LINE_BYTES) throw PlaylistTooLargeException("a line is longer than ${Limits.MAX_PLAYLIST_LINE_BYTES / 1024} KiB")
+                if (length > Limits.MAX_PLAYLIST_LINE_BYTES)
+                    throw PlaylistTooLargeException("a line is longer than ${Limits.MAX_PLAYLIST_LINE_BYTES / 1024} KiB")
                 append(value).append('\n')
                 bytes += length + 1
-                if (bytes > Limits.MAX_PLAYLIST_BYTES) throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
+                if (bytes > Limits.MAX_PLAYLIST_BYTES)
+                    throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
             }
             line(HEADER)
             for (entry in entries) {
@@ -217,11 +233,12 @@ object M3u8 {
                 val track = path?.let(lookup)
                 val (readDuration, readLabel) = entry.extinf?.let(::parseExtinf) ?: (null to null)
                 val duration = track?.let(::durationSeconds) ?: readDuration
-                val label = when {
-                    track != null -> cleanLabel("${track.artist} - ${track.title}")
-                    readLabel != null -> cleanLabel(readLabel)
-                    else -> cleanLabel(LibraryFormat.titleFromFileName((path ?: entry.raw).substringAfterLast('/')))
-                }
+                val label =
+                    when {
+                        track != null -> cleanLabel("${track.artist} - ${track.title}")
+                        readLabel != null -> cleanLabel(readLabel)
+                        else -> cleanLabel(LibraryFormat.titleFromFileName((path ?: entry.raw).substringAfterLast('/')))
+                    }
                 line("$EXTINF${duration ?: -1},$label")
                 line(if (path != null) entryLine(path) else entry.raw)
             }

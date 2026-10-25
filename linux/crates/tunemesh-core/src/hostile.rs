@@ -458,6 +458,7 @@ mod tests {
     use crate::limits::{MAX_ARTISTS, MAX_TAG_TEXT_BYTES};
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn tags_and_covers_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         for sub in ["Playlists", ".tunemesh/requests", ".tunemesh/status"] {
@@ -489,7 +490,20 @@ mod tests {
     /// the peak memory measured is the client's alone) and returns the
     /// child's report line.
     fn check_in_child(options: &Options) -> String {
-        let base = std::env::var_os("TUNEMESH_HOSTILE_DIR").unwrap_or("/var/tmp".into());
+        // Disk-backed /var/tmp when there is one (the full library is
+        // about 1.2 GB, too much for a RAM-backed /tmp), else the system
+        // temporary directory ($TMPDIR; the Nix build sandbox has no
+        // /var/tmp).
+        let base = std::env::var_os("TUNEMESH_HOSTILE_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                let var_tmp = Path::new("/var/tmp");
+                if var_tmp.is_dir() {
+                    var_tmp.to_owned()
+                } else {
+                    std::env::temp_dir()
+                }
+            });
         let dir = tempfile::tempdir_in(base).unwrap();
         let root = dir.path().join("lib");
         generate(&root, options).unwrap();
@@ -578,6 +592,7 @@ mod tests {
     /// The small hostile library: every limit applies and a client's start
     /// stays within seconds and a few hundred MiB.
     #[test]
+    #[cfg_attr(miri, ignore = "child process")]
     fn hostile_library_stays_bounded() {
         let report = check_in_child(&Options::small());
         // Measured: debug 0.4 s per step and 29 MiB, release 0.15 s.

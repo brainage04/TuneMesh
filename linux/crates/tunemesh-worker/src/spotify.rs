@@ -167,18 +167,18 @@ fn id_from_uri(uri: &str) -> Option<String> {
 }
 
 /// The `__NEXT_DATA__` JSON of an embed page.
-fn next_data(html: &str) -> Option<Value> {
+pub fn next_data(html: &str) -> Option<Value> {
     let start = html.find("id=\"__NEXT_DATA__\"")?;
     let json_start = start + html[start..].find('>')? + 1;
     let end = json_start + html[json_start..].find("</script>")?;
     serde_json::from_str(&html[json_start..end]).ok()
 }
 
-struct Embed {
-    name: Option<String>,
-    token: Option<String>,
-    tracks: Vec<SpTrack>,
-    skipped: Vec<(String, String)>,
+pub struct Embed {
+    pub name: Option<String>,
+    pub token: Option<String>,
+    pub tracks: Vec<SpTrack>,
+    pub skipped: Vec<(String, String)>,
 }
 
 fn split_artists(subtitle: &str) -> Vec<String> {
@@ -189,7 +189,7 @@ fn split_artists(subtitle: &str) -> Vec<String> {
         .collect()
 }
 
-fn parse_embed(kind: Kind, id: &str, data: &Value) -> Embed {
+pub fn parse_embed(kind: Kind, id: &str, data: &Value) -> Embed {
     let entity = data
         .pointer("/props/pageProps/state/data/entity")
         .cloned()

@@ -9,6 +9,7 @@ import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import io.github.brainage04.tunemesh.library.Track
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -19,7 +20,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.io.File
 
 data class PlayerUiState(
     val connected: Boolean = false,
@@ -32,8 +32,11 @@ data class PlayerUiState(
     val repeatMode: Int = Player.REPEAT_MODE_OFF,
     val shuffle: Boolean = false,
 ) {
-    val current: MediaItem? get() = queue.getOrNull(currentIndex)
-    val currentPath: String? get() = current?.let(QueueItems::path)
+    val current: MediaItem?
+        get() = queue.getOrNull(currentIndex)
+
+    val currentPath: String?
+        get() = current?.let(QueueItems::path)
 
     /** Pause is offered while playback is requested and can continue (not after the queue ended or failed). */
     val showPause: Boolean
@@ -41,9 +44,8 @@ data class PlayerUiState(
 }
 
 /**
- * The app's [MediaController] to [PlaybackService]. Shuffle is implemented here by reordering the queue (the
- * context order is remembered to undo it), so the queue screen always shows the real play order and
- * "Play next" really plays next.
+ * The app's [MediaController] to [PlaybackService]. Shuffle is implemented here by reordering the queue (the context order is remembered to
+ * undo it), so the queue screen always shows the real play order and "Play next" really plays next.
  */
 class PlayerConnection(private val context: Context, private val state: PlaybackState) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -57,24 +59,28 @@ class PlayerConnection(private val context: Context, private val state: Playback
     private val _position = MutableStateFlow(0L)
     val position: StateFlow<Long> = _position
 
-    private val listener = object : Player.Listener {
-        override fun onEvents(player: Player, events: Player.Events) = publish()
-    }
+    private val listener =
+        object : Player.Listener {
+            override fun onEvents(player: Player, events: Player.Events) = publish()
+        }
 
     fun connect() {
         if (controller != null || connecting) return
         connecting = true
         val token = SessionToken(context, ComponentName(context, PlaybackService::class.java))
         val future = MediaController.Builder(context, token).buildAsync()
-        future.addListener({
-            connecting = false
-            val built = runCatching { future.get() }.getOrNull() ?: return@addListener
-            controller = built
-            built.addListener(listener)
-            publish()
-            pending.toList().forEach { it(built) }
-            pending.clear()
-        }, ContextCompat.getMainExecutor(context))
+        future.addListener(
+            {
+                connecting = false
+                val built = runCatching { future.get() }.getOrNull() ?: return@addListener
+                controller = built
+                built.addListener(listener)
+                publish()
+                pending.toList().forEach { it(built) }
+                pending.clear()
+            },
+            ContextCompat.getMainExecutor(context),
+        )
     }
 
     fun disconnect() {
@@ -94,7 +100,8 @@ class PlayerConnection(private val context: Context, private val state: Playback
             return
         }
         val current = controller
-        if (current != null) action(current) else {
+        if (current != null) action(current)
+        else {
             pending += action
             connect()
         }
@@ -103,17 +110,18 @@ class PlayerConnection(private val context: Context, private val state: Playback
     private fun publish() {
         val player = controller ?: return
         val queue = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
-        _ui.value = PlayerUiState(
-            connected = true,
-            queue = queue,
-            currentIndex = if (queue.isEmpty()) -1 else player.currentMediaItemIndex,
-            isPlaying = player.isPlaying,
-            playWhenReady = player.playWhenReady,
-            playbackState = player.playbackState,
-            durationMs = player.duration.takeIf { it > 0 } ?: (player.currentMediaItem?.mediaMetadata?.durationMs ?: 0),
-            repeatMode = player.repeatMode,
-            shuffle = state.shuffle,
-        )
+        _ui.value =
+            PlayerUiState(
+                connected = true,
+                queue = queue,
+                currentIndex = if (queue.isEmpty()) -1 else player.currentMediaItemIndex,
+                isPlaying = player.isPlaying,
+                playWhenReady = player.playWhenReady,
+                playbackState = player.playbackState,
+                durationMs = player.duration.takeIf { it > 0 } ?: (player.currentMediaItem?.mediaMetadata?.durationMs ?: 0),
+                repeatMode = player.repeatMode,
+                shuffle = state.shuffle,
+            )
         _position.value = player.currentPosition
         ticker?.cancel()
         if (player.isPlaying) {
@@ -227,11 +235,12 @@ class PlayerConnection(private val context: Context, private val state: Playback
     }
 
     fun cycleRepeat() = withController { player ->
-        player.repeatMode = when (player.repeatMode) {
-            Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
-            Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
-            else -> Player.REPEAT_MODE_OFF
-        }
+        player.repeatMode =
+            when (player.repeatMode) {
+                Player.REPEAT_MODE_OFF -> Player.REPEAT_MODE_ALL
+                Player.REPEAT_MODE_ALL -> Player.REPEAT_MODE_ONE
+                else -> Player.REPEAT_MODE_OFF
+            }
     }
 
     fun toggleShuffle() = withController { player ->
@@ -242,17 +251,18 @@ class PlayerConnection(private val context: Context, private val state: Playback
         if (count > 1 && current in 0 until count) {
             val items = (0 until count).map { player.getMediaItemAt(it) }
             val currentItem = items[current]
-            val (before, after) = if (enable) {
-                state.originalOrder = items.map(QueueItems::id)
-                emptyList<MediaItem>() to (items.take(current) + items.drop(current + 1)).shuffled()
-            } else {
-                val byId = items.associateBy(QueueItems::id)
-                val known = state.originalOrder.filter { it in byId }
-                val extra = items.map(QueueItems::id).filter { it !in known.toSet() && it != QueueItems.id(currentItem) }
-                val order = (known + extra).mapNotNull(byId::get)
-                val at = order.indexOfFirst { QueueItems.id(it) == QueueItems.id(currentItem) }
-                if (at < 0) emptyList<MediaItem>() to order else order.take(at) to order.drop(at + 1)
-            }
+            val (before, after) =
+                if (enable) {
+                    state.originalOrder = items.map(QueueItems::id)
+                    emptyList<MediaItem>() to (items.take(current) + items.drop(current + 1)).shuffled()
+                } else {
+                    val byId = items.associateBy(QueueItems::id)
+                    val known = state.originalOrder.filter { it in byId }
+                    val extra = items.map(QueueItems::id).filter { it !in known.toSet() && it != QueueItems.id(currentItem) }
+                    val order = (known + extra).mapNotNull(byId::get)
+                    val at = order.indexOfFirst { QueueItems.id(it) == QueueItems.id(currentItem) }
+                    if (at < 0) emptyList<MediaItem>() to order else order.take(at) to order.drop(at + 1)
+                }
             // Keep the playing item in place so playback is not interrupted.
             if (current + 1 < count) player.removeMediaItems(current + 1, count)
             if (current > 0) player.removeMediaItems(0, current)

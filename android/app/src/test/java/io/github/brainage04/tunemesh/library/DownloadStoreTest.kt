@@ -1,5 +1,7 @@
 package io.github.brainage04.tunemesh.library
 
+import java.io.File
+import java.time.Instant
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -11,12 +13,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
-import java.io.File
-import java.time.Instant
 
 class DownloadStoreTest {
-    @get:Rule
-    val temp = TemporaryFolder()
+    @get:Rule val temp = TemporaryFolder()
 
     private val now = Instant.parse("2026-10-06T05:01:37.123Z")
 
@@ -60,12 +59,14 @@ class DownloadStoreTest {
         val waiting = store.submit("first", null, false, "x", Instant.ofEpochMilli(1000))
         val running = store.submit("second", null, false, "x", Instant.ofEpochMilli(2000))
         val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
-        File(status, "${running.id}.json").writeText(
-            """{"version":1,"id":"${running.id}","input":"second","state":"downloading","title":"Song","progress":0.42,"message":null,"tracks":[],"updatedAt":"2026-10-06T05:01:52Z","future":"ignored"}""",
-        )
-        File(status, "3000-deadbeef.json").writeText(
-            """{"version":1,"id":"3000-deadbeef","input":"third","state":"failed","title":null,"progress":null,"message":"Video unavailable","tracks":[],"updatedAt":"2026-10-06T05:01:52Z"}""",
-        )
+        File(status, "${running.id}.json")
+            .writeText(
+                """{"version":1,"id":"${running.id}","input":"second","state":"downloading","title":"Song","progress":0.42,"message":null,"tracks":[],"updatedAt":"2026-10-06T05:01:52Z","future":"ignored"}"""
+            )
+        File(status, "3000-deadbeef.json")
+            .writeText(
+                """{"version":1,"id":"3000-deadbeef","input":"third","state":"failed","title":null,"progress":null,"message":"Video unavailable","tracks":[],"updatedAt":"2026-10-06T05:01:52Z"}"""
+            )
         File(status, "broken.json").writeText("{")
         val items = store.list().items
         assertEquals(listOf("3000-deadbeef", running.id, waiting.id), items.map { it.id })
@@ -85,10 +86,11 @@ class DownloadStoreTest {
     @Test
     fun statusProgressFieldsAreReadAndOptional() {
         val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
-        File(status, "1000-aaaaaaaa.json").writeText(
-            """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","itemsDone":3,"itemsTotal":12,""" +
-                """"failures":[{"item":"Artist - Title","error":"Video unavailable"}],"warnings":["Imported the first 100 tracks"]}""",
-        )
+        File(status, "1000-aaaaaaaa.json")
+            .writeText(
+                """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","itemsDone":3,"itemsTotal":12,""" +
+                    """"failures":[{"item":"Artist - Title","error":"Video unavailable"}],"warnings":["Imported the first 100 tracks"]}"""
+            )
         File(status, "2000-bbbbbbbb.json").writeText("""{"version":1,"id":"2000-bbbbbbbb","state":"queued"}""")
         val items = DownloadStore(temp.root).list().items.associateBy { it.id }
         val counted = items.getValue("1000-aaaaaaaa").status!!
@@ -106,13 +108,15 @@ class DownloadStoreTest {
     @Test
     fun submitAllWritesOneRequestPerLineInPasteOrder() {
         val store = DownloadStore(temp.root)
-        val text = """
+        val text =
+            """
             https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M
 
             https://www.youtube.com/watch?v=jNQXAC9IVRw
             https://open.spotify.com/album/4aawyAB9vmqN3uQ7FjRGTy
             https://www.youtube.com/watch?v=jNQXAC9IVRw
-        """.trimIndent()
+            """
+                .trimIndent()
         val requests = store.submitAll(text, null, saveAsPlaylists = true, requestedBy = "pixel-8", now = now)
         assertEquals(
             listOf(
@@ -127,7 +131,14 @@ class DownloadStoreTest {
         assertEquals(requests.map { it.id }.reversed(), store.list().items.map { it.id })
         assertTrue(requests.zipWithNext().all { (a, b) -> a.id.substringBefore('-').toLong() < b.id.substringBefore('-').toLong() })
 
-        val targeted = store.submitAll("https://open.spotify.com/playlist/x\nartist - song", "Road trip", saveAsPlaylists = true, requestedBy = "x", now = now)
+        val targeted =
+            store.submitAll(
+                "https://open.spotify.com/playlist/x\nartist - song",
+                "Road trip",
+                saveAsPlaylists = true,
+                requestedBy = "x",
+                now = now,
+            )
         assertEquals(listOf("Road trip", "Road trip"), targeted.map { it.playlist })
         assertEquals(listOf(false, false), targeted.map { it.playlistFromSource })
     }
@@ -143,9 +154,10 @@ class DownloadStoreTest {
         assertEquals(null, store.worker())
         assertEquals(Downloader.None, Downloader.of(store.worker(), now))
         val state = File(temp.root, ".tunemesh").apply { mkdirs() }
-        File(state, "worker.json").writeText(
-            """{"version":1,"device":"home-server","instance":"5f0c1d2e3a4b6c7d","pid":41234,"workerVersion":"0.1.0","heartbeatAt":"2026-10-06T05:00:00Z"}""",
-        )
+        File(state, "worker.json")
+            .writeText(
+                """{"version":1,"device":"home-server","instance":"5f0c1d2e3a4b6c7d","pid":41234,"workerVersion":"0.1.0","heartbeatAt":"2026-10-06T05:00:00Z"}"""
+            )
         val info = store.worker()!!
         assertEquals("home-server", info.device)
         assertEquals(Downloader.Active("home-server"), Downloader.of(info, now))
@@ -196,18 +208,19 @@ class DownloadStoreTest {
     /** R2-opus-4 and "Limits": statuses are cut when read, and what the Downloads tab shows is bounded again. */
     @Test
     fun statusTextsAreCutWhenReadAndShown() {
-        val status = DownloadStore.bounded(
-            DownloadStatus(
-                id = "1-a",
-                input = "i".repeat(10_000),
-                state = "done",
-                title = "t".repeat(10_000),
-                message = "Imported the first 100 tracks.\n" + "m\n".repeat(250_000),
-                tracks = List(20_000) { "A/$it.mp3" },
-                failures = List(300) { DownloadFailure("Item $it", "é".repeat(5_000)) },
-                warnings = listOf("Imported the first 100 tracks") + List(55_000) { "w$it" },
-            ),
-        )
+        val status =
+            DownloadStore.bounded(
+                DownloadStatus(
+                    id = "1-a",
+                    input = "i".repeat(10_000),
+                    state = "done",
+                    title = "t".repeat(10_000),
+                    message = "Imported the first 100 tracks.\n" + "m\n".repeat(250_000),
+                    tracks = List(20_000) { "A/$it.mp3" },
+                    failures = List(300) { DownloadFailure("Item $it", "é".repeat(5_000)) },
+                    warnings = listOf("Imported the first 100 tracks") + List(55_000) { "w$it" },
+                )
+            )
         assertEquals(Limits.MAX_REQUEST_INPUT_BYTES, status.input.length)
         assertEquals(Limits.MAX_STATUS_TEXT_BYTES, status.title!!.length)
         assertEquals(Limits.MAX_STATUS_MESSAGE_BYTES, status.message!!.toByteArray().size)
@@ -226,8 +239,16 @@ class DownloadStoreTest {
         assertEquals(Limits.SHOWN_LINE_CHARS, shown.title!!.length)
         assertTrue(shown.title.endsWith("…"))
         assertEquals(Limits.SHOWN_LINE_CHARS, shown.input.length)
+        // An unbroken message is cut to what the card's 8 lines can show.
+        val unbroken = ShownDownload.of("x", status.copy(message = "m".repeat(Limits.MAX_STATUS_MESSAGE_BYTES)))
+        assertEquals(ShownDownload.PREVIEW_CHARS, unbroken.message!!.length)
+        assertTrue(unbroken.message.endsWith("…"))
 
-        val few = ShownDownload.of("x", status.copy(failures = listOf(DownloadFailure("A", "gone")), warnings = listOf("Imported the first 100 tracks", "w")))
+        val few =
+            ShownDownload.of(
+                "x",
+                status.copy(failures = listOf(DownloadFailure("A", "gone")), warnings = listOf("Imported the first 100 tracks", "w")),
+            )
         assertEquals(1, few.warningCount)
         assertEquals(listOf("A: gone", "w"), few.lines)
         val emoji = Limits.shownLine("a" + "🎵".repeat(Limits.SHOWN_LINE_CHARS))
@@ -242,7 +263,8 @@ class DownloadStoreTest {
         val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
         for (n in 1..250) {
             val id = "${1000 + n}-aaaaaaaa"
-            File(requests, "$id.json").writeText("""{"version":1,"id":"$id","input":"x","requestedBy":"p","requestedAt":"2026-10-06T05:01:37Z"}""")
+            File(requests, "$id.json")
+                .writeText("""{"version":1,"id":"$id","input":"x","requestedBy":"p","requestedAt":"2026-10-06T05:01:37Z"}""")
             if (n % 2 == 0) File(statuses, "$id.json").writeText("""{"version":1,"id":"$id","state":"queued"}""")
         }
         val list = DownloadStore(temp.root).list()

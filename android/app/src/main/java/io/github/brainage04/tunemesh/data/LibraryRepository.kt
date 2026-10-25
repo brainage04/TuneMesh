@@ -17,6 +17,8 @@ import io.github.brainage04.tunemesh.library.PlaylistSummaries
 import io.github.brainage04.tunemesh.library.RawTags
 import io.github.brainage04.tunemesh.library.Stignore
 import io.github.brainage04.tunemesh.library.Track
+import java.io.File
+import java.io.IOException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,8 +34,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.IOException
 
 data class LibraryState(
     val root: File,
@@ -51,9 +51,11 @@ data class LibraryState(
     val error: String? = null,
 ) {
     /** Liked Songs always exists for the UI, even before its file is first written. */
-    fun playlist(name: String): Playlist? = playlists.firstOrNull { it.name == name }
-        ?: if (name == LibraryFormat.LIKED_SONGS) Playlist(name, 0, emptyList(), 0) else null
-    val likedSongs: Playlist? get() = playlists.firstOrNull { it.isLikedSongs }
+    fun playlist(name: String): Playlist? =
+        playlists.firstOrNull { it.name == name } ?: if (name == LibraryFormat.LIKED_SONGS) Playlist(name, 0, emptyList(), 0) else null
+
+    val likedSongs: Playlist?
+        get() = playlists.firstOrNull { it.isLikedSongs }
 }
 
 class LibraryRepository(
@@ -78,36 +80,47 @@ class LibraryRepository(
     private var likedStamp: Pair<Long, Long>? = null
     private var openStamp: Pair<Long, Long>? = null
 
-    val root: File get() = _state.value.root
+    val root: File
+        get() = _state.value.root
+
     private val summaries = PlaylistSummaries()
     private var storeFor: Pair<File, LibraryIndex>? = null
     private var store: PlaylistStore? = null
 
     /** One store per root and index, so [summaries] can tell that its track lookup did not change. */
     private val playlistStore: PlaylistStore
-        @Synchronized get() {
+        @Synchronized
+        get() {
             val state = _state.value
             val key = state.root to state.index
-            if (key != storeFor || store == null) {
-                val index = state.index
-                store = PlaylistStore(state.root, summaries) { index.byPath[it] }
-                storeFor = key
-            }
-            return store!!
+            store
+                ?.takeIf { key == storeFor }
+                ?.let {
+                    return it
+                }
+            val index = state.index
+            return PlaylistStore(state.root, summaries) { index.byPath[it] }
+                .also {
+                    store = it
+                    storeFor = key
+                }
         }
-    private val downloadStore get() = DownloadStore(root)
+
+    private val downloadStore
+        get() = DownloadStore(root)
 
     fun hasAccess(): Boolean = Environment.isExternalStorageManager()
 
     /**
-     * The track at the library-relative [path], or null when [path] does not name an audio file inside the library
-     * (absolute, `..` or symlinks out of it, not audio, missing). Paths the index does not know yet (before the
-     * first scan) get path-derived metadata.
+     * The track at the library-relative [path], or null when [path] does not name an audio file inside the library (absolute, `..` or
+     * symlinks out of it, not audio, missing). Paths the index does not know yet (before the first scan) get path-derived metadata.
      */
     fun track(path: String): Track? {
         val root = root
         val resolved = LibraryUris.resolvePath(path, root) ?: return null
-        _state.value.index.byPath[resolved]?.let { return it }
+        _state.value.index.byPath[resolved]?.let {
+            return it
+        }
         val file = File(root, resolved)
         if (!file.isFile) return null
         return Track.fromTags(resolved, RawTags(), file.length(), file.lastModified())
@@ -148,8 +161,8 @@ class LibraryRepository(
     }
 
     /**
-     * Rescans the library, playlists and downloads. Requests made while one refresh waits to start are merged into
-     * it (start-up, the activity coming to the foreground and file events otherwise queue one full rescan each).
+     * Rescans the library, playlists and downloads. Requests made while one refresh waits to start are merged into it (start-up, the
+     * activity coming to the foreground and file events otherwise queue one full rescan each).
      */
     suspend fun refresh() {
         refreshGate.run(::refreshLocked)
@@ -166,7 +179,10 @@ class LibraryRepository(
         try {
             ensureRoot(root)
             val result = scanner.scan(root)
-            val index = LibraryIndex(result.tracks)
+            // An unchanged library keeps its index: a new one would make every screen showing it recompose (and an open
+            // playlist look its entries up again) after each periodic rescan.
+            val current = _state.value.index
+            val index = if (result.tracks == current.tracks) current else LibraryIndex(result.tracks)
             _state.update { it.copy(index = index, loaded = true, error = null) }
             reloadPlaylists()
             reloadDownloads()
@@ -190,8 +206,8 @@ class LibraryRepository(
     }
 
     /**
-     * Re-reads the playlist summaries, and Liked Songs and the open playlist when their files changed ([force]
-     * after this app changed one). Unchanged files are not read again, so a large one is never held twice.
+     * Re-reads the playlist summaries, and Liked Songs and the open playlist when their files changed ([force] after this app changed one).
+     * Unchanged files are not read again, so a large one is never held twice.
      */
     private fun reloadPlaylists(force: Boolean = false) {
         if (force) summaries.clear()
@@ -203,12 +219,13 @@ class LibraryRepository(
         val liked = stamp(likedFile)
         if (force || liked != likedStamp) {
             likedStamp = liked
-            val paths = try {
-                store.likedPaths()
-            } catch (error: IOException) {
-                Log.w(TAG, "Cannot read Liked Songs", error)
-                emptySet()
-            }
+            val paths =
+                try {
+                    store.likedPaths()
+                } catch (error: IOException) {
+                    Log.w(TAG, "Cannot read Liked Songs", error)
+                    emptySet()
+                }
             _state.update { it.copy(liked = paths) }
         }
         reloadOpenPlaylist(force)
@@ -228,12 +245,13 @@ class LibraryRepository(
         if (!force && stamp == openStamp && _state.value.openPlaylist?.name == name) return
         openStamp = stamp
         // The old entries stay on screen while the new ones load (both are bounded by Limits.MAX_PLAYLIST_ENTRIES).
-        val contents = try {
-            store.contents(name)
-        } catch (error: IOException) {
-            Log.w(TAG, "Cannot read playlist $name", error)
-            null
-        }
+        val contents =
+            try {
+                store.contents(name)
+            } catch (error: IOException) {
+                Log.w(TAG, "Cannot read playlist $name", error)
+                null
+            }
         if (openedPlaylist == name) _state.update { it.copy(openPlaylist = contents) }
     }
 
@@ -258,29 +276,35 @@ class LibraryRepository(
         _state.update { it.copy(downloads = downloads, downloader = downloader) }
     }
 
-    private suspend fun refreshDownloads() = withContext(Dispatchers.IO) {
-        if (_state.value.hasAccess) reloadDownloads()
-    }
+    private suspend fun refreshDownloads() =
+        withContext(Dispatchers.IO) {
+            if (_state.value.hasAccess) reloadDownloads()
+        }
 
     @Synchronized
     private fun observe(libraryDirectories: List<File>) {
         if (!foreground) return
-        val directories = (libraryDirectories + listOf(
-            File(root, LibraryFormat.PLAYLISTS_DIR),
-            File(root, "${LibraryFormat.STATE_DIR}/requests"),
-            File(root, "${LibraryFormat.STATE_DIR}/status"),
-        )).filter { it.isDirectory }.toSet()
+        val directories =
+            (libraryDirectories +
+                    listOf(
+                        File(root, LibraryFormat.PLAYLISTS_DIR),
+                        File(root, "${LibraryFormat.STATE_DIR}/requests"),
+                        File(root, "${LibraryFormat.STATE_DIR}/status"),
+                    ))
+                .filter { it.isDirectory }
+                .toSet()
         if (directories == observedDirectories) return
         stopObserving()
-        val mask = FileObserver.CREATE or FileObserver.DELETE or FileObserver.MOVED_FROM or
-            FileObserver.MOVED_TO or FileObserver.CLOSE_WRITE
+        val mask =
+            FileObserver.CREATE or FileObserver.DELETE or FileObserver.MOVED_FROM or FileObserver.MOVED_TO or FileObserver.CLOSE_WRITE
         observers = directories.map { directory ->
             object : FileObserver(directory, mask) {
-                override fun onEvent(event: Int, path: String?) {
-                    if (path == null || path.startsWith(".~tunemesh-") || path.startsWith(".syncthing.")) return
-                    scheduleRefresh()
+                    override fun onEvent(event: Int, path: String?) {
+                        if (path == null || path.startsWith(".~tunemesh-") || path.startsWith(".syncthing.")) return
+                        scheduleRefresh()
+                    }
                 }
-            }.also { it.startWatching() }
+                .also { it.startWatching() }
         }
         observedDirectories = directories
     }
@@ -309,11 +333,12 @@ class LibraryRepository(
     }
 
     /**
-     * Playlist changes run one at a time, in the order they were asked for, so each one reads the file the one
-     * before it wrote (two quick taps would otherwise both read the old file and the later write drop the other).
+     * Playlist changes run one at a time, in the order they were asked for, so each one reads the file the one before it wrote (two quick
+     * taps would otherwise both read the old file and the later write drop the other).
      */
     private val mutations = Dispatchers.IO.limitedParallelism(1)
 
+    @Suppress("TooGenericExceptionCaught") // any failed change is reported instead of ending the app; action does not suspend
     private fun mutate(action: () -> Unit) {
         scope.launch(mutations) {
             try {

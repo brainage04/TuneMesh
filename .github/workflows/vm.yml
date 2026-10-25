@@ -75,15 +75,16 @@ jobs:
           - distro: ubuntu-24.04
             artifacts: '{pkg-deb-x86_64,pkg-appimage-x86_64,pkg-snap-x86_64}'
             packages: tunemesh_*_amd64.deb TuneMesh-*-x86_64.AppImage tunemesh_*_amd64.snap
+          # The 24.04-built packages on the newer LTS.
+          - distro: ubuntu-26.04
+            artifacts: '{pkg-deb-x86_64,pkg-appimage-x86_64,pkg-snap-x86_64}'
+            packages: tunemesh_*_amd64.deb TuneMesh-*-x86_64.AppImage tunemesh_*_amd64.snap
           - distro: debian-13
             artifacts: pkg-deb-x86_64
             packages: tunemesh_*_amd64.deb
           - distro: fedora
             artifacts: '{pkg-rpm-x86_64,pkg-flatpak-x86_64}'
             packages: tunemesh-[0-9]*.x86_64.rpm TuneMesh-*-x86_64.flatpak
-          - distro: opensuse-tumbleweed
-            artifacts: pkg-rpm-x86_64
-            packages: tunemesh-[0-9]*.x86_64.rpm
           - distro: arch
             artifacts: pkg-arch-x86_64
             packages: tunemesh-[0-9]*.pkg.tar.zst tunemesh-bin-[0-9]*.pkg.tar.zst

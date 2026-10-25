@@ -36,9 +36,8 @@ contains the app and the downloader.
 
 | System | Install |
 | --- | --- |
-| Ubuntu 24.04+, Debian 13+ (amd64, arm64) | `sudo apt install ./tunemesh_<version>-1_<arch>.deb` |
+| Ubuntu 24.04 and 26.04 LTS, Debian 13+ (amd64, arm64) | `sudo apt install ./tunemesh_<version>-1_<arch>.deb` |
 | Fedora (x86_64) | `sudo dnf install ./tunemesh-<version>-1.fc43.x86_64.rpm` |
-| openSUSE Tumbleweed (x86_64) | `sudo zypper install --allow-unsigned-rpm ./tunemesh-<version>-1.fc43.x86_64.rpm` |
 | Arch Linux (x86_64) | `sudo pacman -U ./tunemesh-<version>-1-x86_64.pkg.tar.zst` |
 | Any distribution: Flatpak (x86_64) | `flatpak install --user ./TuneMesh-<version>-x86_64.flatpak` |
 | Any distribution: Snap (amd64, arm64) | `sudo snap install --dangerous ./tunemesh_<version>_<arch>.snap` |
@@ -162,7 +161,7 @@ If you enabled the downloader service, stop it first:
 | Installed with | Remove |
 | --- | --- |
 | `.deb` | `sudo apt purge tunemesh` |
-| `.rpm` | `sudo dnf remove tunemesh` / `sudo zypper remove tunemesh` |
+| `.rpm` | `sudo dnf remove tunemesh` |
 | Arch | `sudo pacman -Rns tunemesh` |
 | Flatpak | `flatpak uninstall --user --delete-data io.github.brainage04.TuneMesh` (removes its settings too) |
 | Snap | `sudo snap remove --purge tunemesh` (removes its settings too) |
@@ -227,7 +226,7 @@ attached to every release.
 | Directory | What |
 | --- | --- |
 | `linux/` | Rust workspace: desktop app, downloader and the shared library-format crate ([linux/README.md](linux/README.md)) |
-| `android/` | Android app |
+| `android/` | Android app; building, tests and the development checks (ktfmt, detekt, Jazzer, LeakCanary, macrobenchmarks): [android/AGENTS.md](android/AGENTS.md) |
 | `docs/library-format.md` | The folder layout and file formats every part shares |
 | `packaging/` | Package recipes; `.github/workflows/release.yml` builds and tests them |
 

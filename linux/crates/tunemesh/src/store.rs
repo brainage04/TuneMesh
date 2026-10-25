@@ -60,6 +60,23 @@ fn cache_file() -> PathBuf {
 
 type Listener = Rc<dyn Fn(StoreChange)>;
 
+/// A playlist edit for the writer thread.
+type WriteJob = Box<dyn FnOnce() + Send>;
+
+/// The thread that reads, edits and writes playlist files, one job at a time.
+fn writer_thread() -> std::sync::mpsc::Sender<WriteJob> {
+    let (tx, rx) = std::sync::mpsc::channel::<WriteJob>();
+    std::thread::Builder::new()
+        .name("playlist-writer".into())
+        .spawn(move || {
+            for job in rx {
+                job();
+            }
+        })
+        .expect("spawn playlist writer");
+    tx
+}
+
 pub struct Store {
     me: Weak<Store>,
     root: RefCell<PathBuf>,
@@ -82,6 +99,7 @@ pub struct Store {
     scanning: Cell<bool>,
     rescan_again: Cell<bool>,
     generation: Cell<u64>,
+    writer: std::sync::mpsc::Sender<WriteJob>,
 }
 
 impl Store {
@@ -91,10 +109,7 @@ impl Store {
             root: RefCell::new(root),
             lib: RefCell::new(Arc::new(Library::default())),
             playlists: RefCell::new(Vec::new()),
-            liked: RefCell::new(Playlist {
-                name: LIKED_SONGS.into(),
-                entries: Vec::new(),
-            }),
+            liked: RefCell::new(Playlist::new(LIKED_SONGS)),
             liked_set: RefCell::new(HashSet::new()),
             too_large: RefCell::new(HashSet::new()),
             playlist_stamps: RefCell::new(HashMap::new()),
@@ -105,6 +120,7 @@ impl Store {
             scanning: Cell::new(false),
             rescan_again: Cell::new(false),
             generation: Cell::new(0),
+            writer: writer_thread(),
         });
         store.open();
         store
@@ -138,10 +154,7 @@ impl Store {
         self.playlists.borrow_mut().clear();
         self.too_large.borrow_mut().clear();
         self.playlist_stamps.borrow_mut().clear();
-        self.set_liked(Playlist {
-            name: LIKED_SONGS.into(),
-            entries: Vec::new(),
-        });
+        self.set_liked(Playlist::new(LIKED_SONGS));
         self.open();
         self.emit(StoreChange::Library);
         self.emit(StoreChange::Playlists);
@@ -176,11 +189,15 @@ impl Store {
     /// have reported.
     #[cfg(test)]
     fn settle(&self) {
+        self.settle_for(Duration::from_secs(10));
+    }
+
+    /// Tests: `settle`, waiting up to `max`.
+    #[cfg(test)]
+    pub fn settle_for(&self, max: Duration) {
         let ctx = glib::MainContext::ref_thread_default();
         let start = std::time::Instant::now();
-        while (self.scanning.get() || self.playlists_loading.get())
-            && start.elapsed() < Duration::from_secs(10)
-        {
+        while (self.scanning.get() || self.playlists_loading.get()) && start.elapsed() < max {
             ctx.iteration(true);
         }
     }
@@ -265,18 +282,34 @@ impl Store {
             return;
         }
         let (tx, rx) = async_channel::unbounded::<Vec<PathBuf>>();
-        let watcher = match watch_library(&root, move |paths| {
-            let _ = tx.send_blocking(paths);
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                eprintln!("tunemesh: cannot watch {}: {e}", root.display());
+        let generation = self.generation.get();
+        // Watching adds an inotify watch per folder: a second or more for a
+        // library of thousands of albums, so it happens on a thread.
+        let (wtx, wrx) = async_channel::bounded::<notify::Result<RecommendedWatcher>>(1);
+        let watch_root = root.clone();
+        std::thread::Builder::new()
+            .name("library-watch".into())
+            .spawn(move || {
+                let _ = wtx.send_blocking(watch_library(&watch_root, move |paths| {
+                    let _ = tx.send_blocking(paths);
+                }));
+            })
+            .expect("spawn watch thread");
+        let weak = self.me.clone();
+        let watch_root = root.clone();
+        glib::spawn_future_local(async move {
+            let Ok(res) = wrx.recv().await else { return };
+            let Some(store) = weak.upgrade() else { return };
+            // A watcher for a folder no longer shown is dropped here.
+            if store.generation.get() != generation {
                 return;
             }
-        };
-        *self.watcher.borrow_mut() = Some(watcher);
+            match res {
+                Ok(w) => *store.watcher.borrow_mut() = Some(w),
+                Err(e) => eprintln!("tunemesh: cannot watch {}: {e}", watch_root.display()),
+            }
+        });
         let weak = self.me.clone();
-        let generation = self.generation.get();
         glib::spawn_future_local(async move {
             // Changes arrive in bursts (a sync, a download): handle each burst
             // once, DEBOUNCE after its first event.
@@ -405,6 +438,11 @@ impl Store {
             .collect()
     }
 
+    /// Whether a playlist (other than Liked Songs) of this name is listed.
+    pub fn has_playlist(&self, name: &str) -> bool {
+        self.playlists.borrow().iter().any(|p| p.name == name)
+    }
+
     /// Whether the playlist is over the size limits: it is listed as "Too
     /// large to open", and nothing opens, plays or rewrites it.
     pub fn is_too_large(&self, name: &str) -> bool {
@@ -431,7 +469,7 @@ impl Store {
         if name == LIKED_SONGS {
             return Some(self.liked());
         }
-        if !self.playlists.borrow().iter().any(|p| p.name == name) {
+        if !self.has_playlist(name) {
             return None;
         }
         Playlist::read(&self.root(), name)
@@ -443,7 +481,7 @@ impl Store {
         self.liked_set.borrow().contains(path)
     }
 
-    fn track_info(&self) -> impl Fn(&str) -> Option<TrackInfo> + use<> {
+    fn track_info(&self) -> impl Fn(&str) -> Option<TrackInfo> + Send + use<> {
         let lib = self.library();
         move |path: &str| {
             lib.track(path).map(|t| TrackInfo {
@@ -453,114 +491,241 @@ impl Store {
         }
     }
 
-    fn write_playlist(&self, p: &Playlist) -> io::Result<()> {
-        p.write(&self.root(), &self.track_info())
-    }
-
-    pub fn set_liked_paths(&self, paths: &[String], like: bool) -> io::Result<()> {
-        // Re-read first so likes made on other devices are not overwritten.
-        let mut liked = Playlist::read(&self.root(), LIKED_SONGS)?;
-        if like {
-            liked.like_all(paths.iter().map(String::as_str));
-        } else {
-            liked.unlike_all(paths.iter().map(String::as_str));
+    /// Runs `work` on the playlist writer thread, then `then` with its
+    /// result on the main loop. Jobs run one at a time, in order, so two
+    /// edits of one playlist never read the same old file.
+    fn write_job<T: Send + 'static>(
+        &self,
+        work: impl FnOnce() -> io::Result<T> + Send + 'static,
+        then: impl FnOnce(io::Result<T>) + 'static,
+    ) {
+        let (tx, rx) = async_channel::bounded(1);
+        let job: WriteJob = Box::new(move || {
+            let _ = tx.send_blocking(work());
+        });
+        if self.writer.send(job).is_err() {
+            then(Err(io::Error::other("the playlist writer stopped")));
+            return;
         }
-        self.write_playlist(&liked)?;
-        self.set_liked(liked);
-        self.emit(StoreChange::Liked);
-        Ok(())
+        glib::spawn_future_local(async move {
+            if let Ok(result) = rx.recv().await {
+                then(result);
+            }
+        });
     }
 
-    pub fn toggle_like(&self, path: &str) -> io::Result<bool> {
+    /// Likes or unlikes `paths`; `done` runs once Liked Songs is written.
+    pub fn set_liked_paths(
+        &self,
+        paths: &[String],
+        like: bool,
+        done: impl FnOnce(io::Result<()>) + 'static,
+    ) {
+        let paths = paths.to_vec();
+        self.modify_playlist(
+            LIKED_SONGS,
+            move |liked| {
+                if like {
+                    liked.like_all(paths.iter().map(String::as_str));
+                } else {
+                    liked.unlike_all(paths.iter().map(String::as_str));
+                }
+                Ok(())
+            },
+            done,
+        );
+    }
+
+    pub fn toggle_like(&self, path: &str, done: impl FnOnce(io::Result<()>) + 'static) {
         let like = !self.is_liked(path);
-        self.set_liked_paths(&[path.to_owned()], like)?;
-        Ok(like)
+        self.set_liked_paths(&[path.to_owned()], like, done);
     }
 
-    /// Applies `f` to a freshly read playlist and writes it back.
+    /// Applies `f` to a freshly read playlist and writes it back, off the
+    /// main loop: a playlist may hold 250,000 entries, and every write
+    /// waits for the disk. `done` gets the result on the main loop.
     fn modify_playlist(
         &self,
         name: &str,
-        f: impl FnOnce(&mut Playlist) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let mut p = Playlist::read(&self.root(), name)?;
-        f(&mut p)?;
-        self.write_playlist(&p)?;
-        if name == LIKED_SONGS {
-            self.set_liked(p);
-            self.emit(StoreChange::Liked);
-        } else {
-            let mut lists = self.playlists.borrow_mut();
-            match lists.iter_mut().find(|x| x.name == name) {
-                Some(x) => *x = summarize(&p),
-                None => lists.push(summarize(&p)),
-            }
-            drop(lists);
-            self.emit(StoreChange::Playlists);
-        }
-        Ok(())
+        f: impl FnOnce(&mut Playlist) -> io::Result<()> + Send + 'static,
+        done: impl FnOnce(io::Result<()>) + 'static,
+    ) {
+        let (root, n, info) = (self.root(), name.to_owned(), self.track_info());
+        let (weak, generation, name) = (self.me.clone(), self.generation.get(), name.to_owned());
+        self.write_job(
+            move || {
+                // Re-read first so changes made on other devices are kept.
+                let mut p = Playlist::read(&root, &n)?;
+                f(&mut p)?;
+                p.write(&root, &info)?;
+                Ok(p)
+            },
+            move |result| {
+                let p = match result {
+                    Ok(p) => p,
+                    Err(e) => return done(Err(e)),
+                };
+                if let Some(store) = weak.upgrade()
+                    && store.generation.get() == generation
+                {
+                    if name == LIKED_SONGS {
+                        store.set_liked(p);
+                        store.emit(StoreChange::Liked);
+                    } else {
+                        let mut lists = store.playlists.borrow_mut();
+                        match lists.iter_mut().find(|x| x.name == name) {
+                            Some(x) => *x = summarize(&p),
+                            None => lists.push(summarize(&p)),
+                        }
+                        drop(lists);
+                        store.emit(StoreChange::Playlists);
+                    }
+                }
+                done(Ok(()));
+            },
+        );
     }
 
-    pub fn create_playlist(&self, name: &str) -> io::Result<String> {
-        let p = Playlist::create(&self.root(), name)?;
-        let name = p.name.clone();
-        let mut lists = self.playlists.borrow_mut();
-        lists.push(summarize(&p));
-        lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
-        drop(lists);
-        self.emit(StoreChange::Playlists);
-        Ok(name)
+    /// Creates a playlist on the writer thread (the file is synced to disk);
+    /// `done` gets the sanitised name.
+    pub fn create_playlist(&self, name: &str, done: impl FnOnce(io::Result<String>) + 'static) {
+        let (root, n) = (self.root(), name.to_owned());
+        let (weak, generation) = (self.me.clone(), self.generation.get());
+        self.write_job(
+            move || Playlist::create(&root, &n),
+            move |result| {
+                let p = match result {
+                    Ok(p) => p,
+                    Err(e) => return done(Err(e)),
+                };
+                if let Some(store) = weak.upgrade()
+                    && store.generation.get() == generation
+                {
+                    let mut lists = store.playlists.borrow_mut();
+                    lists.push(summarize(&p));
+                    lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
+                    drop(lists);
+                    store.emit(StoreChange::Playlists);
+                }
+                done(Ok(p.name));
+            },
+        );
     }
 
-    pub fn rename_playlist(&self, old: &str, new: &str) -> io::Result<String> {
+    /// Renames a playlist on the writer thread; `done` gets the new name.
+    pub fn rename_playlist(
+        &self,
+        old: &str,
+        new: &str,
+        done: impl FnOnce(io::Result<String>) + 'static,
+    ) {
         if self.is_too_large(old) {
-            return Err(io::Error::other("This playlist is too large to change."));
+            return done(Err(io::Error::other(
+                "This playlist is too large to change.",
+            )));
         }
-        let new = Playlist::rename(&self.root(), old, new)?;
-        let mut lists = self.playlists.borrow_mut();
-        if let Some(p) = lists.iter_mut().find(|p| p.name == old) {
-            p.name = new.clone();
-        }
-        lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
-        drop(lists);
-        self.emit(StoreChange::Playlists);
-        Ok(new)
+        let (root, o, n) = (self.root(), old.to_owned(), new.to_owned());
+        let (weak, generation, old) = (self.me.clone(), self.generation.get(), old.to_owned());
+        self.write_job(
+            move || Playlist::rename(&root, &o, &n),
+            move |result| {
+                let new = match result {
+                    Ok(new) => new,
+                    Err(e) => return done(Err(e)),
+                };
+                if let Some(store) = weak.upgrade()
+                    && store.generation.get() == generation
+                {
+                    let mut lists = store.playlists.borrow_mut();
+                    if let Some(p) = lists.iter_mut().find(|p| p.name == old) {
+                        p.name = new.clone();
+                    }
+                    lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
+                    drop(lists);
+                    store.emit(StoreChange::Playlists);
+                }
+                done(Ok(new));
+            },
+        );
     }
 
-    pub fn delete_playlist(&self, name: &str) -> io::Result<()> {
-        Playlist::delete(&self.root(), name)?;
-        self.playlists.borrow_mut().retain(|p| p.name != name);
-        self.emit(StoreChange::Playlists);
-        Ok(())
+    /// Deletes a playlist file on the writer thread.
+    pub fn delete_playlist(&self, name: &str, done: impl FnOnce(io::Result<()>) + 'static) {
+        let (root, n) = (self.root(), name.to_owned());
+        let (weak, generation, name) = (self.me.clone(), self.generation.get(), name.to_owned());
+        self.write_job(
+            move || Playlist::delete(&root, &n),
+            move |result| {
+                if result.is_ok()
+                    && let Some(store) = weak.upgrade()
+                    && store.generation.get() == generation
+                {
+                    store.playlists.borrow_mut().retain(|p| p.name != name);
+                    store.emit(StoreChange::Playlists);
+                }
+                done(result);
+            },
+        );
     }
 
-    pub fn add_to_playlist(&self, name: &str, paths: &[String]) -> io::Result<()> {
+    pub fn add_to_playlist(
+        &self,
+        name: &str,
+        paths: &[String],
+        done: impl FnOnce(io::Result<()>) + 'static,
+    ) {
         if name == LIKED_SONGS {
-            return self.set_liked_paths(paths, true);
+            return self.set_liked_paths(paths, true, done);
         }
-        self.modify_playlist(name, |p| {
-            p.append(paths.iter().map(String::as_str));
-            Ok(())
-        })
+        let paths = paths.to_vec();
+        self.modify_playlist(
+            name,
+            move |p| {
+                p.append(paths.iter().map(String::as_str));
+                Ok(())
+            },
+            done,
+        );
     }
 
     /// Removes the entries the user saw at these positions. The file is read
     /// again first, so entries another device moved are found by their path.
-    pub fn remove_from_playlist(&self, name: &str, refs: &[EntryRef]) -> io::Result<()> {
-        self.modify_playlist(name, |p| {
-            let positions = locate(p, refs)?;
-            p.remove_positions(&positions);
-            Ok(())
-        })
+    pub fn remove_from_playlist(
+        &self,
+        name: &str,
+        refs: &[EntryRef],
+        done: impl FnOnce(io::Result<()>) + 'static,
+    ) {
+        let refs = refs.to_vec();
+        self.modify_playlist(
+            name,
+            move |p| {
+                let positions = locate(p, &refs)?;
+                p.remove_positions(&positions);
+                Ok(())
+            },
+            done,
+        );
     }
 
     /// Moves the entry the user dragged to where the drop target is now.
-    pub fn move_in_playlist(&self, name: &str, from: &EntryRef, to: &EntryRef) -> io::Result<()> {
-        self.modify_playlist(name, |p| {
-            let found = locate(p, &[from.clone(), to.clone()])?;
-            p.move_entry(found[0], found[1]);
-            Ok(())
-        })
+    pub fn move_in_playlist(
+        &self,
+        name: &str,
+        from: &EntryRef,
+        to: &EntryRef,
+        done: impl FnOnce(io::Result<()>) + 'static,
+    ) {
+        let refs = [from.clone(), to.clone()];
+        self.modify_playlist(
+            name,
+            move |p| {
+                let found = locate(p, &refs)?;
+                p.move_entry(found[0], found[1]);
+                Ok(())
+            },
+            done,
+        );
     }
 
     // ---- tracks ------------------------------------------------------
@@ -732,10 +897,7 @@ fn read_playlists(root: &Path, known: PlaylistsRead) -> PlaylistsRead {
                 } else if e.kind() != io::ErrorKind::NotFound {
                     eprintln!("tunemesh: cannot read Liked Songs: {e}");
                 }
-                Playlist {
-                    name: LIKED_SONGS.into(),
-                    entries: Vec::new(),
-                }
+                Playlist::new(LIKED_SONGS)
             }
         };
         let set = liked_paths(&liked);
@@ -767,7 +929,7 @@ fn summarize(p: &Playlist) -> Summary {
 /// or the line as written when it points outside the library).
 pub type EntryRef = (usize, String);
 
-pub fn entry_key(e: &tunemesh_core::playlist::PlaylistEntry) -> &str {
+pub fn entry_key<'a>(e: tunemesh_core::playlist::PlaylistEntry<'a>) -> &'a str {
     e.key()
 }
 
@@ -835,6 +997,20 @@ fn watch_library(
     )?;
     watcher.watch(root, RecursiveMode::Recursive)?;
     Ok(watcher)
+}
+
+/// Tests: starts a background playlist edit with its `done` callback and
+/// runs the main loop until it reports.
+#[cfg(test)]
+pub fn wait_for<T: 'static>(start: impl FnOnce(Box<dyn FnOnce(io::Result<T>)>)) -> io::Result<T> {
+    let out: Rc<RefCell<Option<io::Result<T>>>> = Rc::default();
+    let o = out.clone();
+    start(Box::new(move |r| *o.borrow_mut() = Some(r)));
+    let ctx = glib::MainContext::ref_thread_default();
+    while out.borrow().is_none() {
+        ctx.iteration(true);
+    }
+    out.take().expect("result")
 }
 
 #[cfg(test)]
@@ -969,9 +1145,19 @@ mod tests {
         })
         .unwrap();
         let took = started.elapsed();
+        // Other tests' stores start watchers on threads at any time: count
+        // only the inotify instance that watches this test's library.
+        let root_ino = format!(
+            " ino:{:x} ",
+            std::os::unix::fs::MetadataExt::ino(&fs::metadata(&root).unwrap())
+        );
         let count: usize = inotify_fds()
             .iter()
             .filter(|fd| !before.contains(fd))
+            .filter(|fd| {
+                fs::read_to_string(format!("/proc/self/fdinfo/{fd}"))
+                    .is_ok_and(|s| s.contains(&root_ino))
+            })
             .map(|fd| watches(fd))
             .sum();
 
@@ -1036,13 +1222,12 @@ mod tests {
             let (base, store, refs) = playlist_lib("rm", &["A", "B", "C"]);
             // Another device moves C to the top; the user removes C as shown (position 2).
             write_list(&base, &["C", "A", "B"]);
-            store.remove_from_playlist("P", &[refs[2].clone()]).unwrap();
+            wait_for(|done| store.remove_from_playlist("P", &[refs[2].clone()], done)).unwrap();
             assert_eq!(names(&base), ["A", "B"]);
 
             // An entry that is gone: nothing changes, the user is told.
             write_list(&base, &["A", "B"]);
-            let e = store
-                .remove_from_playlist("P", &[(2, "C.opus".into())])
+            let e = wait_for(|done| store.remove_from_playlist("P", &[(2, "C.opus".into())], done))
                 .unwrap_err();
             assert!(e.to_string().contains("changed"), "{e}");
             assert_eq!(names(&base), ["A", "B"]);
@@ -1057,11 +1242,12 @@ mod tests {
             let (base, store, refs) = playlist_lib("mv", &["A", "B", "C"]);
             // Another device removes A; the user drags C (shown at 2) onto A (shown at 0).
             write_list(&base, &["B", "C"]);
-            let e = store.move_in_playlist("P", &refs[2], &refs[0]).unwrap_err();
+            let e =
+                wait_for(|done| store.move_in_playlist("P", &refs[2], &refs[0], done)).unwrap_err();
             assert!(e.to_string().contains("changed"), "{e}");
             assert_eq!(names(&base), ["B", "C"]);
             // Dragging C onto B (shown at 1, now at 0) moves it there.
-            store.move_in_playlist("P", &refs[2], &refs[1]).unwrap();
+            wait_for(|done| store.move_in_playlist("P", &refs[2], &refs[1], done)).unwrap();
             assert_eq!(names(&base), ["C", "B"]);
             drop(store);
             fs::remove_dir_all(&base).unwrap();
@@ -1095,22 +1281,27 @@ mod tests {
             );
             assert_eq!(store.playlist_names(), ["Small"], "not offered as a target");
             assert!(store.playlist("Big").is_none(), "never opened");
-            assert!(store.add_to_playlist("Big", &["a.opus".into()]).is_err());
             assert!(
-                store
-                    .remove_from_playlist("Big", &[(0, "missing.wav".into())])
-                    .is_err()
+                wait_for(|done| store.add_to_playlist("Big", &["a.opus".into()], done)).is_err()
             );
             assert!(
-                store
-                    .move_in_playlist(
-                        "Big",
-                        &(0, "missing.wav".into()),
-                        &(1, "missing.wav".into())
-                    )
-                    .is_err()
+                wait_for(|done| store.remove_from_playlist(
+                    "Big",
+                    &[(0, "missing.wav".into())],
+                    done
+                ))
+                .is_err()
             );
-            assert!(store.rename_playlist("Big", "Other").is_err());
+            assert!(
+                wait_for(|done| store.move_in_playlist(
+                    "Big",
+                    &(0, "missing.wav".into()),
+                    &(1, "missing.wav".into()),
+                    done
+                ))
+                .is_err()
+            );
+            assert!(wait_for(|done| store.rename_playlist("Big", "Other", done)).is_err());
             assert_eq!(
                 fs::read_to_string(&big).unwrap(),
                 text,
@@ -1157,16 +1348,12 @@ mod tests {
 
     #[test]
     fn locating_many_moved_entries_is_linear() {
-        use tunemesh_core::playlist::PlaylistEntry;
         let n = 100_000;
         let names: Vec<String> = (0..n).map(|i| format!("A/{i}.opus")).collect();
         // Shown in this order; the file now has every entry one place later.
-        let mut entries: Vec<PlaylistEntry> = vec![PlaylistEntry::for_track("A/new.opus")];
-        entries.extend(names.iter().map(|t| PlaylistEntry::for_track(t)));
-        let p = Playlist {
-            name: "P".into(),
-            entries,
-        };
+        let mut p = Playlist::new("P");
+        p.append(["A/new.opus"]);
+        p.append(names.iter().map(String::as_str));
         let refs: Vec<EntryRef> = names.iter().cloned().enumerate().collect();
         let start = std::time::Instant::now();
         let found = locate(&p, &refs).unwrap();

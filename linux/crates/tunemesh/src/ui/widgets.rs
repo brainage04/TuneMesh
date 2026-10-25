@@ -137,6 +137,13 @@ type Callback = Rc<dyn Fn()>;
 #[derive(Clone)]
 pub struct Tile {
     pub widget: gtk::Box,
+    parts: Rc<TileParts>,
+}
+
+/// The parts of a tile a binding changes. They are kept on the tile's
+/// widget, which owns them; they never hold the widget itself, or the tile
+/// would keep itself alive after its page is gone.
+struct TileParts {
     picture: gtk::Image,
     liked: gtk::Widget,
     title: gtk::Label,
@@ -211,15 +218,31 @@ impl Tile {
                 cb();
             }
         });
-        Self {
-            widget,
+        let parts = Rc::new(TileParts {
             picture,
             liked,
             title,
             subtitle,
             open,
             play,
-        }
+        });
+        // SAFETY: only read back as `Rc<TileParts>`, in `Tile::of`.
+        unsafe { widget.set_data("tm-tile", parts.clone()) };
+        Self { widget, parts }
+    }
+
+    /// The tile whose widget is `widget` (made by `Tile::new`).
+    pub fn of(widget: &gtk::Widget) -> Self {
+        let widget = widget.clone().downcast::<gtk::Box>().expect("tile box");
+        // SAFETY: set in `Tile::new` with this type.
+        let parts = unsafe {
+            widget
+                .data::<Rc<TileParts>>("tm-tile")
+                .expect("tile")
+                .as_ref()
+                .clone()
+        };
+        Self { widget, parts }
     }
 
     pub fn set(
@@ -233,22 +256,25 @@ impl Tile {
     ) {
         match art {
             TileArt::Cover(source) => {
-                self.picture.set_visible(true);
-                self.liked.set_visible(false);
-                self.picture.set_paintable(None::<&gtk::gdk::Paintable>);
-                app.covers.apply(&self.picture, source, TILE_COVER as u32);
+                self.parts.picture.set_visible(true);
+                self.parts.liked.set_visible(false);
+                self.parts
+                    .picture
+                    .set_paintable(None::<&gtk::gdk::Paintable>);
+                app.covers
+                    .apply(&self.parts.picture, source, TILE_COVER as u32);
             }
             TileArt::Liked => {
-                self.picture.set_visible(false);
-                self.liked.set_visible(true);
+                self.parts.picture.set_visible(false);
+                self.parts.liked.set_visible(true);
             }
         }
         let title = limits::clip_line(title);
-        self.title.set_label(&title);
-        self.title.set_tooltip_text(Some(&title));
-        self.subtitle.set_label(&limits::clip_line(subtitle));
-        *self.open.borrow_mut() = Some(Rc::new(open));
-        *self.play.borrow_mut() = Some(Rc::new(play));
+        self.parts.title.set_label(&title);
+        self.parts.title.set_tooltip_text(Some(&title));
+        self.parts.subtitle.set_label(&limits::clip_line(subtitle));
+        *self.parts.open.borrow_mut() = Some(Rc::new(open));
+        *self.parts.play.borrow_mut() = Some(Rc::new(play));
     }
 }
 

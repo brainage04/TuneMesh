@@ -79,9 +79,12 @@ pub fn page(app: &Rc<App>) -> Page {
             }
         });
     });
+    // The entry's own handler gets the entry as its argument: a captured
+    // reference would keep the entry (and its text field) alive after the
+    // page is gone.
     let apply_path = {
-        let (a, e) = (app.clone(), entry.clone());
-        Rc::new(move || {
+        let a = app.clone();
+        Rc::new(move |e: &gtk::Entry| {
             let path = expand_home(e.text().trim());
             if path.as_os_str().is_empty() {
                 return;
@@ -96,9 +99,9 @@ pub fn page(app: &Rc<App>) -> Page {
             }
         })
     };
-    let ap = apply_path.clone();
-    apply.connect_clicked(move |_| ap());
-    entry.connect_activate(move |_| apply_path());
+    let (ap, e) = (apply_path.clone(), entry.clone());
+    apply.connect_clicked(move |_| ap(&e));
+    entry.connect_activate(move |e| apply_path(e));
     b.append(&lib_card);
 
     let sync = card("Sync");

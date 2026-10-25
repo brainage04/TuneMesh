@@ -29,6 +29,76 @@ cargo run -p tunemesh
 cargo run -p tunemesh-worker -- --library ~/Music/TuneMesh   # work dir: ~/.cache/tunemesh/worker
 ```
 
+### Desktop GUI checks
+
+Two tests in `crates/tunemesh/src/gui_tests` drive the real window from inside
+the test process. Both need a display, so they are `#[ignore]`d in a plain
+`cargo test`; `crates/tunemesh/scripts/gui-checks.sh` runs them in a private
+headless sway with a session bus of its own (no portals, none of the
+desktop's GTK settings):
+
+```sh
+# from the repository root
+nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks    # or: stalls, all
+```
+
+- `leaks` (debug build, about a minute, also in CI): opens every page three
+  times on a small generated library, with the keyboard focus inside it, and
+  checks through weak references that each page's widgets, list models and
+  items are freed once it is left; likewise the queue panel's rows, the
+  now-playing bar and the setup assistant. A failure lists what is still
+  alive by type and page.
+- `stalls` (release build, about 5 minutes plus the build): generates the
+  hostile library of `docs/library-format.md` "Limits" (1.5 GB under
+  `/var/tmp`), walks every page and action three times and prints the longest
+  main-loop stall each caused. It fails when an action exceeds
+  `TUNEMESH_STALL_BUDGET_MS` (100 ms) in more than one round (a single late
+  round is the machine, not the app). The script draws with
+  `GSK_RENDERER=cairo`, so stalls include software rendering; in perf
+  profiles most of the 40-50 ms on the grid pages is cairo drawing.
+  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuses a library made with
+  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`,
+  `TUNEMESH_STALL_ROUNDS=1` shortens the walk and `TUNEMESH_STALL_REPORT=<file>`
+  writes the table to a file.
+
+On a shared machine run them through `heavy` (`--mem 4G` for `leaks`, `--mem
+8G` for `stalls`). To profile a slow action, record with perf enabled only
+around it:
+
+```sh
+mkfifo /var/tmp/ctl /var/tmp/ack
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -g --call-graph dwarf \
+  --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
+TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
+CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+  linux/crates/tunemesh/scripts/gui-checks.sh stalls
+```
+
+The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`
+with `TUNEMESH_STALL_BUDGET_MS=1000000`, as heaptrack slows the walk down
+(without `--record-only` it opens heaptrack_gui inside the headless session
+and waits there). Read the result with `heaptrack_print -f /var/tmp/walk.zst`.
+The heap in use after each round, printed under the table, should stay
+level from the second round on.
+
+Both checks also run under AddressSanitizer with a nightly toolchain
+(`nix shell nixpkgs#rustup`, then `rustup toolchain install nightly`):
+
+```sh
+PATH=$(rustup +nightly which rustc | xargs dirname):$PATH \
+RUSTFLAGS=-Zsanitizer=address CARGO_TARGET_DIR=/var/tmp/target-asan \
+ASAN_OPTIONS=detect_leaks=1:log_path=/var/tmp/asan \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks --target x86_64-unknown-linux-gnu
+```
+
+`--target` keeps the sanitizer out of build scripts and proc macros.
+LeakSanitizer then lists about 0.9 MB that fontconfig keeps for pango's
+font map until exit; anything with a `tunemesh` frame in its stack is a
+real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
+`llvm-symbolizer` (`nixpkgs#llvm`).
+
 ## The app
 
 ```sh
@@ -265,3 +335,61 @@ filesystem is read-only except the library and the work directory, and
 `IPAddressDeny` blocks private ranges for the whole service, with exceptions
 for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
 `allowedAddresses` (systemd cannot restrict these to one port).
+
+## Development checks
+
+Besides `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and
+`cargo test`, CI runs these on `tunemesh-core` and `tunemesh-worker`. The
+nightly ones use the flake's `nightly` dev shell (a pinned nightly Rust with
+Miri, plus cargo-fuzz). Run them from the repository root:
+
+```sh
+# RustSec advisories, licences, duplicate crates, sources (linux/deny.toml)
+nix develop -c bash -c 'cd linux && cargo deny check'
+
+# Miri: undefined behaviour in the pure logic
+nix develop .#nightly -c bash -c 'cd linux && cargo miri test -p tunemesh-core --lib'
+
+# AddressSanitizer and LeakSanitizer over the core and worker tests
+nix develop .#nightly -c bash -c 'cd linux &&
+  RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address \
+  cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
+    -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
+    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded --skip bulk_edits_are_linear'
+
+# Every fuzz target for 60 s (CI), or one target for longer
+nix develop .#nightly -c linux/fuzz/smoke.sh 60
+nix develop .#nightly -c bash -c 'cd linux/fuzz && cargo fuzz run -O playlist_parse -- -max_total_time=900'
+
+# Mutation testing (slow): tests that would not notice a changed line
+nix develop -c bash -c 'cd linux && cargo mutants -p tunemesh-core -f src/limits.rs -f src/playlist.rs'
+```
+
+Tests that use the file system or child processes are marked
+`#[cfg_attr(miri, ignore = "...")]`; every other new core test runs under
+Miri as well. The three tests skipped under AddressSanitizer check time and
+memory bounds, which the sanitizer's overhead breaks.
+
+The fuzz targets (`linux/fuzz/fuzz_targets/`, a separate Cargo workspace)
+cover everything the core and the worker parse from the synced folder or
+the network:
+
+| Target | Input |
+| --- | --- |
+| `playlist_parse` | A playlist file: limits, and written entries read back the same |
+| `playlist_edits` | Like, unlike, append, remove and move, against a plain list |
+| `json_files` | Request, status and `worker.json` files |
+| `status_limits` | Status files the worker writes stay under 1 MiB |
+| `links` | Request input: classification, Spotify and YouTube links |
+| `netguard` | The worker's address and URL checks, against `IpAddr::is_global` |
+| `ffshim_args` | The ffmpeg and ffprobe shim's argument filter, read as ffmpeg reads it |
+| `sanitize` | File and playlist names |
+| `stignore` | `.stignore` upkeep |
+| `text_limits` | Text cutting and clipping, cover headers, search |
+| `remote_metadata` | Spotify embed pages, yt-dlp JSON and progress lines |
+| `worker_args` | The worker's command line |
+
+A crash leaves its input in `linux/fuzz/artifacts/<target>/`; `cargo fuzz run
+-O <target> <file>` replays it. After the fix, add the input as
+`linux/fuzz/corpus/<target>/regression-<what>` (the corpus is replayed on
+every run) next to a unit test.

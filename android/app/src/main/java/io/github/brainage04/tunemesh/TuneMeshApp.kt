@@ -1,6 +1,7 @@
 package io.github.brainage04.tunemesh
 
 import android.app.Application
+import android.graphics.Paint
 import io.github.brainage04.tunemesh.data.AppSettings
 import io.github.brainage04.tunemesh.data.CoverLoader
 import io.github.brainage04.tunemesh.data.LibraryRepository
@@ -16,6 +17,9 @@ class TuneMeshApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The first text layout loads the system font from storage, which took up to 160 ms of the first screen's frame on the
+        // emulator; this loads it while the activity starts.
+        Thread({ Paint().measureText("TuneMesh") }, "font-warmup").start()
         repository.start()
     }
 }

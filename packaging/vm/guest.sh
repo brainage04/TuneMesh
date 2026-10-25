@@ -30,7 +30,7 @@ deps() {
     local distro=$1
     log "installing the test stack on $distro"
     case $distro in
-    ubuntu-24.04 | debian-13)
+    ubuntu-24.04 | ubuntu-26.04 | debian-13)
         local apt=(sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -yq)
         "${apt[@]}" update
         "${apt[@]}" install --no-install-recommends sway grim pipewire pipewire-pulse \
@@ -39,10 +39,6 @@ deps() {
     fedora)
         sudo dnf -y -q --setopt=install_weak_deps=False install sway grim pipewire \
             pipewire-pulseaudio pipewire-utils wireplumber dejavu-sans-fonts python3
-        ;;
-    opensuse-tumbleweed)
-        sudo zypper -n -q --gpg-auto-import-keys install --no-recommends sway grim pipewire \
-            pipewire-pulseaudio pipewire-tools wireplumber dejavu-fonts python3
         ;;
     arch)
         sudo pacman -Sy --noconfirm --needed archlinux-keyring
@@ -139,15 +135,25 @@ leftover_processes() { pgrep -u "$(id -u)" -x 'tunemesh|tunemesh-worker'; }
 not_running() { ! leftover_processes; }
 app_gone() { ! pgrep -u "$(id -u)" -x tunemesh; }
 worker_running() { pgrep -u "$(id -u)" -x tunemesh-worker; }
+no_appimage_mount() { ! grep -q '/tmp/.mount_' /proc/mounts; }
 
 # The program's own scopes: `flatpak run` and `snap run` move it out of the
 # service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
 # so stopping that service alone does not reach it.
 scopes=("app-flatpak-$APP_ID-*.scope" 'snap.tunemesh.*.scope')
-# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit. A
-# transient unit whose program already exited cleanly is gone, so stop may
-# fail; whether anything still runs is what counts.
+unit_inactive() { ! systemctl --user is-active --quiet "$1"; }
+# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit.
+# With $2, that program gets SIGTERM first and the unit a chance to end by
+# itself: `systemctl stop` signals every process of the unit at once, and an
+# AppImage runtime killed that way leaves its FUSE mount behind (or unmounts
+# the image under the still running program). A transient unit whose program
+# already exited cleanly is gone, so stop may fail; whether anything still
+# runs is what counts.
 stop_unit() {
+    if [ -n "${2:-}" ]; then
+        pkill -TERM -u "$(id -u)" -x "$2" || true
+        wait_for 15 unit_inactive "$1" || true
+    fi
     systemctl --user stop "$1" "${scopes[@]}" 2>/dev/null || true
     wait_for 15 not_running || fail "TuneMesh still runs 15 s after stopping $1"
 }
@@ -160,13 +166,7 @@ uninstall() {
     native)
         case $name in
         *.deb) sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=900 -yq purge "$pkgname" ;;
-        *.rpm)
-            if [ "$distro" = opensuse-tumbleweed ]; then
-                sudo zypper -n remove "$pkgname"
-            else
-                sudo dnf -y remove "$pkgname"
-            fi
-            ;;
+        *.rpm) sudo dnf -y remove "$pkgname" ;;
         *) sudo pacman -Rns --noconfirm "$pkgname" ;;
         esac
         ;;
@@ -209,11 +209,7 @@ test_package() {
     *.rpm)
         kind=native
         pkgname=$(rpm -qp --qf '%{NAME}' "$pkg")
-        if [ "$distro" = opensuse-tumbleweed ]; then
-            sudo zypper -n install --allow-unsigned-rpm "$pkg"
-        else
-            sudo dnf -y install "$pkg"
-        fi
+        sudo dnf -y install "$pkg"
         rpm -ql "$pkgname" >"$out/installed.txt"
         ;;
     *.pkg.tar.zst)
@@ -293,8 +289,13 @@ test_package() {
         systemctl --user enable --now tunemesh-worker.service
     else
         # No systemd unit in this format: the same command as a transient unit.
+        # ExitType=cgroup: the AppImage runtime execs the program in the main
+        # process and serves the image from a child that unmounts it after
+        # the program exits; by default systemd kills that child as soon as
+        # the main process ends, and the mount is left behind.
         # shellcheck disable=SC2086
-        systemd-run --user --unit=tunemesh-worker -p Restart=no -- $worker --library "$LIB"
+        systemd-run --user --unit=tunemesh-worker -p Restart=no -p ExitType=cgroup -- \
+            $worker --library "$LIB"
     fi
     sleep 15
     journalctl --user -u tunemesh-worker --no-pager >"$out/worker.log" 2>&1 || true
@@ -308,8 +309,12 @@ test_package() {
     $worker --self-test --work-dir "/tmp/tm-self-test.$$" 2>&1 | tee "$out/self-test.log"
     rm -rf "/tmp/tm-self-test.$$"
     log "tunemesh-worker --self-test passed"
-    [ "$unit_mode" = transient ] || systemctl --user disable tunemesh-worker.service
-    stop_unit tunemesh-worker.service
+    if [ "$unit_mode" = transient ]; then
+        stop_unit tunemesh-worker.service tunemesh-worker
+    else
+        systemctl --user disable tunemesh-worker.service
+        stop_unit tunemesh-worker.service
+    fi
     systemctl --user reset-failed 2>/dev/null || true
 
     # ---- the app in headless sway, playing to the null sink
@@ -328,8 +333,9 @@ test_package() {
     local app_start
     app_start=$(date +%s)
     # shellcheck disable=SC2086
-    systemd-run --user --unit=tm-app -E WAYLAND_DISPLAY="$wl" -E XDG_SESSION_TYPE=wayland \
-        -E XDG_CURRENT_DESKTOP=sway -E GDK_BACKEND=wayland -- $app --library "$LIB"
+    systemd-run --user --unit=tm-app -p ExitType=cgroup -E WAYLAND_DISPLAY="$wl" \
+        -E XDG_SESSION_TYPE=wayland -E XDG_CURRENT_DESKTOP=sway -E GDK_BACKEND=wayland -- \
+        $app --library "$LIB"
     wait_for 90 app_on_bus || fail "the app did not take $APP_ID on the session bus"
     wait_for 30 mpris_on_bus || fail "the app did not register $MPRIS"
     log "app on the session bus with MPRIS"
@@ -358,12 +364,10 @@ test_package() {
     WAYLAND_DISPLAY=$wl grim "$out/screenshot.png" || true
 
     # SIGTERM to the app itself (as `kill` would): it saves its state and
-    # exits cleanly. Not `systemctl stop` first: that signals every process of
-    # the unit at once, and the AppImage runtime then unmounts the image under
-    # the still running app (SIGBUS).
+    # exits cleanly.
     pkill -TERM -u "$(id -u)" -x tunemesh
     wait_for 15 app_gone || fail "the app did not exit within 15 s of SIGTERM"
-    stop_unit tm-app.service
+    stop_unit tm-app.service tunemesh
     journalctl --user --since "@$app_start" -u tm-app.service -u "${scopes[0]}" -u "${scopes[1]}" \
         --no-pager >"$out/app.log" 2>&1 || true
     if systemctl --user is-failed --quiet tm-app.service; then
@@ -389,7 +393,13 @@ test_package() {
             fail "the tunemesh-worker enable link is left behind"
         ;;
     appimage)
-        if grep -q '/tmp/.mount_' /proc/mounts; then fail "an AppImage mount is left behind"; fi
+        # The runtime unmounts the image after its program exits, a moment
+        # later than the program itself.
+        if ! wait_for 15 no_appimage_mount; then
+            grep '/tmp/.mount_' /proc/mounts
+            pgrep -a -u "$(id -u)" -f 'AppImage|\.mount_' || true
+            fail "an AppImage mount is left behind"
+        fi
         ;;
     snap)
         if snap list tunemesh >/dev/null 2>&1; then fail "the snap is still installed"; fi

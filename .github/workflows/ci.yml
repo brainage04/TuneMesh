@@ -42,6 +42,26 @@ jobs:
       - name: test
         run: nix develop -c bash -c 'cd linux && cargo test --workspace --locked'
 
+  gui-leaks:
+    name: Desktop GUI leak test (headless sway)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      - name: Cache Cargo
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            linux/target
+          key: cargo-gui-debug-${{ runner.os }}-${{ hashFiles('linux/Cargo.lock') }}
+          restore-keys: cargo-gui-debug-${{ runner.os }}-
+      # Every page, panel and dialog is freed once closed (src/gui_tests/leaks.rs).
+      - run: |
+          nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus \
+            -c linux/crates/tunemesh/scripts/gui-checks.sh leaks --locked
+
   nix:
     name: nix flake check
     runs-on: ubuntu-24.04
@@ -100,6 +120,55 @@ jobs:
       # actionlint from the flake's pinned nixpkgs; it runs shellcheck on every run: script.
       - run: nix shell --inputs-from . nixpkgs#actionlint nixpkgs#shellcheck -c actionlint
 
+  cargo-deny:
+    name: Rust dependencies (cargo-deny)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      # RustSec advisories, licences, duplicate crates and sources (linux/deny.toml).
+      - run: nix shell --inputs-from . nixpkgs#cargo-deny nixpkgs#cargo -c cargo deny --manifest-path linux/Cargo.toml --locked check
+
+  miri:
+    name: Miri (tunemesh-core)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      # Undefined behaviour in the pure logic (file-system tests are ignored
+      # under Miri). Nightly comes from the flake's `nightly` dev shell.
+      - run: nix develop .#nightly -c bash -c 'cd linux && cargo miri test --locked -p tunemesh-core --lib'
+
+  fuzz:
+    name: Fuzz smoke (60 s per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      # Every cargo-fuzz target in linux/fuzz, from its committed corpus.
+      - run: nix develop .#nightly -c linux/fuzz/smoke.sh 60
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: linux/fuzz/artifacts/
+          retention-days: 14
+
+  asan:
+    name: AddressSanitizer and LeakSanitizer (core and worker tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
+      # std is rebuilt with the sanitizer too (-Zbuild-std). The three skipped
+      # tests assert time and memory bounds, which ASan's overhead breaks.
+      - run: |
+          nix develop .#nightly -c bash -c 'cd linux &&
+            RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address ASAN_OPTIONS=detect_leaks=1 \
+            cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
+              -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
+              --skip huge_album_builds_quickly --skip hostile_library_stays_bounded --skip bulk_edits_are_linear'
+
   android:
     name: Android (unit tests, debug build)
     runs-on: ubuntu-24.04
@@ -120,4 +189,98 @@ jobs:
         with:
           name: tunemesh-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
+          retention-days: 7
+
+  android-format:
+    name: Android (ktfmt)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # Fails on any formatting difference; ./gradlew spotlessApply fixes it.
+      - run: ./gradlew --no-daemon spotlessCheck
+
+  android-detekt:
+    name: Android (detekt)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # With type resolution; findings outside the baselines fail.
+      - run: ./gradlew --no-daemon detektAll
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: detekt-reports
+          path: android/*/build/reports/detekt/
+          retention-days: 7
+
+  android-fuzz:
+    name: Android (Jazzer, 60 s per target)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - run: ./gradlew --no-daemon :app:fuzz -Pfuzz.seconds=60
+      # A failing input, to commit as a regression input once fixed (see android/AGENTS.md).
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-findings
+          path: |
+            android/app/crash-*
+            android/app/src/test/resources/
+          retention-days: 14
+
+  android-instrumented:
+    name: Android (instrumented tests with LeakCanary, emulator)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      # Every instrumented test class fails on a leak (LeakCanary's DetectLeaksAfterTestSuccess); the stress test is left out.
+      - uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: 36
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          working-directory: android
+          script: ./gradlew --no-daemon :app:connectedDebugAndroidTest
+      - if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: instrumented-test-reports
+          path: android/app/build/reports/androidTests/
           retention-days: 7

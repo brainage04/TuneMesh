@@ -117,7 +117,7 @@ fn str_field(v: &Value, key: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn parse_listing(v: &Value, input: &str) -> Listing {
+pub fn parse_listing(v: &Value, input: &str) -> Listing {
     let entries = v.get("entries").and_then(Value::as_array);
     match entries {
         Some(entries) => {
@@ -224,13 +224,15 @@ pub fn list(
     }
 }
 
-fn parse_progress(line: &str) -> Option<f64> {
+/// The fraction (0 to 1) a `PROGRESS_TEMPLATE` line reports.
+pub fn parse_progress(line: &str) -> Option<f64> {
     let mut it = line.strip_prefix("TMPROG ")?.split(' ');
-    let done: f64 = it.next()?.parse().ok()?;
+    let done = it.next()?.parse::<f64>().ok().filter(|d| *d >= 0.0)?;
     let total = it.next().and_then(|t| t.parse::<f64>().ok());
     let estimate = it.next().and_then(|t| t.parse::<f64>().ok());
     let total = total.or(estimate).filter(|t| *t > 0.0)?;
-    Some((done / total).min(1.0))
+    let fraction = done / total; // NaN for inf / inf
+    (!fraction.is_nan()).then(|| fraction.clamp(0.0, 1.0))
 }
 
 pub enum Fetch {
@@ -580,6 +582,13 @@ mod tests {
         assert_eq!(parse_progress("TMPROG 50 NA 200"), Some(0.25));
         assert_eq!(parse_progress("TMPROG 50 NA NA"), None);
         assert_eq!(parse_progress("other"), None);
+        // Found by `fuzz/fuzz_targets/remote_metadata.rs`: a negative or
+        // NaN count gave a negative (or NaN) status `progress`.
+        assert_eq!(parse_progress("TMPROG -7 8 NA"), None);
+        assert_eq!(parse_progress("TMPROG NaN 8 NA"), None);
+        assert_eq!(parse_progress("TMPROG inf 8 NA"), Some(1.0));
+        assert_eq!(parse_progress("TMPROG 1 inf NA"), Some(0.0));
+        assert_eq!(parse_progress("TMPROG inf inf NA"), None);
     }
 
     #[test]

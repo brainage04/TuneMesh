@@ -84,7 +84,11 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
                 submitting = submitting,
                 onSubmit = {
                     submitting = true
-                    viewModel.repository.submitDownloads(input, playlist.ifBlank { null }, effectiveSaveAsPlaylists(input, saveAsPlaylists)) { result ->
+                    viewModel.repository.submitDownloads(
+                        input,
+                        playlist.ifBlank { null },
+                        effectiveSaveAsPlaylists(input, saveAsPlaylists),
+                    ) { result ->
                         submitting = false
                         if (result.isSuccess) {
                             input = ""
@@ -95,7 +99,10 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
             )
         }
         item {
-            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 24.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 24.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 Text("Requests", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
                 if (library.downloads.items.any { it.isFinal }) {
                     TextButton(onClick = { viewModel.repository.clearFinishedDownloads() }) { Text("Clear finished") }
@@ -146,8 +153,7 @@ fun DownloaderBanner(downloader: Downloader, modifier: Modifier = Modifier) {
             Text(downloader.description, fontWeight = FontWeight.SemiBold)
             if (!active) {
                 Text(
-                    "Requests wait in the library until a computer running the TuneMesh desktop app or download worker " +
-                        "picks them up.",
+                    "Requests wait in the library until a computer running the TuneMesh desktop app or download worker " + "picks them up.",
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -199,9 +205,21 @@ fun RequestForm(
                 modifier = Modifier.fillMaxWidth(),
             )
             DropdownMenu(expanded = pickerOpen, onDismissRequest = { pickerOpen = false }) {
-                DropdownMenuItem(text = { Text("No playlist") }, onClick = { onPlaylist(""); pickerOpen = false })
+                DropdownMenuItem(
+                    text = { Text("No playlist") },
+                    onClick = {
+                        onPlaylist("")
+                        pickerOpen = false
+                    },
+                )
                 playlists.forEach { option ->
-                    DropdownMenuItem(text = { Text(option.name) }, onClick = { onPlaylist(option.name); pickerOpen = false })
+                    DropdownMenuItem(
+                        text = { Text(option.name) },
+                        onClick = {
+                            onPlaylist(option.name)
+                            pickerOpen = false
+                        },
+                    )
                 }
             }
         }
@@ -209,7 +227,8 @@ fun RequestForm(
             Column(Modifier.weight(1f)) {
                 Text("Save playlists as TuneMesh playlists")
                 Text(
-                    if (playlist.isBlank()) "Playlist and album links get a playlist named after the source" else "Not used when a playlist is chosen",
+                    if (playlist.isBlank()) "Playlist and album links get a playlist named after the source"
+                    else "Not used when a playlist is chosen",
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall,
                 )
@@ -232,38 +251,56 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
     val status = item.status
     val shown = item.shown
     val count = status?.itemsTotal?.takeIf { it > 1 }?.let { total -> "${(status.itemsDone ?: 0).coerceIn(0, total)} of $total" }
-    val (label, color) = when (status?.state) {
-        null -> "Waiting for the downloader" to TextSecondary
-        "queued" -> "Queued" to TextSecondary
-        "downloading" -> listOfNotNull(
-            "Downloading",
-            count,
-            status.progress?.let { "${(it * 100).toInt()}%" },
-        ).joinToString(" • ") to Accent
-        "done" -> "Done" + (if (status.tracks.isNotEmpty()) " • ${status.tracks.size} ${if (status.tracks.size == 1) "song" else "songs"}" else "") to Accent
-        "failed" -> "Failed" + (count?.let { " • $it done" } ?: "") to MaterialTheme.colorScheme.error
-        "cancelled" -> "Cancelled" + (count?.let { " • $it done" } ?: "") to TextSecondary
-        else -> Limits.shownLine(status.state) to TextSecondary
-    }
+    val (label, color) =
+        when (status?.state) {
+            null -> "Waiting for the downloader" to TextSecondary
+            "queued" -> "Queued" to TextSecondary
+            "downloading" ->
+                listOfNotNull(
+                        "Downloading",
+                        count,
+                        status.progress?.let { "${(it * 100).toInt()}%" },
+                    )
+                    .joinToString(" • ") to Accent
+            "done" ->
+                "Done" +
+                    (if (status.tracks.isNotEmpty()) " • ${status.tracks.size} ${if (status.tracks.size == 1) "song" else "songs"}"
+                    else "") to Accent
+            "failed" -> "Failed" + count?.let { " • $it done" }.orEmpty() to MaterialTheme.colorScheme.error
+            "cancelled" -> "Cancelled" + count?.let { " • $it done" }.orEmpty() to TextSecondary
+            else -> Limits.shownLine(status.state) to TextSecondary
+        }
     var problemsOpen by remember { mutableStateOf(false) }
     Column(
-        Modifier
-            .fillMaxWidth()
+        Modifier.fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 6.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(SurfaceHigh)
-            .padding(14.dp),
+            .padding(14.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(shown.title ?: shown.input, fontWeight = FontWeight.SemiBold, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (shown.title != null) {
-                    Text(shown.input, color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        shown.input,
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(label, color = color, style = MaterialTheme.typography.bodyMedium)
                 val target = item.request?.playlist
-                if (target != null) Text("→ ${Limits.shownLine(target)}", color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                if (target != null)
+                    Text(
+                        "→ ${Limits.shownLine(target)}",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 if (target == null && item.request?.playlistFromSource == true) {
                     Text("→ playlist named after the source", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
@@ -302,9 +339,10 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 Spacer(Modifier.width(6.dp))
                 Text(
                     listOfNotNull(
-                        shown.failedCount.takeIf { it > 0 }?.let { "$it failed" },
-                        shown.warningCount.takeIf { it > 0 }?.let { if (it == 1) "1 warning" else "$it warnings" },
-                    ).joinToString(" • "),
+                            shown.failedCount.takeIf { it > 0 }?.let { "$it failed" },
+                            shown.warningCount.takeIf { it > 0 }?.let { if (it == 1) "1 warning" else "$it warnings" },
+                        )
+                        .joinToString(" • "),
                     color = WarningColor,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.weight(1f),
@@ -329,7 +367,12 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 }
                 val hidden = shown.failedCount + shown.warningCount - shown.lines.size
                 if (hidden > 0) {
-                    Text("and $hidden more", color = TextSecondary, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(start = 22.dp, top = 2.dp))
+                    Text(
+                        "and $hidden more",
+                        color = TextSecondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(start = 22.dp, top = 2.dp),
+                    )
                 }
             }
         }

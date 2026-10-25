@@ -7,10 +7,10 @@ import androidx.media3.common.MediaMetadata
 import io.github.brainage04.tunemesh.data.CoverProvider
 import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Track
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 /** Queue entries carry `"<unique id>|<library path>"` as media ID so duplicates stay distinguishable. */
 object QueueItems {
@@ -34,7 +34,7 @@ object QueueItems {
                 albumArtist = track.albumArtist,
                 durationMs = track.durationMs,
                 artwork = CoverProvider.uri(context, track.path).toString(),
-            ),
+            )
         )
 
     fun build(stored: StoredItem): MediaItem {
@@ -54,7 +54,7 @@ object QueueItems {
                     .setIsPlayable(true)
                     .setIsBrowsable(false)
                     .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC)
-                    .build(),
+                    .build()
             )
             .build()
     }
@@ -76,14 +76,14 @@ object QueueItems {
     }
 
     /**
-     * Rebuilds an item that crossed the session boundary from the library [track] it names, or returns null when
-     * it does not name an audio file inside [root]. The session is exported, so other apps' controllers must not
-     * make the player open arbitrary files or URLs, nor make the app load their metadata (artwork URIs in
-     * particular) with its All files access: only the media URI and the queue entry ID are taken from [item].
+     * Rebuilds an item that crossed the session boundary from the library [track] it names, or returns null when it does not name an audio
+     * file inside [root]. The session is exported, so other apps' controllers must not make the player open arbitrary files or URLs, nor
+     * make the app load their metadata (artwork URIs in particular) with its All files access: only the media URI and the queue entry ID
+     * are taken from [item].
      *
-     * Queue entry IDs must stay unique (the queue screen keys rows by them, undoing shuffle maps them): the
-     * controller's ID is kept only when it is not in [used] (the IDs already queued and those given out earlier
-     * in the same batch), else the entry gets a new one. The ID kept or given is added to [used].
+     * Queue entry IDs must stay unique (the queue screen keys rows by them, undoing shuffle maps them): the controller's ID is kept only
+     * when it is not in [used] (the IDs already queued and those given out earlier in the same batch), else the entry gets a new one. The
+     * ID kept or given is added to [used].
      */
     fun resolve(
         context: Context,
@@ -95,8 +95,9 @@ object QueueItems {
         val uri = item.localConfiguration?.uri ?: item.requestMetadata.mediaUri ?: return null
         val path = LibraryUris.libraryPath(uri.toString(), root) ?: return null
         val resolved = track(path) ?: return null
-        val id = item.mediaId.takeIf { '|' in it }?.substringBefore('|')?.takeIf { it.isNotEmpty() && used.add(it) }
-            ?: newId().also { used += it }
+        val id =
+            item.mediaId.takeIf { '|' in it }?.substringBefore('|')?.takeIf { it.isNotEmpty() && used.add(it) }
+                ?: newId().also { used += it }
         return build(context, root, resolved, id)
     }
 
@@ -133,12 +134,13 @@ class PlaybackState(context: Context) {
     private val prefs = context.getSharedPreferences("playback", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun loadQueue(): StoredQueue? = prefs.getString(KEY_QUEUE, null)?.let {
-        runCatching { json.decodeFromString<StoredQueue>(it) }.getOrNull()
-    }
+    fun loadQueue(): StoredQueue? =
+        prefs.getString(KEY_QUEUE, null)?.let {
+            runCatching { json.decodeFromString<StoredQueue>(it) }.getOrNull()
+        }
 
     fun saveQueue(queue: StoredQueue) {
-        prefs.edit().putString(KEY_QUEUE, json.encodeToString(StoredQueue.serializer(), queue)).apply()
+        prefs.edit().putString(KEY_QUEUE, json.encodeToString(queue)).apply()
     }
 
     var shuffle: Boolean
@@ -147,8 +149,7 @@ class PlaybackState(context: Context) {
 
     /** Queue entry IDs in context order, used to undo shuffling. */
     var originalOrder: List<String>
-        get() = prefs.getString(KEY_ORIGINAL, null)?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
-            ?: emptyList()
+        get() = prefs.getString(KEY_ORIGINAL, null)?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }.orEmpty()
         set(value) = prefs.edit().putString(KEY_ORIGINAL, json.encodeToString(value)).apply()
 
     companion object {

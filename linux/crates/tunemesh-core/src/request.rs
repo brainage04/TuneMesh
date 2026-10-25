@@ -178,16 +178,43 @@ impl Request {
 
 impl Status {
     pub fn write(&self, root: &Path) -> io::Result<()> {
-        let mut s = self.clone();
-        s.clamp();
-        let json = serde_json::to_vec_pretty(&s).map_err(io::Error::other)?;
+        let json = self.to_json().map_err(io::Error::other)?;
         open_dir(root, STATUS, true)?.write_atomic(&file_name(&self.id), &json)
     }
 
+    /// The file `write` writes: the status cut to the contract's limits,
+    /// and to `MAX_JSON_BYTES` as a whole (readers skip larger files):
+    /// while it is larger, `tracks`, then `failures`, then `warnings` lose
+    /// entries from the end.
+    pub fn to_json(&self) -> serde_json::Result<Vec<u8>> {
+        let mut s = self.clone();
+        s.clamp();
+        loop {
+            let json = serde_json::to_vec_pretty(&s)?;
+            let lists_empty = s.tracks.is_empty() && s.failures.is_empty() && s.warnings.is_empty();
+            // Without the lists it always fits: the other fields' limits
+            // add up to far less.
+            if json.len() as u64 <= MAX_JSON_BYTES || lists_empty {
+                return Ok(json);
+            }
+            let excess = json.len() - MAX_JSON_BYTES as usize;
+            let excess = shed(&mut s.tracks, excess);
+            let excess = shed(&mut s.failures, excess);
+            shed(&mut s.warnings, excess);
+        }
+    }
+
     /// Cuts every field to the contract's limits (`limits`): applied when a
-    /// status file is read and before one is written.
+    /// status file is read and before one is written. Memory the cut parts
+    /// held (and the lists' spare capacity from parsing) is released, so a
+    /// status read from a 1 MiB file keeps only what is within the limits.
     pub fn clamp(&mut self) {
-        let cut = |s: &mut String, max| limits::cut_in_place(s, max);
+        let cut = |s: &mut String, max| {
+            if s.len() > max {
+                limits::cut_in_place(s, max);
+                s.shrink_to_fit();
+            }
+        };
         cut(&mut self.input, MAX_INPUT_BYTES);
         if let Some(t) = &mut self.title {
             cut(t, MAX_TEXT_BYTES);
@@ -196,15 +223,18 @@ impl Status {
             cut(m, MAX_MESSAGE_BYTES);
         }
         self.warnings.truncate(MAX_WARNINGS);
+        self.warnings.shrink_to_fit();
         for w in &mut self.warnings {
             cut(w, MAX_TEXT_BYTES);
         }
         self.failures.truncate(MAX_FAILURES);
+        self.failures.shrink_to_fit();
         for f in &mut self.failures {
             cut(&mut f.item, MAX_TEXT_BYTES);
             cut(&mut f.error, MAX_TEXT_BYTES);
         }
         self.tracks.truncate(MAX_STATUS_TRACKS);
+        self.tracks.shrink_to_fit();
     }
 
     /// Records a warning, keeping at most `MAX_WARNINGS` of them.
@@ -220,6 +250,20 @@ impl Status {
             self.failures.push(Failure { item, error });
         }
     }
+}
+
+/// Drops entries from the end of `list` until their JSON adds up to
+/// `excess` bytes; returns how many bytes are still to go.
+fn shed<T: Serialize>(list: &mut Vec<T>, mut excess: usize) -> usize {
+    while excess > 0
+        && let Some(item) = list.pop()
+    {
+        // A lower bound of what the entry takes in the file (where it is
+        // indented more and followed by a comma).
+        let len = serde_json::to_vec_pretty(&item).map_or(1, |j| j.len());
+        excess = excess.saturating_sub(len);
+    }
+    excess
 }
 
 /// Whether a request was cancelled: its request file no longer exists (or is
@@ -248,13 +292,14 @@ fn ids_in(dir: &Dir) -> Vec<String> {
     ids
 }
 
-fn read_json<T: for<'de> Deserialize<'de>>(dir: &Dir, id: &str) -> io::Result<T> {
-    let bytes = dir.read(&file_name(id), MAX_JSON_BYTES)?;
-    serde_json::from_slice(&bytes).map_err(io::Error::other)
+fn read_bytes(dir: &Dir, id: &str) -> io::Result<Vec<u8>> {
+    dir.read(&file_name(id), MAX_JSON_BYTES)
 }
 
-fn read_request(dir: &Dir, id: &str) -> io::Result<Request> {
-    let mut r: Request = read_json(dir, id)?;
+/// A request file's contents, read as `<id>.json` (the id comes from the
+/// file name, not the contents), with the readers' limits applied.
+pub fn parse_request(bytes: &[u8], id: &str) -> io::Result<Request> {
+    let mut r: Request = serde_json::from_slice(bytes).map_err(io::Error::other)?;
     r.id = id.to_owned();
     if let Some(p) = &mut r.playlist {
         limits::cut_in_place(p, MAX_REQUEST_PLAYLIST_BYTES);
@@ -263,11 +308,21 @@ fn read_request(dir: &Dir, id: &str) -> io::Result<Request> {
     Ok(r)
 }
 
-fn read_status_in(dir: &Dir, id: &str) -> io::Result<Status> {
-    let mut s: Status = read_json(dir, id)?;
+/// A status file's contents, read as `<id>.json`, cut to the contract's
+/// limits (`Status::clamp`).
+pub fn parse_status(bytes: &[u8], id: &str) -> io::Result<Status> {
+    let mut s: Status = serde_json::from_slice(bytes).map_err(io::Error::other)?;
     s.id = id.to_owned();
     s.clamp();
     Ok(s)
+}
+
+fn read_request(dir: &Dir, id: &str) -> io::Result<Request> {
+    parse_request(&read_bytes(dir, id)?, id)
+}
+
+fn read_status_in(dir: &Dir, id: &str) -> io::Result<Status> {
+    parse_status(&read_bytes(dir, id)?, id)
 }
 
 /// The oldest `max` requests (by numeric id prefix), parsed. Unparseable or
@@ -401,6 +456,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
+    #[cfg_attr(miri, ignore = "wall clock")]
     fn id_format() {
         let id = new_id();
         let (ms, hex) = id.split_once('-').unwrap();
@@ -413,6 +469,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn requests_ordered_by_numeric_prefix() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -443,6 +500,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn cancellation_is_a_missing_request_file() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -466,6 +524,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "wall clock")]
     fn json_shape_matches_contract() {
         let json = r#"{"version":1,"id":"1-00000000","input":"q","playlist":null,"playlistFromSource":true,"requestedBy":"pixel-8","requestedAt":"2026-10-06T05:01:37Z"}"#;
         let r: Request = serde_json::from_str(json).unwrap();
@@ -480,6 +539,7 @@ mod tests {
     /// Audit finding 2: a symlinked `.tunemesh/status` or `requests`
     /// directory must not let the worker write or delete files elsewhere.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn symlinked_tunemesh_dirs_are_refused() {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("settings.json"), b"{}").unwrap();
@@ -514,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn symlinked_request_files_are_reported_not_followed() {
         let outside = tempfile::tempdir().unwrap();
         let target = outside.path().join("other.json");
@@ -532,6 +593,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn oldest_requests_are_limited() {
         let lib = tempfile::tempdir().unwrap();
         let root = lib.path();
@@ -550,6 +612,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "wall clock")]
     fn progress_fields_are_optional() {
         let r = Request::new("x", None, false, "pc");
         let mut s = Status::new(&r, RequestState::Downloading);
@@ -577,6 +640,7 @@ mod tests {
 
     /// Status files are cut to the contract's limits when read and written.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn status_contents_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -623,6 +687,7 @@ mod tests {
 
     /// Clients read only the newest ids over requests and status files.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn recent_reads_the_newest_ids() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -656,6 +721,74 @@ mod tests {
         assert_eq!(
             list_statuses(root).len(),
             (MAX_LISTED_REQUESTS + 50) / 2 + 1
+        );
+    }
+
+    /// Found by `fuzz/fuzz_targets/status_limits.rs`: 10,000 long track
+    /// paths, or 200 failures of control characters (6 bytes each in
+    /// JSON), made a status file of several MiB that no client reads.
+    #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
+    fn written_statuses_stay_readable() {
+        let req = Request::new("https://example.com/x", None, false, "pc");
+        let mut s = Status::new(&req, RequestState::Done);
+        let component = "x".repeat(120);
+        s.tracks = (0..MAX_STATUS_TRACKS)
+            .map(|i| format!("{component}/{component}/{i:0>116} [id].opus"))
+            .collect();
+        let json = s.to_json().unwrap();
+        assert!(json.len() as u64 <= MAX_JSON_BYTES, "{}", json.len());
+        let back = parse_status(&json, &s.id).unwrap();
+        assert!(back.tracks.len() > 2_000);
+        assert_eq!(back.tracks[..], s.tracks[..back.tracks.len()]);
+
+        let mut s = Status::new(&req, RequestState::Failed);
+        for _ in 0..MAX_FAILURES {
+            s.add_failure(
+                "\u{1}".repeat(MAX_TEXT_BYTES),
+                "\u{1}".repeat(MAX_TEXT_BYTES),
+            );
+        }
+        s.warnings = vec!["\u{1}".repeat(MAX_TEXT_BYTES); MAX_WARNINGS];
+        let json = s.to_json().unwrap();
+        assert!(json.len() as u64 <= MAX_JSON_BYTES, "{}", json.len());
+        let back = parse_status(&json, &s.id).unwrap();
+        assert!(back.failures.len() < MAX_FAILURES && !back.failures.is_empty());
+        assert_eq!(back.warnings.len(), MAX_WARNINGS);
+        // A status that fits is written whole.
+        let small = Status::new(&req, RequestState::Queued);
+        assert_eq!(
+            parse_status(&small.to_json().unwrap(), &small.id).unwrap(),
+            small
+        );
+    }
+
+    /// Found with heaptrack on the desktop app: a status read from a file
+    /// full of entries kept the parsed lists' whole capacity and each cut
+    /// string's original buffer (74 MB live for the 200 listed statuses of
+    /// the hostile library).
+    #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
+    fn read_statuses_keep_no_spare_capacity() {
+        let long = "w".repeat(8 * MAX_TEXT_BYTES);
+        let json = serde_json::json!({
+            "version": 1, "id": "x", "input": "i".repeat(4 * MAX_INPUT_BYTES),
+            "state": "failed",
+            "warnings": (0..80).map(|i| format!("{long}{i}")).collect::<Vec<_>>(),
+            "failures": (0..300).map(|_| serde_json::json!({"item": long, "error": "e"})).collect::<Vec<_>>(),
+            "tracks": (0..MAX_STATUS_TRACKS + 3).map(|i| i.to_string()).collect::<Vec<_>>(),
+        });
+        let s = parse_status(json.to_string().as_bytes(), "x").unwrap();
+        assert_eq!(s.warnings.len(), MAX_WARNINGS);
+        assert!(s.warnings.capacity() <= MAX_WARNINGS);
+        assert!(s.failures.capacity() <= MAX_FAILURES);
+        assert!(s.tracks.capacity() <= MAX_STATUS_TRACKS);
+        assert!(s.input.capacity() <= MAX_INPUT_BYTES);
+        assert!(s.warnings.iter().all(|w| w.capacity() <= MAX_TEXT_BYTES));
+        assert!(
+            s.failures
+                .iter()
+                .all(|f| f.item.capacity() <= MAX_TEXT_BYTES)
         );
     }
 }

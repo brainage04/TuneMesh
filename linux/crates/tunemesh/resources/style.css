@@ -69,6 +69,11 @@ searchentry.tm-search:focus-within { box-shadow: inset 0 0 0 2px #ffffff; }
 .tm-sidebar-playlist .title { font-weight: 600; color: #ffffff; }
 .tm-sidebar-playlist .subtitle { color: #b3b3b3; font-size: 12px; }
 .tm-sidebar-playlist.playing .title { color: #1ed760; }
+/* The library list recycles its rows; the buttons in them carry the look. */
+listview.tm-sidebar-list { background: transparent; }
+listview.tm-sidebar-list > row,
+listview.tm-sidebar-list > row:hover,
+listview.tm-sidebar-list > row:focus { padding: 0 0 2px 0; background: transparent; outline: none; }
 
 /* Typography */
 .tm-page-title { font-size: 28px; font-weight: 800; }
@@ -89,6 +94,11 @@ searchentry.tm-search:focus-within { box-shadow: inset 0 0 0 2px #ffffff; }
 .tm-cover { border-radius: 6px; background: #282828; }
 .tm-cover.round { border-radius: 999px; }
 .tm-cover-shadow { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
+/* Drawn on the CPU, every blurred shadow is blurred again at each redraw:
+   the covers of a grid took most of a frame. */
+.tm-software .tm-cover-shadow,
+.tm-software button.tm-play-big,
+.tm-software button.tm-play-small { box-shadow: none; }
 .tm-tile-play {
   opacity: 0;
   transition: opacity 150ms ease, margin 150ms ease;
@@ -244,7 +254,7 @@ scale.tm-seek slider, scale.tm-volume slider {
 scale.tm-seek:hover slider, scale.tm-volume:hover slider { opacity: 1; }
 
 /* Queue panel */
-.tm-queue { padding: 12px 8px; min-width: 320px; }
+.tm-queue { padding: 12px 8px; }
 .tm-queue-heading { font-weight: 700; font-size: 16px; margin: 4px 8px 8px 8px; }
 .tm-queue-section { font-weight: 700; color: #ffffff; margin: 12px 8px 4px 8px; }
 listview.tm-queue-list { background: transparent; }

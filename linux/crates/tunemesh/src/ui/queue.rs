@@ -1,11 +1,11 @@
 //! The toggleable queue side panel: now playing, user-queued tracks, then
 //! the rest of the context. Drag to reorder, × to remove, double-click to play.
 
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 use tunemesh_core::limits;
 
 use crate::app::App;
@@ -16,11 +16,122 @@ use crate::ui::widgets::{icon_button, label};
 
 enum QItem {
     Heading(String),
-    Track {
-        index: usize,
-        path: String,
+    Track { index: usize, current: bool },
+}
+
+/// A run of the panel's rows: a heading, or consecutive queue entries.
+#[derive(Clone)]
+enum Segment {
+    Heading(String),
+    Tracks {
+        first: usize,
+        len: usize,
         current: bool,
     },
+}
+
+impl Segment {
+    fn len(&self) -> usize {
+        match self {
+            Segment::Heading(_) => 1,
+            Segment::Tracks { len, .. } => *len,
+        }
+    }
+}
+
+/// The panel's list model: a few segments, with row objects made when GTK
+/// asks for them (the rows on screen). A 40,000-entry queue costs nothing
+/// to show again after every track change.
+mod rows {
+    use gtk::subclass::prelude::*;
+    use gtk::{gio, glib};
+
+    mod imp {
+        use std::cell::{Cell, RefCell};
+
+        use gtk::subclass::prelude::*;
+        use gtk::{gio, glib, prelude::*};
+
+        use super::super::{QItem, Segment};
+
+        #[derive(Default)]
+        pub struct Rows {
+            pub(in super::super) segments: RefCell<Vec<Segment>>,
+            pub len: Cell<u32>,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Rows {
+            const NAME: &'static str = "TmQueueRows";
+            type Type = super::Rows;
+            type Interfaces = (gio::ListModel,);
+        }
+
+        impl ObjectImpl for Rows {}
+
+        impl ListModelImpl for Rows {
+            fn item_type(&self) -> glib::Type {
+                glib::BoxedAnyObject::static_type()
+            }
+
+            fn n_items(&self) -> u32 {
+                self.len.get()
+            }
+
+            fn item(&self, position: u32) -> Option<glib::Object> {
+                let mut pos = position as usize;
+                for s in self.segments.borrow().iter() {
+                    if pos < s.len() {
+                        let item = match s {
+                            Segment::Heading(text) => QItem::Heading(text.clone()),
+                            Segment::Tracks { first, current, .. } => QItem::Track {
+                                index: first + pos,
+                                current: *current,
+                            },
+                        };
+                        return Some(glib::BoxedAnyObject::new(item).upcast());
+                    }
+                    pos -= s.len();
+                }
+                None
+            }
+        }
+    }
+
+    glib::wrapper! {
+        pub struct Rows(ObjectSubclass<imp::Rows>) @implements gio::ListModel;
+    }
+
+    impl Rows {
+        pub fn new() -> Self {
+            glib::Object::new()
+        }
+
+        /// Replaces every row.
+        pub(super) fn set(&self, segments: Vec<super::Segment>) {
+            let imp = self.imp();
+            let old = imp.len.get();
+            let len = segments.iter().map(super::Segment::len).sum::<usize>();
+            imp.len.set(u32::try_from(len).unwrap_or(u32::MAX));
+            *imp.segments.borrow_mut() = segments;
+            gio::prelude::ListModelExt::items_changed(self, 0, old, imp.len.get());
+        }
+
+        /// The queue index shown at `position` (none for headings).
+        pub(super) fn index_at(&self, position: u32) -> Option<usize> {
+            let mut pos = position as usize;
+            for s in self.imp().segments.borrow().iter() {
+                if pos < s.len() {
+                    return match s {
+                        super::Segment::Heading(_) => None,
+                        super::Segment::Tracks { first, .. } => Some(first + pos),
+                    };
+                }
+                pos -= s.len();
+            }
+            None
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -38,9 +149,7 @@ struct QRow {
 pub struct QueuePanel {
     pub widget: gtk::Box,
     app: Weak<App>,
-    store: gio::ListStore,
-    /// Queue index per model position (None for headings).
-    indices: RefCell<Vec<Option<usize>>>,
+    rows: rows::Rows,
 }
 
 impl QueuePanel {
@@ -48,7 +157,6 @@ impl QueuePanel {
         let widget = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .css_classes(["tm-panel", "tm-queue"])
-            .width_request(340)
             .hexpand(false)
             .build();
         let head = gtk::Box::builder().spacing(8).build();
@@ -61,7 +169,6 @@ impl QueuePanel {
         head.append(&close);
         widget.append(&head);
 
-        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
         let factory = gtk::SignalListItemFactory::new();
         let weak_app = Rc::downgrade(app);
         factory.connect_setup(move |_, obj| {
@@ -117,14 +224,14 @@ impl QueuePanel {
                 weak_app.clone(),
                 q.index.clone(),
                 q.current.clone(),
-                row.clone(),
+                row.downgrade(),
             );
             click.connect_pressed(move |g, _, x, y| {
                 g.set_state(gtk::EventSequenceState::Claimed);
                 let (Some(a), Some(i)) = (wa.upgrade(), idx.get()) else {
                     return;
                 };
-                let Some(item) = a.player.items().get(i).cloned() else {
+                let Some(item) = a.player.item(i) else {
                     return;
                 };
                 let paths = if a.store.library().track_index(&item.path).is_some() {
@@ -137,7 +244,9 @@ impl QueuePanel {
                     playlist: None,
                     queue_index: (!cur.get()).then_some(i),
                 };
-                menu::popup(&a, r.upcast_ref(), x, y, ctx);
+                if let Some(r) = r.upgrade() {
+                    menu::popup(&a, r.upcast_ref(), x, y, ctx);
+                }
             });
             row.add_controller(click);
 
@@ -153,9 +262,13 @@ impl QueuePanel {
             });
             row.add_controller(source);
             let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-            let (wa, idx, r) = (weak_app.clone(), q.index.clone(), row.clone());
-            target.connect_drop(move |_, value, _, _| {
-                r.remove_css_class("tm-drop-before");
+            // A row's own controllers reach it through the controller, never
+            // by a captured reference that would keep the row alive.
+            let (wa, idx) = (weak_app.clone(), q.index.clone());
+            target.connect_drop(move |t, value, _, _| {
+                if let Some(r) = t.widget() {
+                    r.remove_css_class("tm-drop-before");
+                }
                 let (Some(a), Some(to)) = (wa.upgrade(), idx.get()) else {
                     return false;
                 };
@@ -171,13 +284,17 @@ impl QueuePanel {
                 a.player.move_item(from, to);
                 true
             });
-            let r = row.clone();
-            target.connect_enter(move |_, _, _| {
-                r.add_css_class("tm-drop-before");
+            target.connect_enter(|t, _, _| {
+                if let Some(r) = t.widget() {
+                    r.add_css_class("tm-drop-before");
+                }
                 gdk::DragAction::MOVE
             });
-            let r = row.clone();
-            target.connect_leave(move |_| r.remove_css_class("tm-drop-before"));
+            target.connect_leave(|t| {
+                if let Some(r) = t.widget() {
+                    r.remove_css_class("tm-drop-before");
+                }
+            });
             row.add_controller(target);
 
             // SAFETY: only read back as `QRow`.
@@ -205,11 +322,7 @@ impl QueuePanel {
                     li.set_activatable(false);
                     li.set_selectable(false);
                 }
-                QItem::Track {
-                    index,
-                    path,
-                    current,
-                } => {
+                QItem::Track { index, current } => {
                     q.heading.set_visible(false);
                     q.row.set_visible(true);
                     q.index.set(Some(*index));
@@ -222,8 +335,9 @@ impl QueuePanel {
                     } else {
                         q.row.remove_css_class("current")
                     }
+                    let path = app.player.item(*index).map(|i| i.path).unwrap_or_default();
                     let lib = app.store.library();
-                    match lib.track(path) {
+                    match lib.track(&path) {
                         Some(t) => {
                             q.title.set_label(&limits::clip_line(&t.title));
                             q.artist.set_label(&limits::clip_line(&t.artist));
@@ -231,18 +345,18 @@ impl QueuePanel {
                         }
                         None => {
                             q.title.set_label(&limits::clip_line(
-                                path.rsplit('/').next().unwrap_or(path),
+                                path.rsplit('/').next().unwrap_or(&path),
                             ));
                             q.artist.set_label("Unavailable");
-                            app.covers
-                                .apply(&q.cover, Source::Placeholder(path.clone()), 40);
+                            app.covers.apply(&q.cover, Source::Placeholder(path), 40);
                         }
                     }
                 }
             }
         });
+        let rows = rows::Rows::new();
         let list = gtk::ListView::builder()
-            .model(&gtk::NoSelection::new(Some(store.clone())))
+            .model(&gtk::NoSelection::new(Some(rows.clone())))
             .factory(&factory)
             .css_classes(["tm-queue-list"])
             .build();
@@ -250,16 +364,14 @@ impl QueuePanel {
         let panel = Rc::new(Self {
             widget,
             app: Rc::downgrade(app),
-            store,
-            indices: RefCell::new(Vec::new()),
+            rows,
         });
         let weak_panel = Rc::downgrade(&panel);
         list.connect_activate(move |_, pos| {
             let (Some(a), Some(p)) = (weak_app.upgrade(), weak_panel.upgrade()) else {
                 return;
             };
-            let index = p.indices.borrow().get(pos as usize).copied().flatten();
-            if let Some(i) = index {
+            if let Some(i) = p.rows.index_at(pos) {
                 a.player.jump_to(i);
             }
         });
@@ -288,63 +400,41 @@ impl QueuePanel {
         if !app.queue_shown() {
             return;
         }
-        let items = app.player.items();
-        let current = app.player.current_index();
-        let mut model: Vec<QItem> = Vec::new();
-        let mut indices: Vec<Option<usize>> = Vec::new();
-        let mut push = |item: QItem| {
-            indices.push(match &item {
-                QItem::Track { index, .. } => Some(*index),
-                QItem::Heading(_) => None,
-            });
-            model.push(item);
-        };
+        let (len, current, user) = app.player.queue_shape();
+        let mut segments = Vec::new();
         match current {
-            Some(c) if c < items.len() => {
-                push(QItem::Heading("Now playing".into()));
-                push(QItem::Track {
-                    index: c,
-                    path: items[c].path.clone(),
+            Some(c) if c < len => {
+                segments.push(Segment::Heading("Now playing".into()));
+                segments.push(Segment::Tracks {
+                    first: c,
+                    len: 1,
                     current: true,
                 });
-                let upcoming: Vec<usize> = (c + 1..items.len()).collect();
-                let user: Vec<usize> = upcoming
-                    .iter()
-                    .copied()
-                    .take_while(|&i| items[i].user)
-                    .collect();
-                if !user.is_empty() {
-                    push(QItem::Heading("Next in queue".into()));
-                    for &i in &user {
-                        push(QItem::Track {
-                            index: i,
-                            path: items[i].path.clone(),
-                            current: false,
-                        });
-                    }
+                if user > 0 {
+                    segments.push(Segment::Heading("Next in queue".into()));
+                    segments.push(Segment::Tracks {
+                        first: c + 1,
+                        len: user,
+                        current: false,
+                    });
                 }
-                let rest: Vec<usize> = upcoming.into_iter().skip(user.len()).collect();
-                if !rest.is_empty() {
+                let rest = len - (c + 1) - user;
+                if rest > 0 {
                     let ctx = app.player.context_name();
-                    push(QItem::Heading(if ctx.is_empty() {
+                    segments.push(Segment::Heading(if ctx.is_empty() {
                         "Next up".into()
                     } else {
                         format!("Next from: {ctx}")
                     }));
-                    for i in rest {
-                        push(QItem::Track {
-                            index: i,
-                            path: items[i].path.clone(),
-                            current: false,
-                        });
-                    }
+                    segments.push(Segment::Tracks {
+                        first: c + 1 + user,
+                        len: rest,
+                        current: false,
+                    });
                 }
             }
-            _ => push(QItem::Heading("Nothing is playing".into())),
+            _ => segments.push(Segment::Heading("Nothing is playing".into())),
         }
-        let objs: Vec<glib::BoxedAnyObject> =
-            model.into_iter().map(glib::BoxedAnyObject::new).collect();
-        self.store.splice(0, self.store.n_items(), &objs);
-        *self.indices.borrow_mut() = indices;
+        self.rows.set(segments);
     }
 }

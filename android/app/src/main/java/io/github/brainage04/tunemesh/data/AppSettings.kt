@@ -23,8 +23,8 @@ class AppSettings(private val context: Context) {
     /** `pixel-8`-style name for `requestedBy`. */
     val deviceName: String
         get() {
-            val name = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)
-                ?.takeIf { it.isNotBlank() } ?: Build.MODEL
+            val name =
+                Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() } ?: Build.MODEL
             return DownloadStore.deviceSlug(name)
         }
 
@@ -32,7 +32,6 @@ class AppSettings(private val context: Context) {
         private const val KEY_ROOT = "libraryRoot"
         private const val KEY_SYNCTHING_SETUP_SEEN = "syncthingSetupSeen"
 
-        @Suppress("DEPRECATION")
-        fun defaultRoot(): File = File(Environment.getExternalStorageDirectory(), "Music/TuneMesh")
+        @Suppress("DEPRECATION") fun defaultRoot(): File = File(Environment.getExternalStorageDirectory(), "Music/TuneMesh")
     }
 }

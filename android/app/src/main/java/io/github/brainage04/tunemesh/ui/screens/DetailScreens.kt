@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -25,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -32,6 +34,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.brainage04.tunemesh.library.EntryRef
+import io.github.brainage04.tunemesh.library.LibraryIndex
+import io.github.brainage04.tunemesh.library.PlaylistContents
+import io.github.brainage04.tunemesh.library.PlaylistEntry
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.CoverArt
@@ -51,7 +56,9 @@ import io.github.brainage04.tunemesh.ui.UnavailableRow
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 import io.github.brainage04.tunemesh.ui.totalLength
-import androidx.compose.material3.DropdownMenu
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 private fun playingContext(name: String): Boolean {
@@ -127,7 +134,16 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
                 playingThis = playingContext(artist.name),
                 onShuffle = { viewModel.play(artist.name, artist.tracks, -1, shuffle = true) },
                 playEnabled = artist.tracks.isNotEmpty(),
-                art = { CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 232.dp, placeholderIcon = AppIcons.Person) },
+                art = {
+                    CoverArt(
+                        artist.tracks.first(),
+                        artist.name,
+                        it,
+                        shape = CircleShape,
+                        sizeHint = 232.dp,
+                        placeholderIcon = AppIcons.Person,
+                    )
+                },
                 actions = { AddAllMenu(artist.tracks) },
             )
         }
@@ -135,7 +151,12 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
         item {
             LazyRow(contentPadding = PaddingValues(horizontal = 10.dp)) {
                 items(artist.albums, key = { it.key }) { album ->
-                    MediaTile(album.title, songCount(album.tracks.size), { viewModel.push(Screen.AlbumDetail(album.key)) }, Modifier.width(150.dp)) {
+                    MediaTile(
+                        album.title,
+                        songCount(album.tracks.size),
+                        { viewModel.push(Screen.AlbumDetail(album.key)) },
+                        Modifier.width(150.dp),
+                    ) {
                         CoverArt(album.tracks.first(), album.title, it, sizeHint = 150.dp)
                     }
                 }
@@ -149,7 +170,7 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
 }
 
 @Composable
-fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
+fun PlaylistScreen(name: String, contentPadding: PaddingValues, background: CoroutineDispatcher = Dispatchers.Default) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     val playlist = library.playlist(name) ?: return Missing("Playlist", contentPadding)
@@ -159,20 +180,31 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         onDispose { viewModel.repository.closePlaylist(name) }
     }
     val contents = library.openPlaylist?.takeIf { it.name == name }
-    val entries = contents?.entries ?: emptyList()
-    val resolved = remember(entries, library.index) { entries.map { entry -> entry.path?.let { library.index.byPath[it] } } }
-    val playable = remember(resolved) { resolved.filterNotNull() }
+    // Looking up 250,000 entries takes longer than a frame, so it runs off the main thread. Rows show the latest finished lookup, with
+    // the entries it was made from, so an edited playlist keeps its old order on screen until the new one is resolved.
+    val libraryIndex = library.index
+    val lookup by
+        produceState<ResolvedEntries?>(null, contents, libraryIndex) {
+            val stored = contents ?: return@produceState
+            value = withContext(background) { ResolvedEntries.of(stored, libraryIndex) }
+        }
+    val resolved = lookup?.takeIf { it.contents.name == name }
+    val entries: List<PlaylistEntry> = resolved?.contents?.entries.orEmpty()
+    val playable = resolved?.playable.orEmpty()
     var editing by remember(name) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             DetailHeader(
                 title = playlist.name,
                 subtitle = if (playlist.isLikedSongs) "Your liked songs" else "Playlist",
-                stats = if (playlist.problem != null) "Too large to open" else buildString {
-                    append(songCount(contents?.entries?.size ?: playlist.size))
-                    if (contents != null && playable.size != entries.size) append(" • ${entries.size - playable.size} unavailable")
-                    if (playable.isNotEmpty()) append(" • ${totalLength(playable)}")
-                },
+                stats =
+                    if (playlist.problem != null) "Too large to open"
+                    else
+                        buildString {
+                            append(songCount(contents?.entries?.size ?: playlist.size))
+                            if (resolved != null && resolved.unavailable > 0) append(" • ${resolved.unavailable} unavailable")
+                            if (resolved != null && playable.isNotEmpty()) append(" • ${resolved.length}")
+                        },
                 seed = playlist.name,
                 onBack = { viewModel.back() },
                 onPlay = { viewModel.playOrToggle(playlist.name, playable) },
@@ -191,7 +223,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         playlist.problem?.let { problem ->
             item { EmptyMessage("This playlist cannot be opened", "$problem. It is left unchanged.") }
         }
-        if (playlist.problem == null && contents != null && entries.isEmpty()) {
+        if (playlist.problem == null && resolved != null && entries.isEmpty()) {
             item {
                 EmptyMessage(
                     if (playlist.isLikedSongs) "Songs you like appear here" else "This playlist is empty",
@@ -200,28 +232,43 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
             }
         }
         itemsIndexed(entries) { index, entry ->
-            val track = resolved[index]
+            val track = resolved?.tracks?.get(index)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
                     if (track != null) {
                         TrackRow(
                             track,
-                            onPlay = { viewModel.play(playlist.name, playable, resolved.take(index).count { it != null }) },
+                            onPlay = { viewModel.play(playlist.name, playable, resolved.playableBefore[index]) },
                             context = RowContext(playlistName = playlist.name, index = index),
                         )
                     } else {
-                        UnavailableRow(entry.raw, onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, EntryRef(index, entry.key)) })
+                        UnavailableRow(
+                            entry.raw,
+                            onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, EntryRef(index, entry.key)) },
+                        )
                     }
                 }
                 if (editing) {
                     IconButton(
-                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index - 1, entries[index - 1].key)) },
+                        onClick = {
+                            viewModel.repository.movePlaylistEntry(
+                                playlist.name,
+                                EntryRef(index, entry.key),
+                                EntryRef(index - 1, entries[index - 1].key),
+                            )
+                        },
                         enabled = index > 0,
                     ) {
                         Icon(AppIcons.Up, "Move up")
                     }
                     IconButton(
-                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index + 1, entries[index + 1].key)) },
+                        onClick = {
+                            viewModel.repository.movePlaylistEntry(
+                                playlist.name,
+                                EntryRef(index, entry.key),
+                                EntryRef(index + 1, entries[index + 1].key),
+                            )
+                        },
                         enabled = index < entries.lastIndex,
                     ) {
                         Icon(AppIcons.DownArrow, "Move down")
@@ -233,6 +280,37 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
     }
 }
 
+/** The library tracks of a playlist's [contents], looked up once per change of the playlist or the library. */
+private class ResolvedEntries(
+    val contents: PlaylistContents,
+    /** Per entry, its track, or null when it is unavailable. */
+    val tracks: Array<Track?>,
+    /** Per entry, how many entries before it are available: its position in [playable]. */
+    val playableBefore: IntArray,
+    val playable: List<Track>,
+) {
+    val unavailable: Int
+        get() = tracks.size - playable.size
+
+    val length: String = totalLength(playable)
+
+    companion object {
+        fun of(contents: PlaylistContents, index: LibraryIndex): ResolvedEntries {
+            val entries = contents.entries
+            val tracks = arrayOfNulls<Track>(entries.size)
+            val before = IntArray(entries.size)
+            val playable = ArrayList<Track>(entries.size)
+            for (i in tracks.indices) {
+                before[i] = playable.size
+                val track = entries.path(i)?.let(index.byPath::get) ?: continue
+                tracks[i] = track
+                playable += track
+            }
+            return ResolvedEntries(contents, tracks, before, playable)
+        }
+    }
+}
+
 @Composable
 private fun PlaylistMenu(name: String, likedSongs: Boolean, tracks: List<Track>) {
     val viewModel = LocalAppViewModel.current
@@ -241,13 +319,23 @@ private fun PlaylistMenu(name: String, likedSongs: Boolean, tracks: List<Track>)
         IconButton(onClick = { open = true }) { Icon(AppIcons.More, "Playlist options") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             if (tracks.isNotEmpty()) {
-                MenuItem("Add to queue", AppIcons.Queue) { viewModel.addToQueue(tracks); open = false }
-                MenuItem("Add to other playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(tracks); open = false }
+                MenuItem("Add to queue", AppIcons.Queue) {
+                    viewModel.addToQueue(tracks)
+                    open = false
+                }
+                MenuItem("Add to other playlist", AppIcons.PlaylistAdd) {
+                    viewModel.dialog = DialogRequest.AddToPlaylist(tracks)
+                    open = false
+                }
             }
             if (!likedSongs) {
-                MenuItem("Rename", AppIcons.Edit) { viewModel.dialog = DialogRequest.RenamePlaylist(name); open = false }
+                MenuItem("Rename", AppIcons.Edit) {
+                    viewModel.dialog = DialogRequest.RenamePlaylist(name)
+                    open = false
+                }
                 MenuItem("Delete playlist", AppIcons.Delete, color = MaterialTheme.colorScheme.error) {
-                    viewModel.dialog = DialogRequest.DeletePlaylist(name); open = false
+                    viewModel.dialog = DialogRequest.DeletePlaylist(name)
+                    open = false
                 }
             }
         }
@@ -261,9 +349,18 @@ private fun AddAllMenu(tracks: List<Track>) {
     Box {
         IconButton(onClick = { open = true }) { Icon(AppIcons.More, "More options") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            MenuItem("Play next", AppIcons.Queue) { viewModel.playNext(tracks); open = false }
-            MenuItem("Add to queue", AppIcons.Queue) { viewModel.addToQueue(tracks); open = false }
-            MenuItem("Add to playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(tracks); open = false }
+            MenuItem("Play next", AppIcons.Queue) {
+                viewModel.playNext(tracks)
+                open = false
+            }
+            MenuItem("Add to queue", AppIcons.Queue) {
+                viewModel.addToQueue(tracks)
+                open = false
+            }
+            MenuItem("Add to playlist", AppIcons.PlaylistAdd) {
+                viewModel.dialog = DialogRequest.AddToPlaylist(tracks)
+                open = false
+            }
         }
     }
 }

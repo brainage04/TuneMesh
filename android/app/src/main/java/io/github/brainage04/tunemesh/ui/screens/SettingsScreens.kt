@@ -74,7 +74,9 @@ fun SettingsScreen(contentPadding: PaddingValues) {
                     onClick = { viewModel.repository.setLibraryRoot(path) },
                     enabled = path.isNotBlank() && path.trim() != library.root.absolutePath,
                     colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
-                ) { Text("Save") }
+                ) {
+                    Text("Save")
+                }
                 OutlinedButton(onClick = { path = AppSettings.defaultRoot().absolutePath }) { Text("Default") }
                 OutlinedButton(onClick = { viewModel.repository.refreshAsync() }) { Text(if (library.scanning) "Scanning…" else "Rescan") }
             }
@@ -114,7 +116,12 @@ fun OnboardingScreen() {
         Spacer(Modifier.height(12.dp))
         Icon(AppIcons.Library, null, tint = Accent, modifier = Modifier.size(72.dp))
         Spacer(Modifier.height(24.dp))
-        Text("Allow access to your music", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+        Text(
+            "Allow access to your music",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
         Spacer(Modifier.height(12.dp))
         Text(
             "TuneMesh plays the songs Syncthing keeps in ${AppSettings.defaultRoot().absolutePath} and writes playlists, " +
@@ -135,7 +142,9 @@ fun OnboardingScreen() {
             },
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
             modifier = Modifier.fillMaxWidth().height(52.dp),
-        ) { Text("Open settings", fontWeight = FontWeight.Bold) }
+        ) {
+            Text("Open settings", fontWeight = FontWeight.Bold)
+        }
     }
 }
 
@@ -144,19 +153,19 @@ private val SYNCTHING_PACKAGES = listOf("com.github.catfriend1.syncthingfork", "
 private const val SYNCTHING_FDROID = "https://f-droid.org/packages/com.github.catfriend1.syncthingfork/"
 private const val SYNCTHING_GITHUB = "https://github.com/researchxxl/syncthing-android/releases/latest"
 
-private fun syncthingLaunchIntent(context: Context): Intent? =
-    SYNCTHING_PACKAGES.firstNotNullOfOrNull { context.packageManager.getLaunchIntentForPackage(it) }
+private fun syncthingLaunchIntent(context: Context): Intent? = SYNCTHING_PACKAGES.firstNotNullOfOrNull {
+    context.packageManager.getLaunchIntentForPackage(it)
+}
 
 private fun openUrl(context: Context, url: String) {
     try {
         context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-    } catch (_: ActivityNotFoundException) {
-    }
+    } catch (_: ActivityNotFoundException) {}
 }
 
 /**
- * Second onboarding step, after All files access: how to sync the library folder with Syncthing-Fork. Skippable,
- * shown once, and reachable again from Settings. TuneMesh itself never talks to Syncthing.
+ * Second onboarding step, after All files access: how to sync the library folder with Syncthing-Fork. Skippable, shown once, and reachable
+ * again from Settings. TuneMesh itself never talks to Syncthing.
  */
 @Composable
 fun SyncthingSetupScreen(onDone: () -> Unit) {
@@ -219,14 +228,18 @@ fun SyncthingSetupScreen(onDone: () -> Unit) {
                     }
                 },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
-            ) { Text("Open Syncthing-Fork") }
+            ) {
+                Text("Open Syncthing-Fork")
+            }
             Spacer(Modifier.height(8.dp))
         }
         Button(
             onClick = onDone,
             colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
             modifier = Modifier.fillMaxWidth().height(52.dp),
-        ) { Text(if (firstRun) "Done" else "Close", fontWeight = FontWeight.Bold) }
+        ) {
+            Text(if (firstRun) "Done" else "Close", fontWeight = FontWeight.Bold)
+        }
         if (firstRun) {
             TextButton(onClick = onDone, modifier = Modifier.fillMaxWidth()) { Text("Skip for now") }
         }
