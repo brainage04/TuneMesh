@@ -2,11 +2,11 @@ import com.android.apksig.ApkSigner
 import com.android.apksig.SigningCertificateLineage
 import com.android.build.api.artifact.ArtifactTransformationRequest
 import com.android.build.api.artifact.SingleArtifact
+import groovy.json.JsonSlurper
 import java.security.KeyStore
 import java.security.PrivateKey
 import java.security.cert.X509Certificate
 import java.util.Properties
-import groovy.json.JsonSlurper
 
 plugins {
     alias(libs.plugins.android.application)
@@ -36,11 +36,12 @@ val appVersion: String = run {
     var section = ""
     // Through providers, so the configuration cache notices a version change.
     val toml = providers.fileContents(rootProject.layout.projectDirectory.file("../linux/Cargo.toml")).asText.get()
-    val version = toml.lines().firstNotNullOfOrNull { line ->
-        val text = line.substringBefore('#').trim()
-        if (text.startsWith("[")) section = text
-        Regex("""^version\s*=\s*"([^"]*)"$""").find(text)?.groupValues?.get(1)?.takeIf { section == "[workspace.package]" }
-    } ?: throw GradleException("No version in [workspace.package] of $cargo")
+    val version =
+        toml.lines().firstNotNullOfOrNull { line ->
+            val text = line.substringBefore('#').trim()
+            if (text.startsWith("[")) section = text
+            Regex("""^version\s*=\s*"([^"]*)"$""").find(text)?.groupValues?.get(1)?.takeIf { section == "[workspace.package]" }
+        } ?: throw GradleException("No version in [workspace.package] of $cargo")
     check(Regex("""(0|[1-9]\d*)\.(0|[1-9]\d?)\.(0|[1-9]\d?)""").matches(version)) {
         "$cargo: version \"$version\" must be MAJOR.MINOR.PATCH with MINOR and PATCH below 100"
     }
@@ -48,12 +49,13 @@ val appVersion: String = run {
 }
 val appVersionCode: Int = appVersion.split('.').map(String::toInt).let { (major, minor, patch) -> major * 10_000 + minor * 100 + patch }
 
-val signing = rootProject.file(".signing/signing.properties")
-    .takeIf { it.isFile }
-    ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
+val signing =
+    rootProject
+        .file(".signing/signing.properties")
+        .takeIf { it.isFile }
+        ?.let { file -> Properties().apply { file.inputStream().use(::load) } }
 
-fun signingFile(key: String): File? =
-    signing?.getProperty(key)?.let { rootProject.file(".signing/$it") }
+fun signingFile(key: String): File? = signing?.getProperty(key)?.let { rootProject.file(".signing/$it") }
 
 android {
     namespace = "io.github.brainage04.tunemesh"
@@ -108,6 +110,12 @@ android {
     buildFeatures {
         compose = true
     }
+    // JUnit 5 for the Jazzer fuzz tests; the vintage engine runs the JUnit 4 tests.
+    testOptions {
+        unitTests.all { it.useJUnitPlatform() }
+    }
+    // The hostile-library generator, shared with the macrobenchmarks in :baselineprofile.
+    sourceSets.getByName("androidTest").kotlin.srcDir("../hostile-library/java")
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -143,11 +151,12 @@ aboutLibraries {
     }
 }
 
-val thirdPartyNotice = tasks.register<WriteThirdPartyNotice>("writeThirdPartyNotice") {
-    dependsOn("exportLibraryDefinitions")
-    definitions.set(aboutLibraries.export.outputFile)
-    outputDirectory.set(layout.buildDirectory.dir("generated/notice"))
-}
+val thirdPartyNotice =
+    tasks.register<WriteThirdPartyNotice>("writeThirdPartyNotice") {
+        dependsOn("exportLibraryDefinitions")
+        definitions.set(aboutLibraries.export.outputFile)
+        outputDirectory.set(layout.buildDirectory.dir("generated/notice"))
+    }
 
 androidComponents {
     onVariants { variant ->
@@ -174,12 +183,60 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
+    testImplementation(platform(libs.junit5.bom))
+    testImplementation(libs.junit5.jupiter)
+    testImplementation(libs.jazzer.junit)
+    testRuntimeOnly(libs.junit5.vintage.engine)
+    testRuntimeOnly(libs.junit5.platform.launcher)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.uiautomator)
+    // Every instrumented test class has DetectLeaksAfterTestSuccess: a test fails when an activity, service or view model it
+    // destroyed is still reachable afterwards.
+    androidTestImplementation(libs.leakcanary.android.instrumentation)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.leakcanary.android)
     baselineProfile(project(":baselineprofile"))
+}
+
+// Jazzer fuzz tests (@FuzzTest in src/test). testDebugUnitTest runs each once per saved input in
+// src/test/resources/<package path>/<Class>Inputs/<method>/ (regression mode). ./gradlew :app:fuzz fuzzes every
+// target in turn for -Pfuzz.seconds seconds each (default 60); an input that fails is saved in that directory and
+// becomes a regression input once committed. One task per target, as Jazzer fuzzes one test per JVM.
+val fuzzTargets =
+    mapOf(
+        "library.M3u8FuzzTest" to listOf("parseWriteRoundTrip", "readWithLimits"),
+        "library.DownloadJsonFuzzTest" to listOf("request", "status", "worker"),
+        "library.DownloadInputsFuzzTest" to listOf("pastedText", "sharedText"),
+        "library.SanitizeFuzzTest" to listOf("component", "fileName"),
+    )
+val fuzzSeconds = providers.gradleProperty("fuzz.seconds").orElse("60")
+val fuzzTasks = fuzzTargets.flatMap { (testClass, methods) ->
+    methods.map { method ->
+        tasks.register<Test>(
+            "fuzz${testClass.substringAfterLast('.').removeSuffix("FuzzTest")}${method.replaceFirstChar(Char::uppercase)}"
+        ) {
+            description = "Fuzzes $testClass.$method with Jazzer for -Pfuzz.seconds seconds."
+            group = "verification"
+            val unitTests = tasks.named<Test>("testDebugUnitTest").get()
+            testClassesDirs = unitTests.testClassesDirs
+            classpath = unitTests.classpath
+            useJUnitPlatform()
+            filter.includeTestsMatching("io.github.brainage04.tunemesh.$testClass.$method")
+            environment("JAZZER_FUZZ", "1")
+            systemProperty("jazzer.max_duration", "${fuzzSeconds.get()}s")
+            outputs.upToDateWhen { false }
+        }
+    }
+}
+
+fuzzTasks.zipWithNext { earlier, later -> later.configure { mustRunAfter(earlier) } }
+
+tasks.register("fuzz") {
+    description = "Fuzzes every Jazzer target in turn for -Pfuzz.seconds seconds each (default 60)."
+    group = "verification"
+    dependsOn(fuzzTasks)
 }
 
 // With a lineage, every APK is re-signed after packaging: the v3 block carries this app's key plus
@@ -189,23 +246,24 @@ androidComponents {
     onVariants { variant ->
         val lineage = signingFile("lineageFile") ?: return@onVariants
         val properties = signing!!
-        val rotate = tasks.register<RotateApkSignature>(
-            "rotate${variant.name.replaceFirstChar(Char::uppercase)}ApkSignature",
-        ) {
-            lineageFile.set(lineage)
-            storeFile.set(signingFile("storeFile"))
-            storePassword.set(properties.getProperty("storePassword"))
-            keyAlias.set(properties.getProperty("keyAlias"))
-            keyPassword.set(properties.getProperty("keyPassword"))
-            signingFile("previousStoreFile")?.let { previousStoreFile.set(it) }
-            previousStorePassword.set(properties.getProperty("previousStorePassword"))
-            previousKeyAlias.set(properties.getProperty("previousKeyAlias"))
-            previousKeyPassword.set(properties.getProperty("previousKeyPassword"))
-            minSdk.set(variant.minSdk.apiLevel)
-        }
-        val request = variant.artifacts.use(rotate)
-            .wiredWithDirectories(RotateApkSignature::inputApks, RotateApkSignature::outputApks)
-            .toTransformMany(SingleArtifact.APK)
+        val rotate =
+            tasks.register<RotateApkSignature>("rotate${variant.name.replaceFirstChar(Char::uppercase)}ApkSignature") {
+                lineageFile.set(lineage)
+                storeFile.set(signingFile("storeFile"))
+                storePassword.set(properties.getProperty("storePassword"))
+                keyAlias.set(properties.getProperty("keyAlias"))
+                keyPassword.set(properties.getProperty("keyPassword"))
+                signingFile("previousStoreFile")?.let { previousStoreFile.set(it) }
+                previousStorePassword.set(properties.getProperty("previousStorePassword"))
+                previousKeyAlias.set(properties.getProperty("previousKeyAlias"))
+                previousKeyPassword.set(properties.getProperty("previousKeyPassword"))
+                minSdk.set(variant.minSdk.apiLevel)
+            }
+        val request =
+            variant.artifacts
+                .use(rotate)
+                .wiredWithDirectories(RotateApkSignature::inputApks, RotateApkSignature::outputApks)
+                .toTransformMany(SingleArtifact.APK)
         rotate.configure { transformationRequest.set(request) }
     }
 }
@@ -233,8 +291,7 @@ abstract class RotateApkSignature : DefaultTask() {
     @get:Input @get:Optional abstract val previousKeyAlias: Property<String>
     @get:Input @get:Optional abstract val previousKeyPassword: Property<String>
     @get:Input abstract val minSdk: Property<Int>
-    @get:Internal
-    abstract val transformationRequest: Property<ArtifactTransformationRequest<RotateApkSignature>>
+    @get:Internal abstract val transformationRequest: Property<ArtifactTransformationRequest<RotateApkSignature>>
 
     @TaskAction
     fun rotate() {
@@ -253,7 +310,7 @@ abstract class RotateApkSignature : DefaultTask() {
                         previousStorePassword.get(),
                         previousKeyAlias.get(),
                         previousKeyPassword.get(),
-                    ),
+                    )
                 )
             }
             add(
@@ -263,7 +320,7 @@ abstract class RotateApkSignature : DefaultTask() {
                     storePassword.get(),
                     keyAlias.get(),
                     keyPassword.get(),
-                ),
+                )
             )
         }
         val lineage = SigningCertificateLineage.readFromFile(lineageFile.get().asFile)
@@ -307,8 +364,7 @@ abstract class WriteThirdPartyNotice : DefaultTask() {
     @Suppress("UNCHECKED_CAST")
     fun write() {
         val json = JsonSlurper().parse(definitions.get().asFile) as Map<String, Any?>
-        val libraries = (json["libraries"] as List<Map<String, Any?>>)
-            .sortedBy { it["uniqueId"] as String }
+        val libraries = (json["libraries"] as List<Map<String, Any?>>).sortedBy { it["uniqueId"] as String }
         val licenses = json["licenses"] as Map<String, Map<String, Any?>>
         val text = buildString {
             appendLine("Third-party software in TuneMesh for Android")

@@ -102,7 +102,9 @@ storage cannot hold symlinks.
   opened for playing or editing, and is never rewritten or truncated; the
   worker does not add downloads to it and says so in the request's status
   (`warnings`). Writers never write a playlist over these limits (adding to
-  a full playlist fails) and cut `#EXTINF` labels to 1 KiB.
+  a full playlist fails), cut `#EXTINF` labels to 1 KiB and trim Unicode
+  White_Space from both ends of a label, as readers do, so rewriting a
+  playlist does not change it.
 
 ## Download requests
 

@@ -1,0 +1,53 @@
+# Deviations from the detekt defaults (buildUponDefaultConfig), each with its reason.
+
+style:
+  MaxLineLength:
+    # The width ktfmt formats to (root build.gradle.kts).
+    maxLineLength: 140
+  MagicNumber:
+    # The defaults' test directories, plus the benchmark module and the hostile-library generator (test code outside src/test).
+    excludes: ['**/test/**', '**/androidTest/**', '**/*.kts', '**/baselineprofile/**', '**/hostile-library/**']
+
+naming:
+  FunctionNaming:
+    # Composables are named like types.
+    ignoreAnnotated: ['Composable']
+
+# Bug patterns the defaults leave off.
+coroutines:
+  GlobalCoroutineUsage:
+    active: true
+  SuspendFunInFinallySection:
+    active: true
+  SuspendFunSwallowedCancellation:
+    active: true
+  CoroutineLaunchedInTestWithoutRunTest:
+    active: true
+
+exceptions:
+  ErrorUsageWithThrowable:
+    active: true
+  ObjectExtendsThrowable:
+    active: true
+
+potential-bugs:
+  CastNullableToNonNullableType:
+    active: true
+  CharArrayToStringCall:
+    active: true
+  DontDowncastCollectionTypes:
+    active: true
+  ExitOutsideMain:
+    active: true
+  MissingSuperCall:
+    active: true
+  MissingUseCall:
+    active: true
+  NullCheckOnMutableProperty:
+    active: true
+  NullableToStringCall:
+    active: true
+  PropertyUsedBeforeDeclaration:
+    active: true
+  UnconditionalJumpStatementInLoop:
+    active: true

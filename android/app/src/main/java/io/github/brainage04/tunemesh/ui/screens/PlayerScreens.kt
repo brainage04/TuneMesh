@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.QueueItems
 import io.github.brainage04.tunemesh.ui.AppIcons
@@ -66,6 +67,7 @@ private fun currentTrack(): Track? {
 }
 
 private fun MediaItem.title() = mediaMetadata.title?.toString().orEmpty()
+
 private fun MediaItem.artist() = mediaMetadata.artist?.toString().orEmpty()
 
 @Composable
@@ -77,18 +79,28 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
     val position by viewModel.player.position.collectAsState()
     val library = LocalLibrary.current
     Column(
-        modifier
-            .padding(horizontal = 8.dp)
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF3A2F3A))
-            .clickable { viewModel.playerExpanded = true },
+        modifier.padding(horizontal = 8.dp).clip(RoundedCornerShape(6.dp)).background(Color(0xFF3A2F3A)).clickable {
+            viewModel.playerExpanded = true
+        }
     ) {
         Row(Modifier.padding(start = 8.dp, top = 8.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             CoverArt(track, item.mediaMetadata.albumTitle?.toString().orEmpty(), Modifier.size(40.dp))
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                Text(item.title(), style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(item.artist(), style = MaterialTheme.typography.bodySmall, color = TextSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    Limits.shownLine(item.title()),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    Limits.shownLine(item.artist()),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = TextSecondary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             if (track != null) LikeButton(track.path in library.liked, { viewModel.toggleLike(track) })
             IconButton(onClick = { viewModel.player.togglePlay() }) {
@@ -120,17 +132,22 @@ fun NowPlayingScreen() {
     val seed = item?.mediaMetadata?.albumTitle?.toString().orEmpty()
     val hue = ((seed.hashCode() and 0x7fffffff) % 360).toFloat()
     Column(
-        Modifier
-            .fillMaxSize()
+        Modifier.fillMaxSize()
             .background(Brush.verticalGradient(listOf(Color.hsv(hue, 0.5f, 0.38f), Color(0xFF121212))))
             .systemBarsPadding()
-            .padding(horizontal = 24.dp),
+            .padding(horizontal = 24.dp)
     ) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { viewModel.playerExpanded = false }) { Icon(AppIcons.Down, "Close player") }
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("PLAYING FROM", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
-                Text(viewModel.playingFrom, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    Limits.shownLine(viewModel.playingFrom),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
             Box {
                 IconButton(onClick = { menuOpen = true }, enabled = track != null) { Icon(AppIcons.More, "More options") }
@@ -146,9 +163,15 @@ fun NowPlayingScreen() {
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                Text(item.title(), style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
-                    item.artist(),
+                    Limits.shownLine(item.title()),
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    Limits.shownLine(item.artist()),
                     style = MaterialTheme.typography.bodyLarge,
                     color = TextSecondary,
                     maxLines = 1,
@@ -177,13 +200,23 @@ fun NowPlayingScreen() {
             modifier = Modifier.fillMaxWidth().height(28.dp),
         )
         Row(Modifier.fillMaxWidth()) {
-            Text(formatDuration(dragging?.let { (it * duration).toLong() } ?: position), style = MaterialTheme.typography.labelSmall, color = TextSecondary, modifier = Modifier.weight(1f))
+            Text(
+                formatDuration(dragging?.let { (it * duration).toLong() } ?: position),
+                style = MaterialTheme.typography.labelSmall,
+                color = TextSecondary,
+                modifier = Modifier.weight(1f),
+            )
             Text(formatDuration(ui.durationMs), style = MaterialTheme.typography.labelSmall, color = TextSecondary)
         }
         Spacer(Modifier.height(8.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = { viewModel.player.toggleShuffle() }) {
-                Icon(AppIcons.Shuffle, if (ui.shuffle) "Shuffle on" else "Shuffle off", tint = if (ui.shuffle) Accent else Color.White, modifier = Modifier.size(26.dp))
+                Icon(
+                    AppIcons.Shuffle,
+                    if (ui.shuffle) "Shuffle on" else "Shuffle off",
+                    tint = if (ui.shuffle) Accent else Color.White,
+                    modifier = Modifier.size(26.dp),
+                )
             }
             IconButton(onClick = { viewModel.player.previous() }, modifier = Modifier.size(56.dp)) {
                 Icon(AppIcons.Previous, "Previous", modifier = Modifier.size(40.dp))
@@ -233,14 +266,26 @@ fun QueueScreen() {
                 item { QueueHeader("Next up") }
                 // Keyed by position too: Compose crashes on a repeated key, and IDs come from other apps' controllers.
                 itemsIndexed(upcoming, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
-                    QueueRow(entry.value, library.index.byPath[QueueItems.path(entry.value)], entry.index, isCurrent = false, last = ui.queue.lastIndex)
+                    QueueRow(
+                        entry.value,
+                        library.index.byPath[QueueItems.path(entry.value)],
+                        entry.index,
+                        isCurrent = false,
+                        last = ui.queue.lastIndex,
+                    )
                 }
             }
             val played = ui.queue.withIndex().take(current.coerceAtLeast(0))
             if (played.isNotEmpty()) {
                 item { QueueHeader("Played") }
                 itemsIndexed(played, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
-                    QueueRow(entry.value, library.index.byPath[QueueItems.path(entry.value)], entry.index, isCurrent = false, last = ui.queue.lastIndex)
+                    QueueRow(
+                        entry.value,
+                        library.index.byPath[QueueItems.path(entry.value)],
+                        entry.index,
+                        isCurrent = false,
+                        last = ui.queue.lastIndex,
+                    )
                 }
             }
         }
@@ -249,25 +294,47 @@ fun QueueScreen() {
 
 @Composable
 private fun QueueHeader(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp))
+    Text(
+        text,
+        style = MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 8.dp),
+    )
 }
 
 @Composable
 private fun QueueRow(item: MediaItem, track: Track?, index: Int, isCurrent: Boolean, last: Int) {
     val viewModel = LocalAppViewModel.current
     Row(
-        Modifier.fillMaxWidth().clickable(enabled = !isCurrent) { viewModel.player.skipTo(index) }.padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
+        Modifier.fillMaxWidth()
+            .clickable(enabled = !isCurrent) { viewModel.player.skipTo(index) }
+            .padding(start = 16.dp, top = 4.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         CoverArt(track, item.mediaMetadata.albumTitle?.toString().orEmpty(), Modifier.size(44.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(item.title(), color = if (isCurrent) Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(item.artist(), color = TextSecondary, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                Limits.shownLine(item.title()),
+                color = if (isCurrent) Accent else Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                Limits.shownLine(item.artist()),
+                color = TextSecondary,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
         if (!isCurrent) {
-            IconButton(onClick = { viewModel.player.move(index, index - 1) }, enabled = index > 0) { Icon(AppIcons.Up, "Move up", tint = TextSecondary) }
-            IconButton(onClick = { viewModel.player.move(index, index + 1) }, enabled = index < last) { Icon(AppIcons.DownArrow, "Move down", tint = TextSecondary) }
+            IconButton(onClick = { viewModel.player.move(index, index - 1) }, enabled = index > 0) {
+                Icon(AppIcons.Up, "Move up", tint = TextSecondary)
+            }
+            IconButton(onClick = { viewModel.player.move(index, index + 1) }, enabled = index < last) {
+                Icon(AppIcons.DownArrow, "Move down", tint = TextSecondary)
+            }
             IconButton(onClick = { viewModel.player.removeAt(index) }) { Icon(AppIcons.Close, "Remove from queue", tint = TextSecondary) }
         } else {
             Spacer(Modifier.width(16.dp))

@@ -16,14 +16,13 @@ object LibraryFormat {
     val AUDIO_EXTENSIONS = setOf("opus", "ogg", "oga", "m4a", "mp4", "aac", "mp3", "flac", "wav", "webm")
     val COVER_FILE_NAMES = listOf("cover.jpg", "cover.png", "folder.jpg", "folder.png")
 
-
     fun isConflictCopy(name: String): Boolean = name.contains(".sync-conflict-")
 
     fun isHidden(name: String): Boolean = name.startsWith(".")
 
     /**
-     * True when a name contains LF or CR. Such a file or directory is not part of the library (an m3u8 entry
-     * line could not name it): scanners skip it and everything below it, and playlists never get such an entry.
+     * True when a name contains LF or CR. Such a file or directory is not part of the library (an m3u8 entry line could not name it):
+     * scanners skip it and everything below it, and playlists never get such an entry.
      */
     fun hasLineBreak(name: String): Boolean = name.contains('\n') || name.contains('\r')
 
@@ -68,8 +67,7 @@ object LibraryFormat {
     }
 
     /** First artist of a possibly multi-valued tag (`;` or NUL separated). */
-    fun firstArtist(artist: String): String =
-        artist.split(';', '\u0000').map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: artist.trim()
+    fun firstArtist(artist: String): String = artist.split(';', '\u0000').map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: artist.trim()
 
     /*
      * Names written by TuneMesh, the same rules as tunemesh-core's sanitize.rs (keep the two in step):
@@ -86,8 +84,8 @@ object LibraryFormat {
     }
 
     /**
-     * Sanitises a file name made of a free-form [stem] and a fixed [suffix] (for example `" [id].opus"` or
-     * `".m3u8"`): the stem is shortened first so the suffix always survives. `sanitize::file_name` in Rust.
+     * Sanitises a file name made of a free-form [stem] and a fixed [suffix] (for example `" [id].opus"` or `".m3u8"`): the stem is
+     * shortened first so the suffix always survives. `sanitize::file_name` in Rust.
      */
     fun sanitizeFileName(stem: String, suffix: String): String {
         val safeSuffix = replaceForbidden(suffix)
@@ -99,28 +97,39 @@ object LibraryFormat {
         return fixEnds(truncateUtf8(safeStem + safeSuffix, MAX_COMPONENT_BYTES))
     }
 
-    private fun isForbidden(char: Char): Boolean =
-        char in "/\\:*?\"<>|" || Character.getType(char) == Character.CONTROL.toInt()
+    private fun isForbidden(char: Char): Boolean = char in "/\\:*?\"<>|" || Character.getType(char) == Character.CONTROL.toInt()
 
-    private fun replaceForbidden(value: String): String = buildString(value.length) {
-        var index = 0
-        while (index < value.length) {
-            val char = value[index]
-            val pair = char.isHighSurrogate() && index + 1 < value.length && value[index + 1].isLowSurrogate()
-            when {
-                pair -> append(char).append(value[index + 1])
-                char.isSurrogate() || isForbidden(char) -> append('_')
-                else -> append(char)
+    private fun replaceForbidden(value: String): String =
+        buildString(value.length) {
+            var index = 0
+            while (index < value.length) {
+                val char = value[index]
+                val pair = char.isHighSurrogate() && index + 1 < value.length && value[index + 1].isLowSurrogate()
+                when {
+                    pair -> append(char).append(value[index + 1])
+                    char.isSurrogate() || isForbidden(char) -> append('_')
+                    else -> append(char)
+                }
+                index += if (pair) 2 else 1
             }
-            index += if (pair) 2 else 1
         }
-    }
 
     /** Unicode White_Space, which Rust's `str::trim` removes (Kotlin's `trim` differs, e.g. U+001C, U+0085). */
-    private fun isWhiteSpace(char: Char): Boolean = when (char.code) {
-        in 0x09..0x0D, 0x20, 0x85, 0xA0, 0x1680, in 0x2000..0x200A, 0x2028, 0x2029, 0x202F, 0x205F, 0x3000 -> true
-        else -> false
-    }
+    private fun isWhiteSpace(char: Char): Boolean =
+        when (char.code) {
+            in 0x09..0x0D,
+            0x20,
+            0x85,
+            0xA0,
+            0x1680,
+            in 0x2000..0x200A,
+            0x2028,
+            0x2029,
+            0x202F,
+            0x205F,
+            0x3000 -> true
+            else -> false
+        }
 
     internal fun trimWhiteSpace(value: String): String = value.trim(::isWhiteSpace)
 
@@ -153,7 +162,5 @@ object LibraryFormat {
 
     /** Lowercase, accent-free form used for instant search. */
     fun searchKey(value: String): String =
-        Normalizer.normalize(value, Normalizer.Form.NFD)
-            .replace(Regex("\\p{M}+"), "")
-            .lowercase(Locale.ROOT)
+        Normalizer.normalize(value, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
 }

@@ -15,7 +15,8 @@ class M3u8Test {
 
     @Test
     fun roundTripKeepsUnicodePathsMissingEntriesAndOrder() {
-        val text = """
+        val text =
+            """
             #EXTM3U
             #EXTINF:213,Björk - Human Behaviour
             ../Björk/Début/Human Behaviour [abc123].opus
@@ -24,7 +25,8 @@ class M3u8Test {
             #EXTINF:99,Gone - Missing Song
             ../Gone/Somewhere/Missing Song [gone1].opus
             ../Björk/Début/Human Behaviour [abc123].opus
-        """.trimIndent() + "\n"
+            """
+                .trimIndent() + "\n"
         val entries = M3u8.parse(text, root)
         assertEquals(
             listOf(
@@ -35,23 +37,27 @@ class M3u8Test {
             ),
             entries.map { it.path },
         )
-        val known = mapOf(
-            "Björk/Début/Human Behaviour [abc123].opus" to track("Björk/Début/Human Behaviour [abc123].opus", "Human Behaviour", "Björk", 212_600),
-            "宇多田ヒカル/First Love/First Love [xyz].m4a" to track("宇多田ヒカル/First Love/First Love [xyz].m4a", "First Love", "宇多田ヒカル", 180_000),
-        )
+        val known =
+            mapOf(
+                "Björk/Début/Human Behaviour [abc123].opus" to
+                    track("Björk/Début/Human Behaviour [abc123].opus", "Human Behaviour", "Björk", 212_600),
+                "宇多田ヒカル/First Love/First Love [xyz].m4a" to
+                    track("宇多田ヒカル/First Love/First Love [xyz].m4a", "First Love", "宇多田ヒカル", 180_000),
+            )
         val written = M3u8.write(entries, known::get)
         assertEquals(
             """
-                #EXTM3U
-                #EXTINF:213,Björk - Human Behaviour
-                ../Björk/Début/Human Behaviour [abc123].opus
-                #EXTINF:180,宇多田ヒカル - First Love
-                ../宇多田ヒカル/First Love/First Love [xyz].m4a
-                #EXTINF:99,Gone - Missing Song
-                ../Gone/Somewhere/Missing Song [gone1].opus
-                #EXTINF:213,Björk - Human Behaviour
-                ../Björk/Début/Human Behaviour [abc123].opus
-            """.trimIndent() + "\n",
+            #EXTM3U
+            #EXTINF:213,Björk - Human Behaviour
+            ../Björk/Début/Human Behaviour [abc123].opus
+            #EXTINF:180,宇多田ヒカル - First Love
+            ../宇多田ヒカル/First Love/First Love [xyz].m4a
+            #EXTINF:99,Gone - Missing Song
+            ../Gone/Somewhere/Missing Song [gone1].opus
+            #EXTINF:213,Björk - Human Behaviour
+            ../Björk/Début/Human Behaviour [abc123].opus
+            """
+                .trimIndent() + "\n",
             written,
         )
         assertEquals(entries.map { it.path }, M3u8.parse(written, root).map { it.path })
@@ -61,7 +67,8 @@ class M3u8Test {
 
     @Test
     fun readerAcceptsBomCrlfCommentsBlankLinesAndAbsolutePaths() {
-        val text = "\uFEFF#EXTM3U\r\n#PLAYLIST:Ignored\r\n\r\n$root/A/B/Song.mp3\r\n./../A/B/Other.flac\r\n/home/user/Music/TuneMesh/A/B/Song.mp3\r\n"
+        val text =
+            "\uFEFF#EXTM3U\r\n#PLAYLIST:Ignored\r\n\r\n$root/A/B/Song.mp3\r\n./../A/B/Other.flac\r\n/home/user/Music/TuneMesh/A/B/Song.mp3\r\n"
         val entries = M3u8.parse(text, root)
         assertEquals(listOf("A/B/Song.mp3", "A/B/Other.flac", null), entries.map { it.path })
         assertNull(entries[0].extinf)
@@ -86,8 +93,9 @@ class M3u8Test {
     /** As tunemesh-core's `serialize`: an entry holding a CR (only a lone CR survives parsing) is dropped. */
     @Test
     fun entriesWithLineBreaksAreDroppedOnWrite() {
-        val text = "#EXTM3U\r\n#EXTINF:5,Ok\r\n../A/B/ok.mp3\r\n#EXTINF:6,Bro\rken\n../A/B/bro\rken.mp3\n" +
-            "#EXTINF:7,Gone\r\r\n../Gone/x\ry/missing.mp3\n../A/B/last.mp3\r\r\n"
+        val text =
+            "#EXTM3U\r\n#EXTINF:5,Ok\r\n../A/B/ok.mp3\r\n#EXTINF:6,Bro\rken\n../A/B/bro\rken.mp3\n" +
+                "#EXTINF:7,Gone\r\r\n../Gone/x\ry/missing.mp3\n../A/B/last.mp3\r\r\n"
         val entries = M3u8.parse(text, root)
         assertEquals(
             listOf("../A/B/ok.mp3", "../A/B/bro\rken.mp3", "../Gone/x\ry/missing.mp3", "../A/B/last.mp3"),
@@ -117,21 +125,22 @@ class M3u8Test {
 
     @Test
     fun resolveMatchesTheCoreForEveryShape() {
-        val cases = mapOf(
-            "../A/B/x.mp3" to "A/B/x.mp3",
-            "A/x.mp3" to "Playlists/A/x.mp3",
-            "./../A//B/./x.mp3" to "A/B/x.mp3",
-            "../A/B/x.mp3/" to "A/B/x.mp3",
-            "../../x.mp3" to null,
-            ".." to null,
-            "../" to null,
-            "$root/A/x.mp3" to "A/x.mp3",
-            "$root//A/../x.mp3" to "x.mp3",
-            "$root/" to null,
-            "${root}x/A.mp3" to null,
-            "/elsewhere/A.mp3" to null,
-            "../.hidden/..a/x.mp3" to ".hidden/..a/x.mp3",
-        )
+        val cases =
+            mapOf(
+                "../A/B/x.mp3" to "A/B/x.mp3",
+                "A/x.mp3" to "Playlists/A/x.mp3",
+                "./../A//B/./x.mp3" to "A/B/x.mp3",
+                "../A/B/x.mp3/" to "A/B/x.mp3",
+                "../../x.mp3" to null,
+                ".." to null,
+                "../" to null,
+                "$root/A/x.mp3" to "A/x.mp3",
+                "$root//A/../x.mp3" to "x.mp3",
+                "$root/" to null,
+                "${root}x/A.mp3" to null,
+                "/elsewhere/A.mp3" to null,
+                "../.hidden/..a/x.mp3" to ".hidden/..a/x.mp3",
+            )
         for ((line, path) in cases) assertEquals(line, path, M3u8.resolve(line, root))
         assertEquals("A/x.mp3", M3u8.resolve("/A/x.mp3", "/"))
     }
@@ -145,7 +154,9 @@ class M3u8Test {
             root,
             keepExtinf = false,
             canonical = { if (it == shared) shared else null },
-        ) { entries += it }
+        ) {
+            entries += it
+        }
         assertSame(shared, entries[0].path)
         assertSame(shared, entries[1].path)
         assertEquals("../A/B/x.mp3", entries[0].raw)
@@ -210,12 +221,13 @@ class M3u8Test {
 
     @Test
     fun writerFollowsTheCore() {
-        val entries = M3u8.parse(
-            "#EXTM3U\n#EXTINF: 12 ,  Kept label  \n$root/Gone/x.mp3\n#EXTINF:abc,Bad duration\n../Gone/y.mp3\n" +
-                "#EXTINF:\u0663,Arabic digit\n../Gone/z.mp3\n#EXTINF:5\n../Gone/No Label [id].mp3\n" +
-                "#EXTINF:99999999999,Long\n/elsewhere/w.mp3\n",
-            root,
-        )
+        val entries =
+            M3u8.parse(
+                "#EXTM3U\n#EXTINF: 12 ,  Kept label  \n$root/Gone/x.mp3\n#EXTINF:abc,Bad duration\n../Gone/y.mp3\n" +
+                    "#EXTINF:\u0663,Arabic digit\n../Gone/z.mp3\n#EXTINF:5\n../Gone/No Label [id].mp3\n" +
+                    "#EXTINF:99999999999,Long\n/elsewhere/w.mp3\n",
+                root,
+            )
         assertEquals(
             "#EXTM3U\n#EXTINF:12,Kept label\n../Gone/x.mp3\n#EXTINF:-1,Bad duration\n../Gone/y.mp3\n" +
                 "#EXTINF:-1,Arabic digit\n../Gone/z.mp3\n#EXTINF:5,No Label\n../Gone/No Label [id].mp3\n" +
@@ -240,10 +252,23 @@ class M3u8Test {
         assertEquals("🎵".repeat(256), written)
     }
 
+    /** Jazzer: a label from a file name ending in white space was written untrimmed, read back trimmed, so each rewrite changed it. */
+    @Test
+    fun rewritingKeepsLabels() {
+        assertEquals("a b", M3u8.cleanLabel(" a b\u000B\n"))
+        val entries = M3u8.parse("../Gone/Song \u000B.mp3\nĂP\u000B\n", root)
+        val written = M3u8.write(entries) { null }
+        assertEquals("#EXTM3U\n#EXTINF:-1,Song\n../Gone/Song \u000B.mp3\n#EXTINF:-1,ĂP\n../Playlists/ĂP\u000B\n", written)
+        assertEquals(written, M3u8.write(M3u8.parse(written, root)) { null })
+    }
+
     @Test
     fun overLimitPlaylistsAreNotWritten() {
         val entry = M3u8.entryFor(track("A/x.mp3", "x", "A", 1_000))
-        assertEquals(Limits.MAX_PLAYLIST_ENTRIES, M3u8.write(List(Limits.MAX_PLAYLIST_ENTRIES) { entry }) { null }.lines().count { it == "../A/x.mp3" })
+        assertEquals(
+            Limits.MAX_PLAYLIST_ENTRIES,
+            M3u8.write(List(Limits.MAX_PLAYLIST_ENTRIES) { entry }) { null }.lines().count { it == "../A/x.mp3" },
+        )
         assertThrows(PlaylistTooLargeException::class.java) { M3u8.write(List(Limits.MAX_PLAYLIST_ENTRIES + 1) { entry }) { null } }
         val longPath = "A/" + "x".repeat(Limits.MAX_PLAYLIST_LINE_BYTES - 5)
         assertEquals(Limits.MAX_PLAYLIST_LINE_BYTES, M3u8.entryLine(longPath).toByteArray().size)
@@ -263,7 +288,10 @@ class M3u8Test {
         assertTrue(written.lines().all { it.toByteArray().size <= Limits.MAX_PLAYLIST_LINE_BYTES })
         assertEquals("#EXTINF:-1,${"x".repeat(Limits.MAX_LABEL_BYTES)}", written.lines()[1])
         var reread = 0
-        M3u8.read(written.byteInputStream(), "/r", keepExtinf = true) { assertEquals(line, it.raw); reread++ }
+        M3u8.read(written.byteInputStream(), "/r", keepExtinf = true) {
+            assertEquals(line, it.raw)
+            reread++
+        }
         assertEquals(1, reread)
     }
 

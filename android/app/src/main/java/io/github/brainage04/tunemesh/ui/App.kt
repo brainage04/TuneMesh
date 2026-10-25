@@ -90,12 +90,13 @@ fun App(viewModel: AppViewModel, finish: () -> Unit) {
                 Box(Modifier.weight(1f)) {
                     val padding = PaddingValues(bottom = if (playerUi.current != null) 72.dp else 8.dp)
                     when (val screen = viewModel.screen) {
-                        Screen.Root -> when (viewModel.tab) {
-                            Tab.Home -> HomeScreen(padding)
-                            Tab.Search -> SearchScreen(padding)
-                            Tab.Library -> LibraryScreen(padding)
-                            Tab.Downloads -> DownloadsScreen(padding)
-                        }
+                        Screen.Root ->
+                            when (viewModel.tab) {
+                                Tab.Home -> HomeScreen(padding)
+                                Tab.Search -> SearchScreen(padding)
+                                Tab.Library -> LibraryScreen(padding)
+                                Tab.Downloads -> DownloadsScreen(padding)
+                            }
                         is Screen.AlbumDetail -> AlbumScreen(screen.key, padding)
                         is Screen.ArtistDetail -> ArtistScreen(screen.name, padding)
                         is Screen.PlaylistDetail -> PlaylistScreen(screen.name, padding)
@@ -136,13 +137,14 @@ private fun BottomBar(viewModel: AppViewModel) {
                     )
                 },
                 label = { Text(tab.label) },
-                colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = Color.White,
-                    selectedTextColor = Color.White,
-                    unselectedIconColor = TextSecondary,
-                    unselectedTextColor = TextSecondary,
-                    indicatorColor = Color.Transparent,
-                ),
+                colors =
+                    NavigationBarItemDefaults.colors(
+                        selectedIconColor = Color.White,
+                        selectedTextColor = Color.White,
+                        unselectedIconColor = TextSecondary,
+                        unselectedTextColor = TextSecondary,
+                        indicatorColor = Color.Transparent,
+                    ),
             )
         }
     }
@@ -153,31 +155,48 @@ private fun Dialogs(request: DialogRequest, viewModel: AppViewModel) {
     val dismiss = { viewModel.dialog = null }
     when (request) {
         is DialogRequest.AddToPlaylist -> AddToPlaylistDialog(request.tracks, viewModel, dismiss)
-        is DialogRequest.CreatePlaylist -> NameDialog(
-            title = "Give your playlist a name",
-            initial = "",
-            confirm = "Create",
-            onDismiss = dismiss,
-        ) { name -> viewModel.repository.createPlaylist(name, request.tracks); dismiss() }
-        is DialogRequest.RenamePlaylist -> NameDialog(
-            title = "Rename playlist",
-            initial = request.name,
-            confirm = "Rename",
-            onDismiss = dismiss,
-        ) { name -> viewModel.renamePlaylist(request.name, name); dismiss() }
-        is DialogRequest.DeletePlaylist -> ConfirmDialog(
-            title = "Delete \"${request.name}\"?",
-            body = "The playlist file is removed on every device. The songs stay in your library.",
-            confirm = "Delete",
-            onDismiss = dismiss,
-        ) { viewModel.deletePlaylist(request.name); dismiss() }
-        is DialogRequest.DeleteTrack -> ConfirmDialog(
-            title = "Delete \"${request.track.title}\"?",
-            body = "This deletes ${request.track.path} from the library on every device that syncs it. " +
-                "Playlists keep it as an unavailable entry. This cannot be undone.",
-            confirm = "Delete everywhere",
-            onDismiss = dismiss,
-        ) { viewModel.deleteTrack(request.track); dismiss() }
+        is DialogRequest.CreatePlaylist ->
+            NameDialog(
+                title = "Give your playlist a name",
+                initial = "",
+                confirm = "Create",
+                onDismiss = dismiss,
+            ) { name ->
+                viewModel.repository.createPlaylist(name, request.tracks)
+                dismiss()
+            }
+        is DialogRequest.RenamePlaylist ->
+            NameDialog(
+                title = "Rename playlist",
+                initial = request.name,
+                confirm = "Rename",
+                onDismiss = dismiss,
+            ) { name ->
+                viewModel.renamePlaylist(request.name, name)
+                dismiss()
+            }
+        is DialogRequest.DeletePlaylist ->
+            ConfirmDialog(
+                title = "Delete \"${request.name}\"?",
+                body = "The playlist file is removed on every device. The songs stay in your library.",
+                confirm = "Delete",
+                onDismiss = dismiss,
+            ) {
+                viewModel.deletePlaylist(request.name)
+                dismiss()
+            }
+        is DialogRequest.DeleteTrack ->
+            ConfirmDialog(
+                title = "Delete \"${request.track.title}\"?",
+                body =
+                    "This deletes ${request.track.path} from the library on every device that syncs it. " +
+                        "Playlists keep it as an unavailable entry. This cannot be undone.",
+                confirm = "Delete everywhere",
+                onDismiss = dismiss,
+            ) {
+                viewModel.deleteTrack(request.track)
+                dismiss()
+            }
     }
 }
 
@@ -192,20 +211,26 @@ private fun AddToPlaylistDialog(tracks: List<Track>, viewModel: AppViewModel, on
             LazyColumn(Modifier.heightIn(max = 360.dp)) {
                 item {
                     Row(
-                        Modifier.fillMaxWidth().clickable { viewModel.dialog = DialogRequest.CreatePlaylist(tracks) }.padding(vertical = 10.dp),
+                        Modifier.fillMaxWidth()
+                            .clickable { viewModel.dialog = DialogRequest.CreatePlaylist(tracks) }
+                            .padding(vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Box(Modifier.size(48.dp).background(Color(0xFF333333)), contentAlignment = Alignment.Center) { Icon(AppIcons.Add, null) }
+                        Box(Modifier.size(48.dp).background(Color(0xFF333333)), contentAlignment = Alignment.Center) {
+                            Icon(AppIcons.Add, null)
+                        }
                         Spacer(Modifier.width(12.dp))
                         Text("New playlist", fontWeight = FontWeight.SemiBold)
                     }
                 }
                 items(playlists, key = { it.name }) { playlist ->
                     Row(
-                        Modifier.fillMaxWidth().clickable {
-                            viewModel.repository.addToPlaylist(playlist.name, tracks)
-                            onDismiss()
-                        }.padding(vertical = 6.dp),
+                        Modifier.fillMaxWidth()
+                            .clickable {
+                                viewModel.repository.addToPlaylist(playlist.name, tracks)
+                                onDismiss()
+                            }
+                            .padding(vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         PlaylistArt(playlist, Modifier.size(48.dp), 48.dp)

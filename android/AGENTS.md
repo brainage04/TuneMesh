@@ -47,7 +47,8 @@ it exists, apply as well.
     -Pandroid.testInstrumentationRunnerArguments.hostileScale=small
   ```
 
-  Measurements go to logcat (tag `HostileLibrary`) and the test output.
+  Measurements go to logcat (tag `HostileLibrary`) and the test output. The generator, `hostile-library/`, is shared
+  with the macrobenchmarks (see "Development checks").
 - Signing: `android/.signing/` (git-ignored) holds the app's key, described in `app/build.gradle.kts`. Never
   delete, regenerate or replace it. Without it builds use the machine's debug key and cannot update an install
   signed with the app's key.
@@ -56,3 +57,48 @@ it exists, apply as well.
   `./gradlew -q :app:printVersion` prints both.
 - F-Droid/Obtainium metadata lives in `fastlane/metadata/android/en-US/`. Add
   `changelogs/<versionCode>.txt` for every release.
+
+## Development checks
+
+Run these from this directory before committing (they also run in CI):
+
+- Formatting: ktfmt (kotlinlang style, 140 columns) through Spotless, for every `.kt` and `.gradle.kts` file.
+  `./gradlew spotlessCheck` fails on a difference, `./gradlew spotlessApply` rewrites the files. ktfmt was chosen
+  over ktlint because it is a pretty-printer: its output is deterministic and it always fixes what it reports,
+  while ktlint leaves long lines to fix by hand and wraps some of them mid-expression.
+- Static analysis: detekt with type resolution, `./gradlew detektAll` (the app's main, unit-test and instrumented-test
+  sources and the baseline profile module). `config/detekt.yml` lists the deviations from the defaults and the bug-pattern
+  rules switched on (coroutines, exceptions, null safety). `app/detekt-baseline-<variant>.xml` holds the style findings
+  (sizes, complexity, magic numbers, long strings) of code older than detekt; every other finding fails. Fix a finding,
+  or suppress it at the one place with `@Suppress("Rule") // reason`; rewrite a baseline only to drop fixed entries
+  (`./gradlew :app:detektBaselineDebug`).
+- Fuzzing: Jazzer `@FuzzTest`s in `app/src/test` (`*FuzzTest`: the M3u8 reader and writer, request/status/`worker.json`
+  parsing, pasted and shared links, the name sanitiser). `testDebugUnitTest` replays the saved inputs in
+  `app/src/test/resources/<package>/<Class>Inputs/<method>/`; `./gradlew --no-daemon :app:fuzz -Pfuzz.seconds=60`
+  fuzzes each target in turn for that long (through `heavy`, as any Gradle run). A failing input is written to that
+  directory, or to `app/crash-<hash>` when the directory does not exist yet: fix the bug, add a unit test, and commit
+  the input under that directory so it stays a regression input. The generated corpus (`app/.cifuzz-corpus/`) is
+  git-ignored.
+- Leaks: LeakCanary is in debug builds (`debugImplementation`), and every instrumented test class has
+  `@get:Rule val leaks = DetectLeaksAfterTestSuccess()`: a test fails when an activity, view model, service or view it
+  destroyed is still reachable afterwards (the heap analysis is in the test output). `ActivityLeakTest` opens every tab,
+  an album and the share sheet, and recreates them as a rotation does. Give a new instrumented test class the same rule.
+- Stalls: `baselineprofile/` holds the macrobenchmarks (`HostileLibraryBenchmark`: start, search, the 40,000-track
+  album, a 250,000-entry playlist, Downloads, scrolling Your Library) and the baseline profile generator. Both run on
+  the hostile library, which `HostileSetup` generates once in the emulator's `/sdcard/Music/TuneMesh` (it refuses a
+  folder holding anything else), against the minified `benchmarkRelease` build. Emulator only, through `heavy`; the
+  first run generates the library and scans it, about 45 minutes in all:
+
+  ```sh
+  ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :baselineprofile:connectedBenchmarkReleaseAndroidTest \
+    -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
+    -Pandroid.testInstrumentationRunnerArguments.class=io.github.brainage04.tunemesh.baselineprofile.HostileLibraryBenchmark
+  ```
+
+  Results (JSON) and a Perfetto trace per iteration land in
+  `baselineprofile/build/outputs/connected_android_test_additional_output/`; open a trace at ui.perfetto.dev.
+  `MainThreadStallMetric` reports the longest main-thread stall (`mainThreadStallMaxMs`), the same without the time
+  the main thread waits for its render thread (`mainThreadWorkMaxMs`: on the emulator's software renderer a frame
+  can wait 250 ms there, which no app change removes) and the longest frame. Budget: no stall of the app's own
+  work over 100 ms; profile anything over 50 ms. `./gradlew --no-daemon :app:generateBaselineProfile` regenerates
+  `app/src/main/generated/baselineProfiles/` after UI changes; commit the result.

@@ -3,9 +3,8 @@ package io.github.brainage04.tunemesh.library
 import java.io.File
 
 /**
- * Playlist summaries kept between refreshes, so an unchanged playlist (up to [Limits.MAX_PLAYLIST_BYTES]) is not
- * read again every time the library refreshes. A summary is reused while the file's modification time and length
- * and the track lookup it was made with are the same.
+ * Playlist summaries kept between refreshes, so an unchanged playlist (up to [Limits.MAX_PLAYLIST_BYTES]) is not read again every time the
+ * library refreshes. A summary is reused while the file's modification time and length and the track lookup it was made with are the same.
  */
 class PlaylistSummaries {
     private data class Key(val modifiedMs: Long, val length: Long, val lookup: Any)
@@ -22,8 +21,7 @@ class PlaylistSummaries {
     }
 
     /** Forgets everything; after this app changed a playlist (a change within the clock's resolution keeps both). */
-    @Synchronized
-    fun clear() = entries.clear()
+    @Synchronized fun clear() = entries.clear()
 
     /** Forgets every playlist not in [names] (file names). */
     @Synchronized

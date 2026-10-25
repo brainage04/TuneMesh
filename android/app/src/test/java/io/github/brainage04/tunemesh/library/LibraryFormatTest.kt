@@ -117,12 +117,13 @@ class LibraryFormatTest {
         assertEquals("Singles", oneLevel.album)
         assertEquals(LibraryFormat.UNKNOWN_ARTIST, oneLevel.artist)
 
-        val tagged = Track.fromTags(
-            "a/b/c.opus",
-            RawTags(title = "  Real  ", artist = "Artist One; Artist Two", album = "", albumArtist = null),
-            1,
-            2,
-        )
+        val tagged =
+            Track.fromTags(
+                "a/b/c.opus",
+                RawTags(title = "  Real  ", artist = "Artist One; Artist Two", album = "", albumArtist = null),
+                1,
+                2,
+            )
         assertEquals("Real", tagged.title)
         assertEquals("b", tagged.album)
         assertEquals("Artist One; Artist Two", tagged.artist)
@@ -146,10 +147,11 @@ class LibraryFormatTest {
 
     @Test
     fun searchIsCaseAndDiacriticInsensitive() {
-        val tracks = listOf(
-            Track.fromTags("Björk/Début/Human Behaviour.opus", RawTags(), 1, 1),
-            Track.fromTags("Sigur Rós/Takk/Hoppípolla.opus", RawTags(), 1, 2),
-        )
+        val tracks =
+            listOf(
+                Track.fromTags("Björk/Début/Human Behaviour.opus", RawTags(), 1, 1),
+                Track.fromTags("Sigur Rós/Takk/Hoppípolla.opus", RawTags(), 1, 2),
+            )
         val index = LibraryIndex(tracks)
         assertEquals(listOf("Human Behaviour"), index.searchTracks("bjork debut").map { it.title })
         assertEquals(listOf("Hoppípolla"), index.searchTracks("HOPPIPOLLA").map { it.title })
@@ -160,11 +162,22 @@ class LibraryFormatTest {
 
     @Test
     fun albumsGroupByAlbumArtistAndAlbum() {
-        val tracks = listOf(
-            Track.fromTags("x/Hits/1.opus", RawTags(title = "One", artist = "A", album = "Hits", albumArtist = "VA", trackNumber = 2), 1, 10),
-            Track.fromTags("x/Hits/2.opus", RawTags(title = "Two", artist = "B", album = "Hits", albumArtist = "VA", trackNumber = 1), 1, 30),
-            Track.fromTags("y/Hits/3.opus", RawTags(title = "Three", artist = "C", album = "Hits"), 1, 20),
-        )
+        val tracks =
+            listOf(
+                Track.fromTags(
+                    "x/Hits/1.opus",
+                    RawTags(title = "One", artist = "A", album = "Hits", albumArtist = "VA", trackNumber = 2),
+                    1,
+                    10,
+                ),
+                Track.fromTags(
+                    "x/Hits/2.opus",
+                    RawTags(title = "Two", artist = "B", album = "Hits", albumArtist = "VA", trackNumber = 1),
+                    1,
+                    30,
+                ),
+                Track.fromTags("y/Hits/3.opus", RawTags(title = "Three", artist = "C", album = "Hits"), 1, 20),
+            )
         val index = LibraryIndex(tracks)
         assertEquals(2, index.albums.size)
         val va = index.albums.first { it.artist == "VA" }
@@ -172,5 +185,6 @@ class LibraryFormatTest {
         assertEquals(30, va.addedMs)
         assertEquals(listOf("C", "VA"), index.artists.map { it.name })
         assertEquals("VA", index.recentlyAdded.first().artist)
+        assertEquals(listOf("VA", "C"), index.recentArtists.map { it.name })
     }
 }

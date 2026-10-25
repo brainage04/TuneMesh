@@ -226,7 +226,7 @@ attached to every release.
 | Directory | What |
 | --- | --- |
 | `linux/` | Rust workspace: desktop app, downloader and the shared library-format crate ([linux/README.md](linux/README.md)) |
-| `android/` | Android app |
+| `android/` | Android app; building, tests and the development checks (ktfmt, detekt, Jazzer, LeakCanary, macrobenchmarks): [android/AGENTS.md](android/AGENTS.md) |
 | `docs/library-format.md` | The folder layout and file formats every part shares |
 | `packaging/` | Package recipes; `.github/workflows/release.yml` builds and tests them |
 
