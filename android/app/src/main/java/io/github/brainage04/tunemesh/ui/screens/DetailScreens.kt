@@ -174,7 +174,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         onDispose { viewModel.repository.closePlaylist(name) }
     }
     val contents = library.openPlaylist?.takeIf { it.name == name }
-    val entries: List<PlaylistEntry> = contents?.entries ?: emptyList()
+    val entries: List<PlaylistEntry> = contents?.entries.orEmpty()
     // Rows make their PlaylistEntry when shown; the tracks are looked up from the stored paths.
     val resolved =
         remember(contents, library.index) {

@@ -111,7 +111,7 @@ private constructor(
 ) {
     /** The entry line as read or written, relative to `Playlists/` unless absolute. */
     val raw: String
-        get() = line ?: M3u8.entryLine(path!!)
+        get() = line ?: M3u8.entryLine(checkNotNull(path) { "an entry without a stored line is a library path" })
 
     /** What identifies the entry when the file changes: its library path, or the line as written when it points outside. */
     val key: String
@@ -121,6 +121,7 @@ private constructor(
 
     override fun hashCode(): Int = (path.hashCode() * 31 + raw.hashCode()) * 31 + extinf.hashCode()
 
+    @Suppress("NullableToStringCall") // debug text: a missing path or #EXTINF shows as null
     override fun toString(): String = "PlaylistEntry(path=$path, raw=$raw, extinf=$extinf)"
 
     companion object {
@@ -162,12 +163,14 @@ private constructor(
 
     private fun start(index: Int) = if (index == 0) 0 else ends[index - 1]
 
-    /** The stored line, or null when it is `../<path>` of the shared path. */
-    private fun line(index: Int): String? {
+    /** The stored line of entry [index]; empty when the entry is `../<path>` of its shared path ([isCanonical]). */
+    private fun storedLine(index: Int): String {
         val start = start(index)
-        val end = ends[index]
-        return if (start == end && shared[index] != null) null else String(bytes, start, end - start, Charsets.UTF_8)
+        return String(bytes, start, ends[index] - start, Charsets.UTF_8)
     }
+
+    /** Whether entry [index] is a shared library path whose line is `../<path>`, so no line is stored. */
+    private fun isCanonical(index: Int): Boolean = shared[index] != null && start(index) == ends[index]
 
     private fun check(index: Int) {
         if (index < 0 || index >= size) throw IndexOutOfBoundsException("$index of $size")
@@ -176,13 +179,14 @@ private constructor(
     /** Library-relative path of entry [index], or null when it points outside the library. */
     fun path(index: Int): String? {
         check(index)
-        return shared[index] ?: M3u8.resolve(line(index)!!, root)
+        return shared[index] ?: M3u8.resolve(storedLine(index), root)
     }
 
     /** The entry line as read or written. */
     fun raw(index: Int): String {
         check(index)
-        return line(index) ?: M3u8.entryLine(shared[index]!!)
+        val path = shared[index]
+        return if (path != null && isCanonical(index)) M3u8.entryLine(path) else storedLine(index)
     }
 
     /** [PlaylistEntry.key] of entry [index]. */
@@ -191,7 +195,7 @@ private constructor(
         shared[index]?.let {
             return it
         }
-        val line = line(index)!!
+        val line = storedLine(index)
         return M3u8.resolve(line, root) ?: line
     }
 
@@ -202,15 +206,20 @@ private constructor(
 
     override fun get(index: Int): PlaylistEntry {
         check(index)
-        val line = line(index)
-        val path = shared[index] ?: M3u8.resolve(line!!, root)
-        return PlaylistEntry.read(path, line ?: M3u8.entryLine(path!!), extinfs?.get(index), shared = shared[index] != null)
+        val extinf = extinfs?.get(index)
+        val path = shared[index]
+        if (path != null) {
+            val raw = if (isCanonical(index)) M3u8.entryLine(path) else storedLine(index)
+            return PlaylistEntry.read(path, raw, extinf, shared = true)
+        }
+        val line = storedLine(index)
+        return PlaylistEntry.read(M3u8.resolve(line, root), line, extinf, shared = false)
     }
 
     /** A builder for a changed copy, with the same root and `#EXTINF` choice. */
     fun builder(capacity: Int = size + 1) = Builder(root, hasExtinf, capacity)
 
-    class Builder(private val root: String, private val keepExtinf: Boolean, capacity: Int = 16) {
+    class Builder(private val root: String, keepExtinf: Boolean, capacity: Int = 16) {
         private var shared = arrayOfNulls<String>(maxOf(capacity, 4))
         private var ends = IntArray(shared.size)
         private var bytes = ByteArray(64)

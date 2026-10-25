@@ -57,7 +57,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     var playerExpanded by mutableStateOf(false)
     var queueOpen by mutableStateOf(false)
     var dialog by mutableStateOf<DialogRequest?>(null)
-    var playingFrom by mutableStateOf(app.getSharedPreferences("playback", 0).getString(KEY_CONTEXT, "") ?: "")
+    var playingFrom by mutableStateOf(app.getSharedPreferences("playback", 0).getString(KEY_CONTEXT, "").orEmpty())
         private set
 
     /** The onboarding's Syncthing step: shown once after All files access is granted, reopened from Settings. */

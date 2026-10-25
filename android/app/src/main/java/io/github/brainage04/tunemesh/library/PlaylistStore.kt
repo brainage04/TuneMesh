@@ -6,6 +6,7 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.SecureRandom
+import java.util.Locale
 
 object AtomicFiles {
     private val random = SecureRandom()
@@ -31,11 +32,11 @@ object AtomicFiles {
     fun randomHex(length: Int): String {
         val bytes = ByteArray((length + 1) / 2)
         random.nextBytes(bytes)
-        return bytes.joinToString("") { "%02x".format(it) }.take(length)
+        return bytes.joinToString("") { "%02x".format(Locale.ROOT, it) }.take(length)
     }
 }
 
-class PlaylistException(message: String) : Exception(message)
+class PlaylistException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
  * Playlist files below `<root>/Playlists`. Every change re-reads the file first and writes atomically. Files are streamed ([M3u8.read]):
@@ -92,7 +93,7 @@ class PlaylistStore(
             }
             Playlist(name, size, art, file.lastModified())
         } catch (error: PlaylistTooLargeException) {
-            Playlist(name, 0, emptyList(), file.lastModified(), problem = "Too large to open on this device (${error.message})")
+            Playlist(name, 0, emptyList(), file.lastModified(), problem = "Too large to open on this device (${error.reason})")
         } catch (_: IOException) {
             null
         }
@@ -134,10 +135,10 @@ class PlaylistStore(
     private fun entries(name: String): PlaylistEntries =
         try {
             read(name)?.entries ?: PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
-        } catch (_: PlaylistTooLargeException) {
-            throw PlaylistException("\"$name\" is too large to change on this device")
+        } catch (error: PlaylistTooLargeException) {
+            throw PlaylistException("\"$name\" is too large to change on this device", error)
         } catch (error: IOException) {
-            throw PlaylistException("Cannot read \"$name\": ${error.message}")
+            throw PlaylistException("Cannot read \"$name\": ${error.message ?: error.javaClass.simpleName}", error)
         }
 
     /** Writes [entries]; a playlist that would be over the size limits is refused and the file left as it is. */
@@ -146,7 +147,7 @@ class PlaylistStore(
             try {
                 M3u8.write(entries, lookup)
             } catch (error: PlaylistTooLargeException) {
-                throw PlaylistException("\"$name\" would be too large (${error.message})")
+                throw PlaylistException("\"$name\" would be too large (${error.reason})", error)
             }
         AtomicFiles.write(file(name), text)
     }

@@ -276,7 +276,8 @@ class DownloadStore(private val root: File) {
             ?.filterTo(HashSet()) { name ->
                 name.endsWith(".json") && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
             }
-            ?.mapTo(HashSet()) { it.removeSuffix(".json") } ?: emptySet()
+            ?.mapTo(HashSet()) { it.removeSuffix(".json") }
+            .orEmpty()
 
     private fun <T> read(file: File, decode: (String) -> T): T? =
         try {
@@ -334,7 +335,7 @@ class DownloadStore(private val root: File) {
                 requestedAt = now.truncatedTo(ChronoUnit.SECONDS).toString(),
             )
 
-        fun encode(request: DownloadRequest): String = prettyJson.encodeToString(DownloadRequest.serializer(), request) + "\n"
+        fun encode(request: DownloadRequest): String = prettyJson.encodeToString(request) + "\n"
 
         /** `Alex's Pixel 8` → `alexs-pixel-8`. */
         fun deviceSlug(name: String): String =

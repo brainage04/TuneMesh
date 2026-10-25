@@ -22,6 +22,7 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.sin
@@ -103,7 +104,7 @@ class DeviceTest {
     /** "Limits": folders deeper than 64 levels are not scanned; tag fields are cut and artists limited. */
     @Test
     fun scannerFollowsTheFolderAndTagLimits() {
-        val level64 = (1..64).joinToString("/") { "d%02d".format(it) }
+        val level64 = (1..64).joinToString("/") { "d%02d".format(Locale.ROOT, it) }
         File(root, "$level64/ok.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deep", "A", "B", 1))
         File(root, "$level64/d65/too deep.mp3").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.mp3("Deeper", "A", "B", 1))
         // Android's ID3 reader returns only the first of NUL-separated values, so the limit is checked with `;`.
@@ -217,7 +218,7 @@ class DeviceTest {
         val resolved = QueueItems.resolve(context, spoofed, root, app.repository::track)!!
         assertEquals("q1|$path", resolved.mediaId)
         assertEquals(Uri.fromFile(File(root, path)), resolved.localConfiguration!!.uri)
-        assertEquals("Song", resolved.mediaMetadata.title.toString())
+        assertEquals("Song", resolved.mediaMetadata.title?.toString())
         assertEquals(CoverProvider.uri(context, path), resolved.mediaMetadata.artworkUri)
         assertNull(resolved.mediaMetadata.artworkData)
 

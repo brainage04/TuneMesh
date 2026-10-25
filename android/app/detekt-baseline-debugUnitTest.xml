@@ -1,0 +1,10 @@
+<?xml version="1.0" ?>
+<SmellBaseline>
+  <ManuallySuppressedIssues/>
+  <CurrentIssues>
+    <ID>MaxLineLength:DownloadStoreTest.kt:DownloadStoreTest$"""{"version":1,"device":"home-server","instance":"5f0c1d2e3a4b6c7d","pid":41234,"workerVersion":"0.1.0","heartbeatAt":"2026-10-06T05:00:00Z"}"""</ID>
+    <ID>MaxLineLength:DownloadStoreTest.kt:DownloadStoreTest$"""{"version":1,"id":"${running.id}","input":"second","state":"downloading","title":"Song","progress":0.42,"message":null,"tracks":[],"updatedAt":"2026-10-06T05:01:52Z","future":"ignored"}"""</ID>
+    <ID>MaxLineLength:DownloadStoreTest.kt:DownloadStoreTest$"""{"version":1,"id":"3000-deadbeef","input":"third","state":"failed","title":null,"progress":null,"message":"Video unavailable","tracks":[],"updatedAt":"2026-10-06T05:01:52Z"}"""</ID>
+    <ID>MaxLineLength:PlaylistStoreTest.kt:PlaylistStoreTest$"#EXTM3U\n../Artist/Album/A [1].opus\n#EXTINF:42,Gone - Away\n../Gone/X/Away [9].opus\n../Artist/Album/B [2].opus\n../Artist/Album/A [1].opus\n"</ID>
+  </CurrentIssues>
+</SmellBaseline>

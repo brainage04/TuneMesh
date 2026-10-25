@@ -8,7 +8,7 @@ import java.io.InputStream
  * A playlist file beyond what this device reads ([Limits.MAX_PLAYLIST_BYTES], [Limits.MAX_PLAYLIST_ENTRIES],
  * [Limits.MAX_PLAYLIST_LINE_BYTES]).
  */
-class PlaylistTooLargeException(message: String) : IOException(message)
+class PlaylistTooLargeException(val reason: String) : IOException(reason)
 
 /** Reads and writes `Playlists/<Name>.m3u8` files as described in the library contract. */
 object M3u8 {
@@ -187,15 +187,15 @@ object M3u8 {
         val duration =
             LibraryFormat.trimWhiteSpace(info.substringBefore(','))
                 .takeIf(durationPattern::matches)
+    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
+    private const val MAX_DURATION = (1L shl 31) - 2
+
                 ?.toLongOrNull()
                 ?.takeIf { it >= 0 }
                 ?.coerceAtMost(MAX_DURATION)
         val label = LibraryFormat.trimWhiteSpace(info.substringAfter(',', "")).takeIf { it.isNotEmpty() }
         return duration to label
     }
-
-    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
-    private const val MAX_DURATION = (1L shl 31) - 2
 
     /**
      * Serialises [entries] as tunemesh-core's `serialize`: `#EXTINF` and entry line per entry, LF endings. A known track gets its own

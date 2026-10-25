@@ -28,7 +28,7 @@ class ScanResult(val tracks: List<Track>, val directories: List<File>)
 class LibraryScanner(private val cacheFile: File) {
     private val json = Json { ignoreUnknownKeys = true }
     private var cacheRoot: String? = null
-    private var cache: MutableMap<String, CachedTrack> = HashMap()
+    private val cache = HashMap<String, CachedTrack>()
 
     @Synchronized
     fun cachedTracks(root: File): List<Track> {
@@ -114,51 +114,49 @@ class LibraryScanner(private val cacheFile: File) {
         val rootPath = root.absolutePath
         if (cacheRoot == rootPath) return
         cacheRoot = rootPath
-        cache =
-            try {
-                val file = json.decodeFromString<TagCacheFile>(cacheFile.readText())
-                if (file.root == rootPath) file.entries.toMutableMap() else HashMap()
-            } catch (_: Exception) {
-                HashMap()
-            }
+        cache.clear()
+        try {
+            val file = json.decodeFromString<TagCacheFile>(cacheFile.readText())
+            if (file.root == rootPath) cache.putAll(file.entries)
+        } catch (_: Exception) {
+            // No cache yet, or an unreadable one: the scan reads every file's tags again.
+        }
     }
 
     private fun save() {
         val root = cacheRoot ?: return
         try {
-            AtomicFiles.write(cacheFile, json.encodeToString(TagCacheFile.serializer(), TagCacheFile(root, cache)))
+            AtomicFiles.write(cacheFile, json.encodeToString(TagCacheFile(root, cache)))
         } catch (_: IOException) {
             // The cache is an optimisation; the next scan rebuilds it.
         }
     }
 
     companion object {
-        fun readTags(file: File): RawTags {
-            val retriever = MediaMetadataRetriever()
-            return try {
-                retriever.setDataSource(file.absolutePath)
-                // A text item over Limits.MAX_TAG_ITEM_BYTES is not used; the others are cut to MAX_TAG_TEXT_BYTES.
-                fun text(key: Int) =
-                    retriever
-                        .extractMetadata(key)
-                        ?.takeUnless { it.length > Limits.MAX_TAG_ITEM_BYTES / 4 && Limits.utf8Length(it) > Limits.MAX_TAG_ITEM_BYTES }
-                        ?.let { RawTags.boundedText(it) }
-                        ?.takeIf { it.isNotEmpty() }
-                RawTags(
-                    title = text(MediaMetadataRetriever.METADATA_KEY_TITLE),
-                    artist = text(MediaMetadataRetriever.METADATA_KEY_ARTIST),
-                    album = text(MediaMetadataRetriever.METADATA_KEY_ALBUM),
-                    albumArtist = text(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST),
-                    trackNumber = text(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)?.leadingInt(),
-                    discNumber = text(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER)?.leadingInt(),
-                    durationMs = text(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0,
-                )
-            } catch (_: RuntimeException) {
-                RawTags()
-            } finally {
-                retriever.release()
+        fun readTags(file: File): RawTags =
+            MediaMetadataRetriever().use { retriever ->
+                try {
+                    retriever.setDataSource(file.absolutePath)
+                    // A text item over Limits.MAX_TAG_ITEM_BYTES is not used; the others are cut to MAX_TAG_TEXT_BYTES.
+                    fun text(key: Int) =
+                        retriever
+                            .extractMetadata(key)
+                            ?.takeUnless { it.length > Limits.MAX_TAG_ITEM_BYTES / 4 && Limits.utf8Length(it) > Limits.MAX_TAG_ITEM_BYTES }
+                            ?.let { RawTags.boundedText(it) }
+                            ?.takeIf { it.isNotEmpty() }
+                    RawTags(
+                        title = text(MediaMetadataRetriever.METADATA_KEY_TITLE),
+                        artist = text(MediaMetadataRetriever.METADATA_KEY_ARTIST),
+                        album = text(MediaMetadataRetriever.METADATA_KEY_ALBUM),
+                        albumArtist = text(MediaMetadataRetriever.METADATA_KEY_ALBUMARTIST),
+                        trackNumber = text(MediaMetadataRetriever.METADATA_KEY_CD_TRACK_NUMBER)?.leadingInt(),
+                        discNumber = text(MediaMetadataRetriever.METADATA_KEY_DISC_NUMBER)?.leadingInt(),
+                        durationMs = text(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0,
+                    )
+                } catch (_: RuntimeException) {
+                    RawTags()
+                }
             }
-        }
 
         private fun String.leadingInt(): Int? = substringBefore('/').trim().toIntOrNull()
     }

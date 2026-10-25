@@ -140,7 +140,7 @@ class PlaybackState(context: Context) {
         }
 
     fun saveQueue(queue: StoredQueue) {
-        prefs.edit().putString(KEY_QUEUE, json.encodeToString(StoredQueue.serializer(), queue)).apply()
+        prefs.edit().putString(KEY_QUEUE, json.encodeToString(queue)).apply()
     }
 
     var shuffle: Boolean
@@ -149,8 +149,7 @@ class PlaybackState(context: Context) {
 
     /** Queue entry IDs in context order, used to undo shuffling. */
     var originalOrder: List<String>
-        get() =
-            prefs.getString(KEY_ORIGINAL, null)?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() } ?: emptyList()
+        get() = prefs.getString(KEY_ORIGINAL, null)?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }.orEmpty()
         set(value) = prefs.edit().putString(KEY_ORIGINAL, json.encodeToString(value)).apply()
 
     companion object {

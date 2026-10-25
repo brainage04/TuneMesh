@@ -65,6 +65,7 @@ import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlayerUiState
 import io.github.brainage04.tunemesh.ui.theme.Accent
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -432,7 +433,7 @@ fun formatDuration(ms: Long): String {
     val hours = totalSeconds / 3600
     val minutes = (totalSeconds % 3600) / 60
     val seconds = totalSeconds % 60
-    return if (hours > 0) "%d:%02d:%02d".format(hours, minutes, seconds) else "%d:%02d".format(minutes, seconds)
+    return if (hours > 0) "%d:%02d:%02d".format(Locale.ROOT, hours, minutes, seconds) else "%d:%02d".format(Locale.ROOT, minutes, seconds)
 }
 
 fun totalLength(tracks: List<Track>): String {

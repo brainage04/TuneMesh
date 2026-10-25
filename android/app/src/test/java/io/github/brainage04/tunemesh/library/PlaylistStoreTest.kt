@@ -1,6 +1,7 @@
 package io.github.brainage04.tunemesh.library
 
 import java.io.File
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -279,7 +280,7 @@ class PlaylistStoreTest {
     @Test
     fun listsLikedSongsAndTheFirstThousandByName() {
         val dir = File(temp.root, "Playlists").apply { mkdirs() }
-        for (n in 0 until Limits.MAX_PLAYLISTS_LISTED + 50) File(dir, "p%04d.m3u8".format(n)).writeText("../A.wav\n")
+        for (n in 0 until Limits.MAX_PLAYLISTS_LISTED + 50) File(dir, "p%04d.m3u8".format(Locale.ROOT, n)).writeText("../A.wav\n")
         File(dir, "Liked Songs.m3u8").writeText("../A.wav\n")
         File(dir, "Zzz.m3u8").writeText("../A.wav\n")
         File(dir, "aaa.m3u8").writeText("../A.wav\n")

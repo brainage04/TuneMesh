@@ -65,3 +65,9 @@ Run these from this directory before committing (they also run in CI):
   `./gradlew spotlessCheck` fails on a difference, `./gradlew spotlessApply` rewrites the files. ktfmt was chosen
   over ktlint because it is a pretty-printer: its output is deterministic and it always fixes what it reports,
   while ktlint leaves long lines to fix by hand and wraps some of them mid-expression.
+- Static analysis: detekt with type resolution, `./gradlew detektAll` (the app's main, unit-test and instrumented-test
+  sources and the baseline profile module). `config/detekt.yml` lists the deviations from the defaults and the bug-pattern
+  rules switched on (coroutines, exceptions, null safety). `app/detekt-baseline-<variant>.xml` holds the style findings
+  (sizes, complexity, magic numbers, long strings) of code older than detekt; every other finding fails. Fix a finding,
+  or suppress it at the one place with `@Suppress("Rule") // reason`; rewrite a baseline only to drop fixed entries
+  (`./gradlew :app:detektBaselineDebug`).

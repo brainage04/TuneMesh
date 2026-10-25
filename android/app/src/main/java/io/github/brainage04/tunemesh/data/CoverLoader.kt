@@ -13,6 +13,7 @@ import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 import java.util.Collections
+import java.util.Locale
 import kotlin.math.max
 
 /**
@@ -75,15 +76,14 @@ class CoverLoader(private val directory: File) {
      * hands over the whole embedded picture, so a huge one is loaded once to see its size; a folder cover is checked before it is read.
      */
     private fun extract(audio: File): ByteArray? {
-        val retriever = MediaMetadataRetriever()
         val embedded =
-            try {
-                retriever.setDataSource(audio.absolutePath)
-                retriever.embeddedPicture
-            } catch (_: RuntimeException) {
-                null
-            } finally {
-                retriever.release()
+            MediaMetadataRetriever().use { retriever ->
+                try {
+                    retriever.setDataSource(audio.absolutePath)
+                    retriever.embeddedPicture
+                } catch (_: RuntimeException) {
+                    null
+                }
             }
         // An embedded picture over the limit is not shown; the folder cover does not stand in for it.
         if (embedded != null) return embedded.takeIf { it.size <= Limits.MAX_COVER_BYTES }
@@ -137,7 +137,7 @@ class CoverLoader(private val directory: File) {
     private fun diskKey(track: Track): String {
         val digest =
             MessageDigest.getInstance("SHA-1").digest("${track.path}|${track.size}|${track.modifiedMs}".toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+        return digest.joinToString("") { "%02x".format(Locale.ROOT, it) }
     }
 
     companion object {

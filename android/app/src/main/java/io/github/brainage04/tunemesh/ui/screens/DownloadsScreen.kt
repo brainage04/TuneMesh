@@ -266,8 +266,8 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 "Done" +
                     (if (status.tracks.isNotEmpty()) " • ${status.tracks.size} ${if (status.tracks.size == 1) "song" else "songs"}"
                     else "") to Accent
-            "failed" -> "Failed" + (count?.let { " • $it done" } ?: "") to MaterialTheme.colorScheme.error
-            "cancelled" -> "Cancelled" + (count?.let { " • $it done" } ?: "") to TextSecondary
+            "failed" -> "Failed" + count?.let { " • $it done" }.orEmpty() to MaterialTheme.colorScheme.error
+            "cancelled" -> "Cancelled" + count?.let { " • $it done" }.orEmpty() to TextSecondary
             else -> Limits.shownLine(status.state) to TextSecondary
         }
     var problemsOpen by remember { mutableStateOf(false) }

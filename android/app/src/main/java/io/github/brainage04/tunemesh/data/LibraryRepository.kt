@@ -93,12 +93,17 @@ class LibraryRepository(
         get() {
             val state = _state.value
             val key = state.root to state.index
-            if (key != storeFor || store == null) {
-                val index = state.index
-                store = PlaylistStore(state.root, summaries) { index.byPath[it] }
-                storeFor = key
-            }
-            return store!!
+            store
+                ?.takeIf { key == storeFor }
+                ?.let {
+                    return it
+                }
+            val index = state.index
+            return PlaylistStore(state.root, summaries) { index.byPath[it] }
+                .also {
+                    store = it
+                    storeFor = key
+                }
         }
 
     private val downloadStore
@@ -330,6 +335,7 @@ class LibraryRepository(
      */
     private val mutations = Dispatchers.IO.limitedParallelism(1)
 
+    @Suppress("TooGenericExceptionCaught") // any failed change is reported instead of ending the app; action does not suspend
     private fun mutate(action: () -> Unit) {
         scope.launch(mutations) {
             try {

@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.io.OutputStream
+import java.util.Locale
 import kotlin.random.Random
 
 /**
@@ -64,18 +65,21 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         for (i in 0 until scale.albumTracks) {
             val n = order[i]
             writeBytes(
-                "Hostile Artist/One Album/%05d.mp3".format(i),
+                "Hostile Artist/One Album/%05d.mp3".format(Locale.ROOT, i),
                 mp3(title = "Track $n", artist = "Hostile Artist", album = "One Album", track = n),
             )
         }
         var made = scale.albumTracks
         var album = 0
         while (made < scale.audioFiles) {
-            val artist = "Artist %04d".format(album / 10)
-            val albumName = "Album %02d".format(album % 10)
+            val artist = "Artist %04d".format(Locale.ROOT, album / 10)
+            val albumName = "Album %02d".format(Locale.ROOT, album % 10)
             for (t in 1..10) {
                 if (made == scale.audioFiles) break
-                writeBytes("$artist/$albumName/%02d.mp3".format(t), mp3(title = "Song $t", artist = artist, album = albumName, track = t))
+                writeBytes(
+                    "$artist/$albumName/%02d.mp3".format(Locale.ROOT, t),
+                    mp3(title = "Song $t", artist = artist, album = albumName, track = t),
+                )
                 made++
             }
             album++
@@ -98,7 +102,7 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
     private fun deep() {
         var path = "Deep"
         for (level in 1..200) {
-            path += "/d%03d".format(level)
+            path += "/d%03d".format(Locale.ROOT, level)
             if (level == 10 || level == 200) {
                 writeBytes("$path/deep.mp3", mp3(title = "Level $level", artist = "Deep", album = "Level $level", track = 1))
             }
@@ -106,15 +110,15 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
     }
 
     private fun playlists() {
-        val entry = { i: Int -> "../Hostile Artist/One Album/%05d.mp3\n".format(i % scale.albumTracks).toByteArray() }
+        val entry = { i: Int -> "../Hostile Artist/One Album/%05d.mp3\n".format(Locale.ROOT, i % scale.albumTracks).toByteArray() }
         for (p in 0 until scale.bigPlaylists) {
-            write("Playlists/Big %02d.m3u8".format(p)) { out ->
+            write("Playlists/Big %02d.m3u8".format(Locale.ROOT, p)) { out ->
                 out.write("#EXTM3U\n".toByteArray())
                 repeat(250_000) { out.write(entry(it)) }
             }
         }
         for (p in 0 until scale.smallPlaylists) {
-            write("Playlists/Small %04d.m3u8".format(p)) { out -> repeat(5) { out.write(entry(p * 5 + it)) } }
+            write("Playlists/Small %04d.m3u8".format(Locale.ROOT, p)) { out -> repeat(5) { out.write(entry(p * 5 + it)) } }
         }
         write("Playlists/Over Entries.m3u8") { out -> repeat(250_001) { out.write(entry(it)) } }
         write("Playlists/Over Line.m3u8") { out -> out.write(("../" + "x".repeat(32 * 1024 - 2) + "\n").toByteArray()) }
@@ -127,7 +131,7 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
 
     private fun downloads() {
         for (i in 0 until scale.requests) {
-            val id = "${1_700_000_000_000L + i}-%08x".format(i)
+            val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
             writeBytes(
                 ".tunemesh/requests/$id.json",
                 """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile/$i","playlist":null,"playlistFromSource":false,"requestedBy":"hostile","requestedAt":"2026-10-20T00:00:00Z"}"""
@@ -135,7 +139,7 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
             )
         }
         for (i in 10_000 until 10_000 + scale.statuses) {
-            val id = "${1_700_000_000_000L + i}-%08x".format(i)
+            val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
             write(".tunemesh/status/$id.json") { out -> status(out, id, 1024 * 1024 - 4096) }
         }
         write(".tunemesh/requests/${1_700_000_900_000L}-hostile0.json") { out -> padded(out, 2 * 1024 * 1024) }

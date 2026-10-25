@@ -110,6 +110,7 @@ object Limits {
     // ---- helpers -----------------------------------------------------------------------------------------------
 
     /** The bytes of [file], at most [max]. Throws [TooLargeException] past [max], also when it grows while read. */
+    @Suppress("SpreadOperator") // copies an array of at most one option
     fun readBytes(file: File, max: Int, followLinks: Boolean = true): ByteArray {
         val options = if (followLinks) emptyArray() else arrayOf(LinkOption.NOFOLLOW_LINKS)
         val path = file.toPath()

@@ -1,7 +1,6 @@
 package io.github.brainage04.tunemesh.data
 
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 
 /**
@@ -17,12 +16,13 @@ class RefreshGate(private val mutex: Mutex) {
 
     suspend fun run(block: () -> Unit) {
         if (!queued.compareAndSet(false, true)) return
+        var locked = false
         try {
             mutex.lock()
-        } catch (cancelled: CancellationException) {
+            locked = true
+        } finally {
             // Cancelled while waiting: this request still owns the flag, so the next one must be able to start.
-            queued.set(false)
-            throw cancelled
+            if (!locked) queued.set(false)
         }
         try {
             queued.set(false)
