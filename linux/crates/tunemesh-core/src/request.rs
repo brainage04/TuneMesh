@@ -205,9 +205,16 @@ impl Status {
     }
 
     /// Cuts every field to the contract's limits (`limits`): applied when a
-    /// status file is read and before one is written.
+    /// status file is read and before one is written. Memory the cut parts
+    /// held (and the lists' spare capacity from parsing) is released, so a
+    /// status read from a 1 MiB file keeps only what is within the limits.
     pub fn clamp(&mut self) {
-        let cut = |s: &mut String, max| limits::cut_in_place(s, max);
+        let cut = |s: &mut String, max| {
+            if s.len() > max {
+                limits::cut_in_place(s, max);
+                s.shrink_to_fit();
+            }
+        };
         cut(&mut self.input, MAX_INPUT_BYTES);
         if let Some(t) = &mut self.title {
             cut(t, MAX_TEXT_BYTES);
@@ -216,15 +223,18 @@ impl Status {
             cut(m, MAX_MESSAGE_BYTES);
         }
         self.warnings.truncate(MAX_WARNINGS);
+        self.warnings.shrink_to_fit();
         for w in &mut self.warnings {
             cut(w, MAX_TEXT_BYTES);
         }
         self.failures.truncate(MAX_FAILURES);
+        self.failures.shrink_to_fit();
         for f in &mut self.failures {
             cut(&mut f.item, MAX_TEXT_BYTES);
             cut(&mut f.error, MAX_TEXT_BYTES);
         }
         self.tracks.truncate(MAX_STATUS_TRACKS);
+        self.tracks.shrink_to_fit();
     }
 
     /// Records a warning, keeping at most `MAX_WARNINGS` of them.
@@ -750,6 +760,35 @@ mod tests {
         assert_eq!(
             parse_status(&small.to_json().unwrap(), &small.id).unwrap(),
             small
+        );
+    }
+
+    /// Found with heaptrack on the desktop app: a status read from a file
+    /// full of entries kept the parsed lists' whole capacity and each cut
+    /// string's original buffer (74 MB live for the 200 listed statuses of
+    /// the hostile library).
+    #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
+    fn read_statuses_keep_no_spare_capacity() {
+        let long = "w".repeat(8 * MAX_TEXT_BYTES);
+        let json = serde_json::json!({
+            "version": 1, "id": "x", "input": "i".repeat(4 * MAX_INPUT_BYTES),
+            "state": "failed",
+            "warnings": (0..80).map(|i| format!("{long}{i}")).collect::<Vec<_>>(),
+            "failures": (0..300).map(|_| serde_json::json!({"item": long, "error": "e"})).collect::<Vec<_>>(),
+            "tracks": (0..MAX_STATUS_TRACKS + 3).map(|i| i.to_string()).collect::<Vec<_>>(),
+        });
+        let s = parse_status(json.to_string().as_bytes(), "x").unwrap();
+        assert_eq!(s.warnings.len(), MAX_WARNINGS);
+        assert!(s.warnings.capacity() <= MAX_WARNINGS);
+        assert!(s.failures.capacity() <= MAX_FAILURES);
+        assert!(s.tracks.capacity() <= MAX_STATUS_TRACKS);
+        assert!(s.input.capacity() <= MAX_INPUT_BYTES);
+        assert!(s.warnings.iter().all(|w| w.capacity() <= MAX_TEXT_BYTES));
+        assert!(
+            s.failures
+                .iter()
+                .all(|f| f.item.capacity() <= MAX_TEXT_BYTES)
         );
     }
 }
