@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -33,6 +34,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.github.brainage04.tunemesh.library.EntryRef
+import io.github.brainage04.tunemesh.library.LibraryIndex
+import io.github.brainage04.tunemesh.library.PlaylistContents
 import io.github.brainage04.tunemesh.library.PlaylistEntry
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
@@ -53,6 +56,9 @@ import io.github.brainage04.tunemesh.ui.UnavailableRow
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 import io.github.brainage04.tunemesh.ui.totalLength
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 private fun playingContext(name: String): Boolean {
@@ -164,7 +170,7 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
 }
 
 @Composable
-fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
+fun PlaylistScreen(name: String, contentPadding: PaddingValues, background: CoroutineDispatcher = Dispatchers.Default) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     val playlist = library.playlist(name) ?: return Missing("Playlist", contentPadding)
@@ -174,14 +180,17 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         onDispose { viewModel.repository.closePlaylist(name) }
     }
     val contents = library.openPlaylist?.takeIf { it.name == name }
-    val entries: List<PlaylistEntry> = contents?.entries.orEmpty()
-    // Rows make their PlaylistEntry when shown; the tracks are looked up from the stored paths.
-    val resolved =
-        remember(contents, library.index) {
-            val stored = contents?.entries
-            if (stored == null) emptyList() else List(stored.size) { i -> stored.path(i)?.let { library.index.byPath[it] } }
+    // Looking up 250,000 entries takes longer than a frame, so it runs off the main thread. Rows show the latest finished lookup, with
+    // the entries it was made from, so an edited playlist keeps its old order on screen until the new one is resolved.
+    val libraryIndex = library.index
+    val lookup by
+        produceState<ResolvedEntries?>(null, contents, libraryIndex) {
+            val stored = contents ?: return@produceState
+            value = withContext(background) { ResolvedEntries.of(stored, libraryIndex) }
         }
-    val playable = remember(resolved) { resolved.filterNotNull() }
+    val resolved = lookup?.takeIf { it.contents.name == name }
+    val entries: List<PlaylistEntry> = resolved?.contents?.entries.orEmpty()
+    val playable = resolved?.playable.orEmpty()
     var editing by remember(name) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
@@ -193,8 +202,8 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                     else
                         buildString {
                             append(songCount(contents?.entries?.size ?: playlist.size))
-                            if (contents != null && playable.size != entries.size) append(" • ${entries.size - playable.size} unavailable")
-                            if (playable.isNotEmpty()) append(" • ${totalLength(playable)}")
+                            if (resolved != null && resolved.unavailable > 0) append(" • ${resolved.unavailable} unavailable")
+                            if (resolved != null && playable.isNotEmpty()) append(" • ${resolved.length}")
                         },
                 seed = playlist.name,
                 onBack = { viewModel.back() },
@@ -214,7 +223,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
         playlist.problem?.let { problem ->
             item { EmptyMessage("This playlist cannot be opened", "$problem. It is left unchanged.") }
         }
-        if (playlist.problem == null && contents != null && entries.isEmpty()) {
+        if (playlist.problem == null && resolved != null && entries.isEmpty()) {
             item {
                 EmptyMessage(
                     if (playlist.isLikedSongs) "Songs you like appear here" else "This playlist is empty",
@@ -223,13 +232,13 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
             }
         }
         itemsIndexed(entries) { index, entry ->
-            val track = resolved[index]
+            val track = resolved?.tracks?.get(index)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
                     if (track != null) {
                         TrackRow(
                             track,
-                            onPlay = { viewModel.play(playlist.name, playable, resolved.take(index).count { it != null }) },
+                            onPlay = { viewModel.play(playlist.name, playable, resolved.playableBefore[index]) },
                             context = RowContext(playlistName = playlist.name, index = index),
                         )
                     } else {
@@ -268,6 +277,37 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
             }
         }
         item { Spacer(Modifier.height(16.dp)) }
+    }
+}
+
+/** The library tracks of a playlist's [contents], looked up once per change of the playlist or the library. */
+private class ResolvedEntries(
+    val contents: PlaylistContents,
+    /** Per entry, its track, or null when it is unavailable. */
+    val tracks: Array<Track?>,
+    /** Per entry, how many entries before it are available: its position in [playable]. */
+    val playableBefore: IntArray,
+    val playable: List<Track>,
+) {
+    val unavailable: Int
+        get() = tracks.size - playable.size
+
+    val length: String = totalLength(playable)
+
+    companion object {
+        fun of(contents: PlaylistContents, index: LibraryIndex): ResolvedEntries {
+            val entries = contents.entries
+            val tracks = arrayOfNulls<Track>(entries.size)
+            val before = IntArray(entries.size)
+            val playable = ArrayList<Track>(entries.size)
+            for (i in tracks.indices) {
+                before[i] = playable.size
+                val track = entries.path(i)?.let(index.byPath::get) ?: continue
+                tracks[i] = track
+                playable += track
+            }
+            return ResolvedEntries(contents, tracks, before, playable)
+        }
     }
 }
 

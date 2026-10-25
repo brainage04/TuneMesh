@@ -144,7 +144,8 @@ class HostileLibraryTest {
         step("rescan while shown") {
             val before = app.repository.state.value.index
             runBlockingRefresh()
-            assertTrue(app.repository.state.value.index !== before)
+            // Nothing changed, so the screens keep the index they show.
+            assertTrue(app.repository.state.value.index === before)
         }
         report("worst main-thread stall ${watchdog.worst} ms; ${heap()}")
         assertTrue("main thread stalled ${watchdog.worst} ms (${watchdog.worstAt})", watchdog.worst < MAX_STALL_MS)

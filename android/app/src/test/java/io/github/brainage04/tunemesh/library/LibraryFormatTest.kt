@@ -185,5 +185,6 @@ class LibraryFormatTest {
         assertEquals(30, va.addedMs)
         assertEquals(listOf("C", "VA"), index.artists.map { it.name })
         assertEquals("VA", index.recentlyAdded.first().artist)
+        assertEquals(listOf("VA", "C"), index.recentArtists.map { it.name })
     }
 }

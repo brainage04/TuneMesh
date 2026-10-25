@@ -179,7 +179,10 @@ class LibraryRepository(
         try {
             ensureRoot(root)
             val result = scanner.scan(root)
-            val index = LibraryIndex(result.tracks)
+            // An unchanged library keeps its index: a new one would make every screen showing it recompose (and an open
+            // playlist look its entries up again) after each periodic rescan.
+            val current = _state.value.index
+            val index = if (result.tracks == current.tracks) current else LibraryIndex(result.tracks)
             _state.update { it.copy(index = index, loaded = true, error = null) }
             reloadPlaylists()
             reloadDownloads()

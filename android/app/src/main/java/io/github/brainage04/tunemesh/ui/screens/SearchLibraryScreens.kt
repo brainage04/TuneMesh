@@ -33,7 +33,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -43,7 +43,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.github.brainage04.tunemesh.library.Album
+import io.github.brainage04.tunemesh.library.Artist
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
+import io.github.brainage04.tunemesh.library.Playlist
+import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.ClearFocusWhenImeHidden
 import io.github.brainage04.tunemesh.ui.CoverArt
@@ -60,13 +65,38 @@ import io.github.brainage04.tunemesh.ui.TrackRow
 import io.github.brainage04.tunemesh.ui.playlistSubtitle
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 @Composable
-fun SearchScreen(contentPadding: PaddingValues) {
+fun SearchScreen(contentPadding: PaddingValues, background: CoroutineDispatcher = Dispatchers.Default) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     var query by rememberSaveable { mutableStateOf("") }
     val index = library.index
+    // Searching 100,000 tracks takes longer than a frame: the results are worked out off the main thread, after a pause in typing,
+    // and the previous ones stay on screen meanwhile.
+    val results by
+        produceState<SearchResults?>(null, query, index, library.playlists) {
+            if (query.isBlank()) {
+                value = null
+                return@produceState
+            }
+            delay(SEARCH_DELAY_MS)
+            val playlists = library.playlists
+            value =
+                withContext(background) {
+                    SearchResults(
+                        query = query,
+                        tracks = index.searchTracks(query),
+                        artists = index.searchArtists(query),
+                        albums = index.searchAlbums(query),
+                        playlists = index.searchPlaylists(query, playlists),
+                    )
+                }
+        }
     ClearFocusWhenImeHidden()
     Column(Modifier.fillMaxSize()) {
         ScreenTitle("Search")
@@ -120,12 +150,13 @@ fun SearchScreen(contentPadding: PaddingValues) {
             }
             return@Column
         }
-        val tracks = remember(query, index) { index.searchTracks(query) }
-        val artists = remember(query, index) { index.searchArtists(query) }
-        val albums = remember(query, index) { index.searchAlbums(query) }
-        val playlists = remember(query, library.playlists, index) { index.searchPlaylists(query, library.playlists) }
+        val found = results ?: return@Column
+        val tracks = found.tracks
+        val artists = found.artists
+        val albums = found.albums
+        val playlists = found.playlists
         if (tracks.isEmpty() && artists.isEmpty() && albums.isEmpty() && playlists.isEmpty()) {
-            EmptyMessage("No results for \"$query\"", "Check the spelling, or request it from the Downloads tab.")
+            EmptyMessage("No results for \"${found.query}\"", "Check the spelling, or request it from the Downloads tab.")
             return@Column
         }
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = contentPadding.calculateBottomPadding())) {
@@ -170,12 +201,22 @@ fun SearchScreen(contentPadding: PaddingValues) {
             if (tracks.isNotEmpty()) {
                 item { SectionTitle("Songs") }
                 itemsIndexed(tracks, key = { _, track -> track.path }) { position, track ->
-                    TrackRow(track, onPlay = { viewModel.play("\"$query\"", tracks, position) })
+                    TrackRow(track, onPlay = { viewModel.play("\"${found.query}\"", tracks, position) })
                 }
             }
         }
     }
 }
+
+private class SearchResults(
+    val query: String,
+    val tracks: List<Track>,
+    val artists: List<Artist>,
+    val albums: List<Album>,
+    val playlists: List<Playlist>,
+)
+
+private const val SEARCH_DELAY_MS = 150L
 
 private enum class LibraryFilter(val label: String) {
     Playlists("Playlists"),
@@ -265,9 +306,9 @@ private fun LibraryRow(title: String, subtitle: String, onClick: () -> Unit, art
         art(Modifier.size(64.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(Limits.shownLine(title), style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                subtitle,
+                Limits.shownLine(subtitle),
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,

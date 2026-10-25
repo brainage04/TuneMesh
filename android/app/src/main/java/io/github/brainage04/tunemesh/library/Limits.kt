@@ -191,7 +191,7 @@ object Limits {
     }
 
     /** [text] cut to [max] characters, not inside a surrogate pair, ending in `…` when it was longer. */
-    private fun cutChars(text: String, max: Int): String {
+    internal fun cutChars(text: String, max: Int): String {
         if (text.length <= max) return text
         var end = max - 1
         if (Character.isHighSurrogate(text[end - 1])) end--

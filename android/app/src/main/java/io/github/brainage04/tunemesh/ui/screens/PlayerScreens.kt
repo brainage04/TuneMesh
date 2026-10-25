@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.QueueItems
 import io.github.brainage04.tunemesh.ui.AppIcons
@@ -87,14 +88,14 @@ fun MiniPlayer(modifier: Modifier = Modifier) {
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    item.title(),
+                    Limits.shownLine(item.title()),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    item.artist(),
+                    Limits.shownLine(item.artist()),
                     style = MaterialTheme.typography.bodySmall,
                     color = TextSecondary,
                     maxLines = 1,
@@ -141,7 +142,7 @@ fun NowPlayingScreen() {
             Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
                 Text("PLAYING FROM", style = MaterialTheme.typography.labelSmall, color = TextSecondary)
                 Text(
-                    viewModel.playingFrom,
+                    Limits.shownLine(viewModel.playingFrom),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
@@ -163,14 +164,14 @@ fun NowPlayingScreen() {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(
-                    item.title(),
+                    Limits.shownLine(item.title()),
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Text(
-                    item.artist(),
+                    Limits.shownLine(item.artist()),
                     style = MaterialTheme.typography.bodyLarge,
                     color = TextSecondary,
                     maxLines = 1,
@@ -313,9 +314,14 @@ private fun QueueRow(item: MediaItem, track: Track?, index: Int, isCurrent: Bool
         CoverArt(track, item.mediaMetadata.albumTitle?.toString().orEmpty(), Modifier.size(44.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
-            Text(item.title(), color = if (isCurrent) Accent else Color.White, maxLines = 1, overflow = TextOverflow.Ellipsis)
             Text(
-                item.artist(),
+                Limits.shownLine(item.title()),
+                color = if (isCurrent) Accent else Color.White,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                Limits.shownLine(item.artist()),
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,

@@ -31,8 +31,18 @@ class LibraryIndex(val tracks: List<Track>) {
 
     val artistsByName: Map<String, Artist> = artists.associateBy { it.name }
 
-    val recentlyAdded: List<Album>
-        get() = albums.sortedByDescending { it.addedMs }
+    // Worked out here, with the rest of the index (off the main thread), not by the screens that show them.
+
+    /** Albums, newest first. */
+    val recentlyAdded: List<Album> = albums.sortedByDescending { it.addedMs }
+
+    /** The [HOME_ROW] artists with the newest albums, newest first. */
+    val recentArtists: List<Artist> =
+        artists
+            .map { artist -> artist to artist.albums.maxOf { it.addedMs } }
+            .sortedByDescending { it.second }
+            .take(HOME_ROW)
+            .map { it.first }
 
     private val trackKeys: List<Pair<Track, String>> = tracks.map {
         it to LibraryFormat.searchKey("${it.title}\n${it.artist}\n${it.album}\n${it.albumArtist}")
@@ -63,6 +73,9 @@ class LibraryIndex(val tracks: List<Track>) {
 
     companion object {
         val EMPTY = LibraryIndex(emptyList())
+
+        /** Albums and artists in a row on Home. */
+        const val HOME_ROW = 20
 
         val trackOrder: Comparator<Track> =
             compareBy<Track>({ it.discNumber ?: 0 }, { it.trackNumber ?: Int.MAX_VALUE }).thenBy(String.CASE_INSENSITIVE_ORDER) { it.path }

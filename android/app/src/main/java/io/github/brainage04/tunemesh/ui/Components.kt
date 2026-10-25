@@ -60,6 +60,7 @@ import androidx.compose.ui.unit.sp
 import io.github.brainage04.tunemesh.data.LibraryState
 import io.github.brainage04.tunemesh.library.EntryRef
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.Playlist
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlayerUiState
@@ -166,7 +167,7 @@ fun BackBar(title: String = "", onBack: () -> Unit, actions: @Composable () -> U
     ) {
         IconButton(onClick = onBack) { Icon(AppIcons.Back, "Back") }
         Text(
-            title,
+            Limits.shownLine(title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f),
@@ -220,14 +221,14 @@ fun TrackRow(
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                track.title,
+                Limits.shownLine(track.title),
                 color = if (isCurrent) Accent else Color.White,
                 style = MaterialTheme.typography.bodyLarge,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                if (context.showAlbum && context.showArtist) "${track.artist} • ${track.album}" else track.artist,
+                Limits.shownLine(if (context.showAlbum && context.showArtist) "${track.artist} • ${track.album}" else track.artist),
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
                 maxLines = 1,
@@ -312,7 +313,7 @@ fun UnavailableRow(raw: String, onRemove: (() -> Unit)?) {
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Text(
-                LibraryFormat.titleFromFileName(raw.substringAfterLast('/')),
+                Limits.shownLine(LibraryFormat.titleFromFileName(raw.substringAfterLast('/'))),
                 color = Color(0xFF6A6A6A),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -337,7 +338,7 @@ fun MediaTile(
         art(Modifier.fillMaxWidth().aspectSquare())
         Spacer(Modifier.height(8.dp))
         Text(
-            title,
+            Limits.shownLine(title),
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             maxLines = if (circle) 1 else 2,
@@ -345,7 +346,7 @@ fun MediaTile(
             modifier = if (circle) Modifier.align(Alignment.CenterHorizontally) else Modifier,
         )
         Text(
-            subtitle,
+            Limits.shownLine(subtitle),
             style = MaterialTheme.typography.bodySmall,
             color = TextSecondary,
             maxLines = 1,
@@ -382,7 +383,7 @@ fun DetailHeader(
         art(Modifier.align(Alignment.CenterHorizontally).padding(top = 4.dp).size(232.dp))
         Spacer(Modifier.height(20.dp))
         Text(
-            title,
+            Limits.shownLine(title),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.Bold,
             maxLines = 2,
@@ -391,9 +392,11 @@ fun DetailHeader(
         )
         if (subtitle.isNotEmpty()) {
             Text(
-                subtitle,
+                Limits.shownLine(subtitle),
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
                 modifier =
                     Modifier.padding(horizontal = 16.dp, vertical = 6.dp)
                         .then(if (onSubtitleClick != null) Modifier.clickable(onClick = onSubtitleClick) else Modifier),

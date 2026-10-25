@@ -86,6 +86,10 @@ data class DownloadItem(
 data class ShownDownload(
     val input: String,
     val title: String?,
+    /**
+     * The message as the card shows it, in at most 8 lines: [Limits.shownMessage], then cut to [PREVIEW_CHARS], since laying out all 2,000
+     * characters of an unbroken message to show 8 lines takes tens of milliseconds per card on the main thread.
+     */
     val message: String?,
     val failedCount: Int,
     val warningCount: Int,
@@ -93,6 +97,8 @@ data class ShownDownload(
     val lines: List<String>,
 ) {
     companion object {
+        const val PREVIEW_CHARS = 8 * 80
+
         fun of(input: String, status: DownloadStatus?): ShownDownload {
             val message = status?.message?.takeIf { it.isNotBlank() }
             val failures = status?.failures.orEmpty()
@@ -111,7 +117,7 @@ data class ShownDownload(
             return ShownDownload(
                 input = Limits.shownLine(input),
                 title = status?.title?.let(Limits::shownLine),
-                message = message?.let(Limits::shownMessage),
+                message = message?.let { Limits.cutChars(Limits.shownMessage(it), PREVIEW_CHARS) },
                 failedCount = failures.size,
                 warningCount = warnings.size,
                 lines = lines,

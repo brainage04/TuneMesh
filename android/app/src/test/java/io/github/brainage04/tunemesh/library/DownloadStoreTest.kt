@@ -239,6 +239,10 @@ class DownloadStoreTest {
         assertEquals(Limits.SHOWN_LINE_CHARS, shown.title!!.length)
         assertTrue(shown.title.endsWith("…"))
         assertEquals(Limits.SHOWN_LINE_CHARS, shown.input.length)
+        // An unbroken message is cut to what the card's 8 lines can show.
+        val unbroken = ShownDownload.of("x", status.copy(message = "m".repeat(Limits.MAX_STATUS_MESSAGE_BYTES)))
+        assertEquals(ShownDownload.PREVIEW_CHARS, unbroken.message!!.length)
+        assertTrue(unbroken.message.endsWith("…"))
 
         val few =
             ShownDownload.of(
