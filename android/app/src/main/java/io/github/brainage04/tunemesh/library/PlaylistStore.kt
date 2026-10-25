@@ -38,17 +38,17 @@ object AtomicFiles {
 class PlaylistException(message: String) : Exception(message)
 
 /**
- * Playlist files below `<root>/Playlists`. Every change re-reads the file first and writes atomically. Files are
- * streamed ([M3u8.read]): listing keeps a few fields per playlist, and only the playlist that is open or being
- * changed is held entry by entry. A playlist beyond [M3u8]'s limits is listed with a [Playlist.problem] and is
- * never rewritten.
+ * Playlist files below `<root>/Playlists`. Every change re-reads the file first and writes atomically. Files are streamed ([M3u8.read]):
+ * listing keeps a few fields per playlist, and only the playlist that is open or being changed is held entry by entry. A playlist beyond
+ * [M3u8]'s limits is listed with a [Playlist.problem] and is never rewritten.
  */
 class PlaylistStore(
     private val root: File,
     private val summaries: PlaylistSummaries? = null,
     private val lookup: (String) -> Track?,
 ) {
-    private val directory get() = File(root, LibraryFormat.PLAYLISTS_DIR)
+    private val directory
+        get() = File(root, LibraryFormat.PLAYLISTS_DIR)
 
     fun file(name: String): File = File(directory, name + LibraryFormat.PLAYLIST_EXTENSION)
 
@@ -56,19 +56,20 @@ class PlaylistStore(
     private fun canonical(path: String): String? = lookup(path)?.path
 
     private fun stream(file: File, keepExtinf: Boolean, onEntry: (PlaylistEntry) -> Unit) {
-        if (file.length() > Limits.MAX_PLAYLIST_BYTES) throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
+        if (file.length() > Limits.MAX_PLAYLIST_BYTES)
+            throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
         file.inputStream().use { M3u8.read(it, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry) }
     }
 
     /**
-     * Liked Songs, then the first [Limits.MAX_PLAYLISTS_LISTED] other playlists by name ignoring case, as summaries.
-     * Only those files are read, and an unchanged one is not read again ([summaries]). Files that cannot be read at
-     * all are left out.
+     * Liked Songs, then the first [Limits.MAX_PLAYLISTS_LISTED] other playlists by name ignoring case, as summaries. Only those files are
+     * read, and an unchanged one is not read again ([summaries]). Files that cannot be read at all are left out.
      */
     fun list(): List<Playlist> {
-        val names = directory.list()?.filter { name ->
-            name.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
-        } ?: return emptyList()
+        val names =
+            directory.list()?.filter { name ->
+                name.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
+            } ?: return emptyList()
         val liked = LibraryFormat.LIKED_SONGS + LibraryFormat.PLAYLIST_EXTENSION
         val others = names.filter { it != liked }.sortedWith(String.CASE_INSENSITIVE_ORDER).take(Limits.MAX_PLAYLISTS_LISTED)
         val listed = (if (liked in names) listOf(liked) else emptyList()) + others
@@ -98,8 +99,8 @@ class PlaylistStore(
     }
 
     /**
-     * The entries of playlist [name] for a screen (without `#EXTINF` lines), or null when it does not exist or
-     * cannot be read. Throws [PlaylistTooLargeException] beyond the limits.
+     * The entries of playlist [name] for a screen (without `#EXTINF` lines), or null when it does not exist or cannot be read. Throws
+     * [PlaylistTooLargeException] beyond the limits.
      */
     fun contents(name: String): PlaylistContents? = read(name, keepExtinf = false)
 
@@ -122,43 +123,47 @@ class PlaylistStore(
         val paths = HashSet<String>()
         try {
             stream(file(LibraryFormat.LIKED_SONGS), keepExtinf = false) { entry -> entry.path?.let(paths::add) }
-        } catch (_: java.io.FileNotFoundException) {
-        }
+        } catch (_: java.io.FileNotFoundException) {}
         return paths
     }
 
     /**
-     * Entries to change. A missing file is empty; a file that cannot be read or is too large is never rewritten
-     * from a partial read, so the change is refused.
+     * Entries to change. A missing file is empty; a file that cannot be read or is too large is never rewritten from a partial read, so the
+     * change is refused.
      */
-    private fun entries(name: String): PlaylistEntries = try {
-        read(name)?.entries ?: PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
-    } catch (_: PlaylistTooLargeException) {
-        throw PlaylistException("\"$name\" is too large to change on this device")
-    } catch (error: IOException) {
-        throw PlaylistException("Cannot read \"$name\": ${error.message}")
-    }
+    private fun entries(name: String): PlaylistEntries =
+        try {
+            read(name)?.entries ?: PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
+        } catch (_: PlaylistTooLargeException) {
+            throw PlaylistException("\"$name\" is too large to change on this device")
+        } catch (error: IOException) {
+            throw PlaylistException("Cannot read \"$name\": ${error.message}")
+        }
 
     /** Writes [entries]; a playlist that would be over the size limits is refused and the file left as it is. */
     private fun write(name: String, entries: List<PlaylistEntry>) {
-        val text = try {
-            M3u8.write(entries, lookup)
-        } catch (error: PlaylistTooLargeException) {
-            throw PlaylistException("\"$name\" would be too large (${error.message})")
-        }
+        val text =
+            try {
+                M3u8.write(entries, lookup)
+            } catch (error: PlaylistTooLargeException) {
+                throw PlaylistException("\"$name\" would be too large (${error.message})")
+            }
         AtomicFiles.write(file(name), text)
     }
 
     /**
-     * The playlist whose name equals [name] ignoring letter case (Liked Songs included, whether or not its file
-     * exists yet). Shared storage is case-insensitive, so such a playlist is the same file.
+     * The playlist whose name equals [name] ignoring letter case (Liked Songs included, whether or not its file exists yet). Shared storage
+     * is case-insensitive, so such a playlist is the same file.
      */
     private fun existingName(name: String): String? {
         if (name.equals(LibraryFormat.LIKED_SONGS, ignoreCase = true)) return LibraryFormat.LIKED_SONGS
         return directory.list()?.firstNotNullOfOrNull { fileName ->
-            fileName.takeIf {
-                it.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(it) && !LibraryFormat.isConflictCopy(it)
-            }?.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)?.takeIf { it.equals(name, ignoreCase = true) }
+            fileName
+                .takeIf {
+                    it.endsWith(LibraryFormat.PLAYLIST_EXTENSION) && !LibraryFormat.isHidden(it) && !LibraryFormat.isConflictCopy(it)
+                }
+                ?.removeSuffix(LibraryFormat.PLAYLIST_EXTENSION)
+                ?.takeIf { it.equals(name, ignoreCase = true) }
         }
     }
 
@@ -197,8 +202,8 @@ class PlaylistStore(
     }
 
     /**
-     * Removes the entry the user saw at [entry]. The file is read again first, so an entry another device moved is
-     * found by its key; one that is gone fails without writing.
+     * Removes the entry the user saw at [entry]. The file is read again first, so an entry another device moved is found by its key; one
+     * that is gone fails without writing.
      */
     fun remove(name: String, entry: EntryRef) {
         val entries = entries(name)
@@ -213,10 +218,16 @@ class PlaylistStore(
         if (source == target) return
         val moved = entries.builder(entries.size)
         if (source < target) {
-            moved.addAll(entries, 0 until source).addAll(entries, source + 1..target).add(entries, source)
+            moved
+                .addAll(entries, 0 until source)
+                .addAll(entries, source + 1..target)
+                .add(entries, source)
                 .addAll(entries, target + 1 until entries.size)
         } else {
-            moved.addAll(entries, 0 until target).add(entries, source).addAll(entries, target until source)
+            moved
+                .addAll(entries, 0 until target)
+                .add(entries, source)
+                .addAll(entries, target until source)
                 .addAll(entries, source + 1 until entries.size)
         }
         write(name, moved.build())
@@ -233,13 +244,14 @@ class PlaylistStore(
         const val ART_PATHS = 8
 
         /**
-         * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then).
-         * [libraryPath] is the library index's string for the track's path, shared by the new entry.
+         * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then). [libraryPath] is the library
+         * index's string for the track's path, shared by the new entry.
          */
-        fun like(entries: PlaylistEntries, track: Track, libraryPath: String? = null): PlaylistEntries = when {
-            !M3u8.canWrite(track.path) || (0 until entries.size).any { entries.path(it) == track.path } -> entries
-            else -> entries.builder().add(M3u8.entryFor(track), libraryPath).addAll(entries).build()
-        }
+        fun like(entries: PlaylistEntries, track: Track, libraryPath: String? = null): PlaylistEntries =
+            when {
+                !M3u8.canWrite(track.path) || (0 until entries.size).any { entries.path(it) == track.path } -> entries
+                else -> entries.builder().add(M3u8.entryFor(track), libraryPath).addAll(entries).build()
+            }
 
         /** Unliking removes every entry for the track ([entries] itself is returned when there is none). */
         fun unlike(entries: PlaylistEntries, path: String): PlaylistEntries {
@@ -250,18 +262,19 @@ class PlaylistStore(
         }
 
         /**
-         * Finds shown entries in freshly read [entries]: at their position if it still holds the same entry, else
-         * the first unclaimed entry with that key. Throws when one is gone, so nothing wrong is changed.
+         * Finds shown entries in freshly read [entries]: at their position if it still holds the same entry, else the first unclaimed entry
+         * with that key. Throws when one is gone, so nothing wrong is changed.
          */
         fun locate(entries: PlaylistEntries, refs: List<EntryRef>): List<Int> {
             val found = ArrayList<Int>(refs.size)
             for (ref in refs) {
                 fun same(i: Int) = i in entries.indices && entries.key(i) == ref.key
-                val at = if (same(ref.position) && ref.position !in found) {
-                    ref.position
-                } else {
-                    entries.indices.firstOrNull { it !in found && same(it) }
-                }
+                val at =
+                    if (same(ref.position) && ref.position !in found) {
+                        ref.position
+                    } else {
+                        entries.indices.firstOrNull { it !in found && same(it) }
+                    }
                 found += at ?: throw PlaylistException("The playlist changed on another device. Nothing was changed; try again.")
             }
             return found

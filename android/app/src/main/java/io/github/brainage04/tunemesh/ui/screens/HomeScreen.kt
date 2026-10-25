@@ -49,11 +49,12 @@ fun HomeScreen(contentPadding: PaddingValues) {
     val viewModel = LocalAppViewModel.current
     val library = LocalLibrary.current
     val index = library.index
-    val greeting = when (LocalTime.now().hour) {
-        in 5..11 -> "Good morning"
-        in 12..17 -> "Good afternoon"
-        else -> "Good evening"
-    }
+    val greeting =
+        when (LocalTime.now().hour) {
+            in 5..11 -> "Good morning"
+            in 12..17 -> "Good afternoon"
+            else -> "Good evening"
+        }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             ScreenTitle(greeting) {
@@ -100,7 +101,12 @@ fun HomeScreen(contentPadding: PaddingValues) {
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 10.dp)) {
                     items(library.playlists, key = { it.name }) { playlist ->
-                        MediaTile(playlist.name, playlistSubtitle(playlist), { viewModel.push(Screen.PlaylistDetail(playlist.name)) }, Modifier.width(160.dp)) {
+                        MediaTile(
+                            playlist.name,
+                            playlistSubtitle(playlist),
+                            { viewModel.push(Screen.PlaylistDetail(playlist.name)) },
+                            Modifier.width(160.dp),
+                        ) {
                             PlaylistArt(playlist, it, 160.dp)
                         }
                     }
@@ -111,9 +117,17 @@ fun HomeScreen(contentPadding: PaddingValues) {
             item { SectionTitle("Artists") }
             item {
                 LazyRow(contentPadding = PaddingValues(horizontal = 10.dp)) {
-                    items(index.artists.sortedByDescending { artist -> artist.albums.maxOf { it.addedMs } }.take(20), key = { it.name }) { artist ->
+                    items(index.artists.sortedByDescending { artist -> artist.albums.maxOf { it.addedMs } }.take(20), key = { it.name }) {
+                        artist ->
                         MediaTile(artist.name, "Artist", { viewModel.openArtist(artist.name) }, Modifier.width(140.dp), circle = true) {
-                            CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 140.dp, placeholderIcon = AppIcons.Person)
+                            CoverArt(
+                                artist.tracks.first(),
+                                artist.name,
+                                it,
+                                shape = CircleShape,
+                                sizeHint = 140.dp,
+                                placeholderIcon = AppIcons.Person,
+                            )
                         }
                     }
                 }
@@ -127,11 +141,9 @@ fun HomeScreen(contentPadding: PaddingValues) {
 private fun PlaylistShortcut(playlist: Playlist, modifier: Modifier) {
     val viewModel = LocalAppViewModel.current
     Row(
-        modifier
-            .height(56.dp)
-            .clip(RoundedCornerShape(4.dp))
-            .background(SurfaceHigh)
-            .clickable { viewModel.push(Screen.PlaylistDetail(playlist.name)) },
+        modifier.height(56.dp).clip(RoundedCornerShape(4.dp)).background(SurfaceHigh).clickable {
+            viewModel.push(Screen.PlaylistDetail(playlist.name))
+        },
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PlaylistArt(playlist, Modifier.size(56.dp), 56.dp, RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp))

@@ -16,6 +16,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,7 +53,6 @@ import io.github.brainage04.tunemesh.ui.UnavailableRow
 import io.github.brainage04.tunemesh.ui.songCount
 import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 import io.github.brainage04.tunemesh.ui.totalLength
-import androidx.compose.material3.DropdownMenu
 
 @Composable
 private fun playingContext(name: String): Boolean {
@@ -128,7 +128,16 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
                 playingThis = playingContext(artist.name),
                 onShuffle = { viewModel.play(artist.name, artist.tracks, -1, shuffle = true) },
                 playEnabled = artist.tracks.isNotEmpty(),
-                art = { CoverArt(artist.tracks.first(), artist.name, it, shape = CircleShape, sizeHint = 232.dp, placeholderIcon = AppIcons.Person) },
+                art = {
+                    CoverArt(
+                        artist.tracks.first(),
+                        artist.name,
+                        it,
+                        shape = CircleShape,
+                        sizeHint = 232.dp,
+                        placeholderIcon = AppIcons.Person,
+                    )
+                },
                 actions = { AddAllMenu(artist.tracks) },
             )
         }
@@ -136,7 +145,12 @@ fun ArtistScreen(name: String, contentPadding: PaddingValues) {
         item {
             LazyRow(contentPadding = PaddingValues(horizontal = 10.dp)) {
                 items(artist.albums, key = { it.key }) { album ->
-                    MediaTile(album.title, songCount(album.tracks.size), { viewModel.push(Screen.AlbumDetail(album.key)) }, Modifier.width(150.dp)) {
+                    MediaTile(
+                        album.title,
+                        songCount(album.tracks.size),
+                        { viewModel.push(Screen.AlbumDetail(album.key)) },
+                        Modifier.width(150.dp),
+                    ) {
                         CoverArt(album.tracks.first(), album.title, it, sizeHint = 150.dp)
                     }
                 }
@@ -162,10 +176,11 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
     val contents = library.openPlaylist?.takeIf { it.name == name }
     val entries: List<PlaylistEntry> = contents?.entries ?: emptyList()
     // Rows make their PlaylistEntry when shown; the tracks are looked up from the stored paths.
-    val resolved = remember(contents, library.index) {
-        val stored = contents?.entries
-        if (stored == null) emptyList() else List(stored.size) { i -> stored.path(i)?.let { library.index.byPath[it] } }
-    }
+    val resolved =
+        remember(contents, library.index) {
+            val stored = contents?.entries
+            if (stored == null) emptyList() else List(stored.size) { i -> stored.path(i)?.let { library.index.byPath[it] } }
+        }
     val playable = remember(resolved) { resolved.filterNotNull() }
     var editing by remember(name) { mutableStateOf(false) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
@@ -173,11 +188,14 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
             DetailHeader(
                 title = playlist.name,
                 subtitle = if (playlist.isLikedSongs) "Your liked songs" else "Playlist",
-                stats = if (playlist.problem != null) "Too large to open" else buildString {
-                    append(songCount(contents?.entries?.size ?: playlist.size))
-                    if (contents != null && playable.size != entries.size) append(" • ${entries.size - playable.size} unavailable")
-                    if (playable.isNotEmpty()) append(" • ${totalLength(playable)}")
-                },
+                stats =
+                    if (playlist.problem != null) "Too large to open"
+                    else
+                        buildString {
+                            append(songCount(contents?.entries?.size ?: playlist.size))
+                            if (contents != null && playable.size != entries.size) append(" • ${entries.size - playable.size} unavailable")
+                            if (playable.isNotEmpty()) append(" • ${totalLength(playable)}")
+                        },
                 seed = playlist.name,
                 onBack = { viewModel.back() },
                 onPlay = { viewModel.playOrToggle(playlist.name, playable) },
@@ -215,18 +233,33 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues) {
                             context = RowContext(playlistName = playlist.name, index = index),
                         )
                     } else {
-                        UnavailableRow(entry.raw, onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, EntryRef(index, entry.key)) })
+                        UnavailableRow(
+                            entry.raw,
+                            onRemove = { viewModel.repository.removeFromPlaylist(playlist.name, EntryRef(index, entry.key)) },
+                        )
                     }
                 }
                 if (editing) {
                     IconButton(
-                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index - 1, entries[index - 1].key)) },
+                        onClick = {
+                            viewModel.repository.movePlaylistEntry(
+                                playlist.name,
+                                EntryRef(index, entry.key),
+                                EntryRef(index - 1, entries[index - 1].key),
+                            )
+                        },
                         enabled = index > 0,
                     ) {
                         Icon(AppIcons.Up, "Move up")
                     }
                     IconButton(
-                        onClick = { viewModel.repository.movePlaylistEntry(playlist.name, EntryRef(index, entry.key), EntryRef(index + 1, entries[index + 1].key)) },
+                        onClick = {
+                            viewModel.repository.movePlaylistEntry(
+                                playlist.name,
+                                EntryRef(index, entry.key),
+                                EntryRef(index + 1, entries[index + 1].key),
+                            )
+                        },
                         enabled = index < entries.lastIndex,
                     ) {
                         Icon(AppIcons.DownArrow, "Move down")
@@ -246,13 +279,23 @@ private fun PlaylistMenu(name: String, likedSongs: Boolean, tracks: List<Track>)
         IconButton(onClick = { open = true }) { Icon(AppIcons.More, "Playlist options") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             if (tracks.isNotEmpty()) {
-                MenuItem("Add to queue", AppIcons.Queue) { viewModel.addToQueue(tracks); open = false }
-                MenuItem("Add to other playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(tracks); open = false }
+                MenuItem("Add to queue", AppIcons.Queue) {
+                    viewModel.addToQueue(tracks)
+                    open = false
+                }
+                MenuItem("Add to other playlist", AppIcons.PlaylistAdd) {
+                    viewModel.dialog = DialogRequest.AddToPlaylist(tracks)
+                    open = false
+                }
             }
             if (!likedSongs) {
-                MenuItem("Rename", AppIcons.Edit) { viewModel.dialog = DialogRequest.RenamePlaylist(name); open = false }
+                MenuItem("Rename", AppIcons.Edit) {
+                    viewModel.dialog = DialogRequest.RenamePlaylist(name)
+                    open = false
+                }
                 MenuItem("Delete playlist", AppIcons.Delete, color = MaterialTheme.colorScheme.error) {
-                    viewModel.dialog = DialogRequest.DeletePlaylist(name); open = false
+                    viewModel.dialog = DialogRequest.DeletePlaylist(name)
+                    open = false
                 }
             }
         }
@@ -266,9 +309,18 @@ private fun AddAllMenu(tracks: List<Track>) {
     Box {
         IconButton(onClick = { open = true }) { Icon(AppIcons.More, "More options") }
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            MenuItem("Play next", AppIcons.Queue) { viewModel.playNext(tracks); open = false }
-            MenuItem("Add to queue", AppIcons.Queue) { viewModel.addToQueue(tracks); open = false }
-            MenuItem("Add to playlist", AppIcons.PlaylistAdd) { viewModel.dialog = DialogRequest.AddToPlaylist(tracks); open = false }
+            MenuItem("Play next", AppIcons.Queue) {
+                viewModel.playNext(tracks)
+                open = false
+            }
+            MenuItem("Add to queue", AppIcons.Queue) {
+                viewModel.addToQueue(tracks)
+                open = false
+            }
+            MenuItem("Add to playlist", AppIcons.PlaylistAdd) {
+                viewModel.dialog = DialogRequest.AddToPlaylist(tracks)
+                open = false
+            }
         }
     }
 }

@@ -8,15 +8,18 @@ import androidx.compose.ui.unit.dp
 
 /** The Material icons TuneMesh uses, as path data (avoids the multi-megabyte extended icon artifact). */
 object AppIcons {
-    private fun icon(name: String, vararg paths: String): ImageVector = ImageVector.Builder(
-        name = name,
-        defaultWidth = 24.dp,
-        defaultHeight = 24.dp,
-        viewportWidth = 24f,
-        viewportHeight = 24f,
-    ).apply {
-        paths.forEach { addPath(pathData = addPathNodes(it), fill = SolidColor(Color.Black)) }
-    }.build()
+    private fun icon(name: String, vararg paths: String): ImageVector =
+        ImageVector.Builder(
+                name = name,
+                defaultWidth = 24.dp,
+                defaultHeight = 24.dp,
+                viewportWidth = 24f,
+                viewportHeight = 24f,
+            )
+            .apply {
+                paths.forEach { addPath(pathData = addPathNodes(it), fill = SolidColor(Color.Black)) }
+            }
+            .build()
 
     val Home by lazy { icon("Home", "M10,20v-6h4v6h5v-8h3L12,3 2,12h3v8z") }
     val Search by lazy {
@@ -72,7 +75,10 @@ object AppIcons {
         icon("MusicNote", "M12,3v10.55c-0.59,-0.34 -1.27,-0.55 -2,-0.55 -2.21,0 -4,1.79 -4,4s1.79,4 4,4 4,-1.79 4,-4V7h4V3h-6z")
     }
     val Person by lazy {
-        icon("Person", "M12,12c2.21,0 4,-1.79 4,-4s-1.79,-4 -4,-4 -4,1.79 -4,4 1.79,4 4,4zM12,14c-2.67,0 -8,1.34 -8,4v2h16v-2c0,-2.66 -5.33,-4 -8,-4z")
+        icon(
+            "Person",
+            "M12,12c2.21,0 4,-1.79 4,-4s-1.79,-4 -4,-4 -4,1.79 -4,4 1.79,4 4,4zM12,14c-2.67,0 -8,1.34 -8,4v2h16v-2c0,-2.66 -5.33,-4 -8,-4z",
+        )
     }
     val Back by lazy { icon("Back", "M20,11H7.83l5.59,-5.59L12,4l-8,8 8,8 1.41,-1.41L7.83,13H20v-2z") }
     val Down by lazy { icon("Down", "M7.41,8.59L12,13.17l4.59,-4.58L18,10l-6,6 -6,-6 1.41,-1.41z") }

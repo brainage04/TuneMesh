@@ -15,7 +15,8 @@ data class RawTags(
 ) {
     companion object {
         /** A tag text field as kept: trimmed and cut to [Limits.MAX_TAG_TEXT_BYTES]. */
-        fun boundedText(value: String): String = LibraryFormat.trimWhiteSpace(Limits.cutUtf8(LibraryFormat.trimWhiteSpace(value), Limits.MAX_TAG_TEXT_BYTES))
+        fun boundedText(value: String): String =
+            LibraryFormat.trimWhiteSpace(Limits.cutUtf8(LibraryFormat.trimWhiteSpace(value), Limits.MAX_TAG_TEXT_BYTES))
 
         /** An artist field with at most [Limits.MAX_ARTISTS] artists (`;` or NUL separated); the rest is dropped. */
         fun boundedArtists(value: String): String {
@@ -42,8 +43,11 @@ data class Track(
     val size: Long,
     val modifiedMs: Long,
 ) {
-    val albumKey: String get() = albumKey(albumArtist, album)
-    val directory: String get() = path.substringBeforeLast('/', "")
+    val albumKey: String
+        get() = albumKey(albumArtist, album)
+
+    val directory: String
+        get() = path.substringBeforeLast('/', "")
 
     companion object {
         fun albumKey(albumArtist: String, album: String): String = "$albumArtist\u0000$album"
@@ -52,11 +56,10 @@ data class Track(
             // Bounded here too, so tags cached by an older version follow the limits as well.
             fun text(value: String?) = value?.let(RawTags::boundedText)?.takeIf { it.isNotEmpty() }
             val title = text(tags.title) ?: LibraryFormat.titleFromFileName(path.substringAfterLast('/'))
-            val artist = text(tags.artist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() }
-                ?: LibraryFormat.fallbackArtist(path)
+            val artist = text(tags.artist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() } ?: LibraryFormat.fallbackArtist(path)
             val album = text(tags.album) ?: LibraryFormat.fallbackAlbum(path)
-            val albumArtist = text(tags.albumArtist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() }
-                ?: LibraryFormat.firstArtist(artist)
+            val albumArtist =
+                text(tags.albumArtist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() } ?: LibraryFormat.firstArtist(artist)
             return Track(
                 path = path,
                 title = title,
@@ -89,16 +92,17 @@ data class Artist(
 )
 
 /**
- * A playlist entry as a screen showed it: its [position] then and its [PlaylistEntry.key]. Changes find the entry
- * again in the file as it is now (tunemesh-core's desktop `EntryRef`).
+ * A playlist entry as a screen showed it: its [position] then and its [PlaylistEntry.key]. Changes find the entry again in the file as it
+ * is now (tunemesh-core's desktop `EntryRef`).
  */
 data class EntryRef(val position: Int, val key: String)
 
 /**
- * One line of a playlist. [path] is null when the entry does not point inside the library. Playlists hold their
- * entries in [PlaylistEntries]; a PlaylistEntry is made when one is needed (a visible row, a write).
+ * One line of a playlist. [path] is null when the entry does not point inside the library. Playlists hold their entries in
+ * [PlaylistEntries]; a PlaylistEntry is made when one is needed (a visible row, a write).
  */
-class PlaylistEntry private constructor(
+class PlaylistEntry
+private constructor(
     val path: String?,
     private val line: String?,
     val extinf: String?,
@@ -106,13 +110,14 @@ class PlaylistEntry private constructor(
     internal val isShared: Boolean,
 ) {
     /** The entry line as read or written, relative to `Playlists/` unless absolute. */
-    val raw: String get() = line ?: M3u8.entryLine(path!!)
+    val raw: String
+        get() = line ?: M3u8.entryLine(path!!)
 
     /** What identifies the entry when the file changes: its library path, or the line as written when it points outside. */
-    val key: String get() = path ?: raw
+    val key: String
+        get() = path ?: raw
 
-    override fun equals(other: Any?): Boolean =
-        other is PlaylistEntry && path == other.path && raw == other.raw && extinf == other.extinf
+    override fun equals(other: Any?): Boolean = other is PlaylistEntry && path == other.path && raw == other.raw && extinf == other.extinf
 
     override fun hashCode(): Int = (path.hashCode() * 31 + raw.hashCode()) * 31 + extinf.hashCode()
 
@@ -122,23 +127,29 @@ class PlaylistEntry private constructor(
         operator fun invoke(path: String?, raw: String, extinf: String? = null): PlaylistEntry = read(path, raw, extinf, shared = false)
 
         internal fun read(path: String?, raw: String, extinf: String?, shared: Boolean): PlaylistEntry =
-            PlaylistEntry(path, raw.takeUnless { path != null && raw.length == path.length + 3 && raw == M3u8.entryLine(path) }, extinf, shared)
+            PlaylistEntry(
+                path,
+                raw.takeUnless { path != null && raw.length == path.length + 3 && raw == M3u8.entryLine(path) },
+                extinf,
+                shared,
+            )
     }
 
     /** Whether [raw] is `../<path>`, so it need not be stored. */
-    internal val isCanonical: Boolean get() = line == null
+    internal val isCanonical: Boolean
+        get() = line == null
 }
 
 /**
- * The entries of one playlist, stored compactly: up to 250,000 of them stay in memory while a playlist is open.
- * Per entry there is one reference (the library index's own path string, shared, or null) and one end offset into
- * a UTF-8 buffer holding the entry line when it must be kept: always for an entry that is not a library track,
- * and for a library track whose line is not `../<path>`. A library entry therefore costs 8 bytes, any other entry
- * 8 bytes plus its line's UTF-8 bytes. `#EXTINF` lines are kept only for writers ([hasExtinf]).
+ * The entries of one playlist, stored compactly: up to 250,000 of them stay in memory while a playlist is open. Per entry there is one
+ * reference (the library index's own path string, shared, or null) and one end offset into a UTF-8 buffer holding the entry line when it
+ * must be kept: always for an entry that is not a library track, and for a library track whose line is not `../<path>`. A library entry
+ * therefore costs 8 bytes, any other entry 8 bytes plus its line's UTF-8 bytes. `#EXTINF` lines are kept only for writers ([hasExtinf]).
  *
  * [get] makes a [PlaylistEntry] on demand; [path], [raw] and [key] read one field without making it.
  */
-class PlaylistEntries private constructor(
+class PlaylistEntries
+private constructor(
     private val root: String,
     private val shared: Array<String?>,
     private val ends: IntArray,
@@ -146,7 +157,8 @@ class PlaylistEntries private constructor(
     private val extinfs: Array<String?>?,
     override val size: Int,
 ) : AbstractList<PlaylistEntry>(), RandomAccess {
-    val hasExtinf: Boolean get() = extinfs != null
+    val hasExtinf: Boolean
+        get() = extinfs != null
 
     private fun start(index: Int) = if (index == 0) 0 else ends[index - 1]
 
@@ -176,7 +188,9 @@ class PlaylistEntries private constructor(
     /** [PlaylistEntry.key] of entry [index]. */
     fun key(index: Int): String {
         check(index)
-        shared[index]?.let { return it }
+        shared[index]?.let {
+            return it
+        }
         val line = line(index)!!
         return M3u8.resolve(line, root) ?: line
     }
@@ -226,8 +240,8 @@ class PlaylistEntries private constructor(
         }
 
         /**
-         * Adds [entry]. [libraryPath] is the library index's own string for its path, or null when it has none;
-         * entries read by [PlaylistStore] know it themselves ([PlaylistEntry.isShared]).
+         * Adds [entry]. [libraryPath] is the library index's own string for its path, or null when it has none; entries read by
+         * [PlaylistStore] know it themselves ([PlaylistEntry.isShared]).
          */
         fun add(entry: PlaylistEntry, libraryPath: String? = entry.path.takeIf { entry.isShared }): Builder {
             grow()
@@ -265,8 +279,8 @@ class PlaylistEntries private constructor(
 }
 
 /**
- * A playlist as lists show it. It carries no entries, so the app state does not grow with playlist length;
- * [PlaylistContents] holds the entries of the playlist that is open.
+ * A playlist as lists show it. It carries no entries, so the app state does not grow with playlist length; [PlaylistContents] holds the
+ * entries of the playlist that is open.
  */
 data class Playlist(
     val name: String,
@@ -278,17 +292,19 @@ data class Playlist(
     /** Why the playlist cannot be opened or changed on this device (too large), or null. */
     val problem: String? = null,
 ) {
-    val isLikedSongs: Boolean get() = name == LibraryFormat.LIKED_SONGS
+    val isLikedSongs: Boolean
+        get() = name == LibraryFormat.LIKED_SONGS
 }
 
 /**
- * The entries of one playlist, read when it is opened or changed. Equal only to itself: comparing two copies of a
- * large playlist entry by entry would cost more than treating a re-read as a change.
+ * The entries of one playlist, read when it is opened or changed. Equal only to itself: comparing two copies of a large playlist entry by
+ * entry would cost more than treating a re-read as a change.
  */
 class PlaylistContents(
     val name: String,
     val entries: PlaylistEntries,
     val modifiedMs: Long,
 ) {
-    val isLikedSongs: Boolean get() = name == LibraryFormat.LIKED_SONGS
+    val isLikedSongs: Boolean
+        get() = name == LibraryFormat.LIKED_SONGS
 }

@@ -75,8 +75,8 @@ class ShareActivity : ComponentActivity() {
         private val url = Regex("""https?://\S+""")
 
         /**
-         * The first URL in the shared text, or the whole text as a search. Read as a CharSequence: apps may share
-         * styled text (a Spanned), for which getStringExtra returns null.
+         * The first URL in the shared text, or the whole text as a search. Read as a CharSequence: apps may share styled text (a Spanned),
+         * for which getStringExtra returns null.
          */
         fun sharedInput(intent: Intent?): String {
             val text = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().trim()
@@ -84,22 +84,38 @@ class ShareActivity : ComponentActivity() {
         }
 
         /**
-         * [url] without the punctuation that ends the sentence around it (`.,;:!?'"` and closing brackets). A
-         * closing bracket stays when the URL opened it, as in `https://en.wikipedia.org/wiki/Song_(band)`.
+         * [url] without the punctuation that ends the sentence around it (`.,;:!?'"` and closing brackets). A closing bracket stays when
+         * the URL opened it, as in `https://en.wikipedia.org/wiki/Song_(band)`.
          */
         internal fun trimTrailingPunctuation(url: String): String {
             var end = url.length
             while (end > 0) {
                 val char = url[end - 1]
-                val keep = when (char) {
-                    '.', ',', ';', ':', '!', '?', '\'', '"', '>' -> false
-                    ')', ']', '}' -> {
-                        val open = when (char) { ')' -> '('; ']' -> '['; else -> '{' }
-                        val part = url.substring(0, end)
-                        part.count { it == open } >= part.count { it == char }
+                val keep =
+                    when (char) {
+                        '.',
+                        ',',
+                        ';',
+                        ':',
+                        '!',
+                        '?',
+                        '\'',
+                        '"',
+                        '>' -> false
+                        ')',
+                        ']',
+                        '}' -> {
+                            val open =
+                                when (char) {
+                                    ')' -> '('
+                                    ']' -> '['
+                                    else -> '{'
+                                }
+                            val part = url.substring(0, end)
+                            part.count { it == open } >= part.count { it == char }
+                        }
+                        else -> true
                     }
-                    else -> true
-                }
                 if (keep) break
                 end--
             }
@@ -128,8 +144,7 @@ private fun ShareSheet(input: String, onClose: () -> Unit) {
         contentAlignment = Alignment.BottomCenter,
     ) {
         Column(
-            Modifier
-                .fillMaxWidth()
+            Modifier.fillMaxWidth()
                 .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp))
                 .background(Surface)
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
@@ -143,52 +158,70 @@ private fun ShareSheet(input: String, onClose: () -> Unit) {
                 Spacer(Modifier.width(10.dp))
                 Text("Download to TuneMesh", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
             }
-            Text(input.ifEmpty { "Nothing was shared" }, color = TextSecondary, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 16.dp))
+            Text(
+                input.ifEmpty { "Nothing was shared" },
+                color = TextSecondary,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(horizontal = 16.dp),
+            )
             when {
-                queued -> Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(AppIcons.Check, null, tint = Accent, modifier = Modifier.size(28.dp))
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        when (val downloader = library.downloader) {
-                            is Downloader.Active -> "Queued. It appears in your library once ${downloader.device} has downloaded it."
-                            Downloader.None -> "Queued. No device is downloading right now; it is downloaded once one picks it up."
-                        },
-                    )
-                }
-                !library.hasAccess -> Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("TuneMesh needs All files access to write the request into your library folder.")
-                    Button(
-                        onClick = {
-                            context.startActivity(
-                                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:${context.packageName}")),
-                            )
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
-                        modifier = Modifier.fillMaxWidth().height(48.dp),
-                    ) { Text("Open settings") }
-                }
-                else -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    DownloaderBanner(library.downloader, Modifier.padding(horizontal = 16.dp))
-                    RequestForm(
-                        hasAccess = library.hasAccess,
-                        playlists = library.playlists,
-                        input = input,
-                        onInput = {},
-                        playlist = playlist,
-                        onPlaylist = { playlist = it },
-                        saveAsPlaylists = saveAsPlaylists,
-                        onSaveAsPlaylists = { saveAsPlaylists = it },
-                        submitting = submitting,
-                        onSubmit = {
-                            submitting = true
-                            app.repository.submitDownloads(input, playlist.ifBlank { null }, effectiveSaveAsPlaylists(input, saveAsPlaylists)) { result ->
-                                submitting = false
-                                queued = result.isSuccess
+                queued ->
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(AppIcons.Check, null, tint = Accent, modifier = Modifier.size(28.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            when (val downloader = library.downloader) {
+                                is Downloader.Active -> "Queued. It appears in your library once ${downloader.device} has downloaded it."
+                                Downloader.None -> "Queued. No device is downloading right now; it is downloaded once one picks it up."
                             }
-                        },
-                        showInput = false,
-                    )
-                }
+                        )
+                    }
+                !library.hasAccess ->
+                    Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("TuneMesh needs All files access to write the request into your library folder.")
+                        Button(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(
+                                        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                                        Uri.parse("package:${context.packageName}"),
+                                    )
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = Color.Black),
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                        ) {
+                            Text("Open settings")
+                        }
+                    }
+                else ->
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        DownloaderBanner(library.downloader, Modifier.padding(horizontal = 16.dp))
+                        RequestForm(
+                            hasAccess = library.hasAccess,
+                            playlists = library.playlists,
+                            input = input,
+                            onInput = {},
+                            playlist = playlist,
+                            onPlaylist = { playlist = it },
+                            saveAsPlaylists = saveAsPlaylists,
+                            onSaveAsPlaylists = { saveAsPlaylists = it },
+                            submitting = submitting,
+                            onSubmit = {
+                                submitting = true
+                                app.repository.submitDownloads(
+                                    input,
+                                    playlist.ifBlank { null },
+                                    effectiveSaveAsPlaylists(input, saveAsPlaylists),
+                                ) { result ->
+                                    submitting = false
+                                    queued = result.isSuccess
+                                }
+                            },
+                            showInput = false,
+                        )
+                    }
             }
         }
     }

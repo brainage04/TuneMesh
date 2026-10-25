@@ -11,9 +11,9 @@ import java.nio.file.attribute.BasicFileAttributes
 class TooLargeException(message: String) : IOException(message)
 
 /**
- * Every limit on what this app reads from the synced library folder and shows of it: `docs/library-format.md`,
- * "Limits" (tunemesh-core: `tunemesh_core::limits`). Any device that shares the folder can write these files, so
- * every read is bounded. Sizes are UTF-8 bytes; text is cut at a character boundary.
+ * Every limit on what this app reads from the synced library folder and shows of it: `docs/library-format.md`, "Limits" (tunemesh-core:
+ * `tunemesh_core::limits`). Any device that shares the folder can write these files, so every read is bounded. Sizes are UTF-8 bytes; text
+ * is cut at a character boundary.
  */
 object Limits {
     // ---- files -------------------------------------------------------------------------------------------------
@@ -131,8 +131,7 @@ object Limits {
     }
 
     /** [readBytes] as UTF-8 text. */
-    fun readText(file: File, max: Int, followLinks: Boolean = true): String =
-        String(readBytes(file, max, followLinks), Charsets.UTF_8)
+    fun readText(file: File, max: Int, followLinks: Boolean = true): String = String(readBytes(file, max, followLinks), Charsets.UTF_8)
 
     /** [text] cut to at most [maxBytes] UTF-8 bytes at a character boundary (an unpaired surrogate counts 3). */
     fun cutUtf8(text: String, maxBytes: Int): String {
@@ -142,13 +141,14 @@ object Limits {
         while (end < text.length) {
             val codePoint = text.codePointAt(end)
             val chars = Character.charCount(codePoint)
-            val length = when {
-                Character.isSurrogate(text[end]) && chars == 1 -> 3
-                codePoint < 0x80 -> 1
-                codePoint < 0x800 -> 2
-                codePoint < 0x10000 -> 3
-                else -> 4
-            }
+            val length =
+                when {
+                    Character.isSurrogate(text[end]) && chars == 1 -> 3
+                    codePoint < 0x80 -> 1
+                    codePoint < 0x800 -> 2
+                    codePoint < 0x10000 -> 3
+                    else -> 4
+                }
             if (bytes + length > maxBytes) break
             bytes += length
             end += chars
@@ -163,13 +163,14 @@ object Limits {
         while (i < text.length) {
             val codePoint = text.codePointAt(i)
             val chars = Character.charCount(codePoint)
-            bytes += when {
-                Character.isSurrogate(text[i]) && chars == 1 -> 3
-                codePoint < 0x80 -> 1
-                codePoint < 0x800 -> 2
-                codePoint < 0x10000 -> 3
-                else -> 4
-            }
+            bytes +=
+                when {
+                    Character.isSurrogate(text[i]) && chars == 1 -> 3
+                    codePoint < 0x80 -> 1
+                    codePoint < 0x800 -> 2
+                    codePoint < 0x10000 -> 3
+                    else -> 4
+                }
             i += chars
         }
         return bytes

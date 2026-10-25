@@ -9,8 +9,8 @@ import java.io.OutputStream
 import kotlin.random.Random
 
 /**
- * Builds the hostile library of `docs/library-format.md` "Limits" on the device, in the shape of tunemesh-core's
- * `hostile_library` example (same names), scaled by [Scale]. Every file is generated; nothing is downloaded.
+ * Builds the hostile library of `docs/library-format.md` "Limits" on the device, in the shape of tunemesh-core's `hostile_library` example
+ * (same names), scaled by [Scale]. Every file is generated; nothing is downloaded.
  */
 class HostileLibrary(private val root: File, private val scale: Scale) {
     /** Sizes of the generated library. [FULL] is the core generator's full profile. */
@@ -23,8 +23,10 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         val requests: Int,
     ) {
         companion object {
-            val FULL = Scale(albumTracks = 40_000, audioFiles = 100_000, bigPlaylists = 50, smallPlaylists = 1_050, statuses = 500, requests = 600)
-            val SMALL = Scale(albumTracks = 4_000, audioFiles = 10_000, bigPlaylists = 3, smallPlaylists = 1_050, statuses = 20, requests = 600)
+            val FULL =
+                Scale(albumTracks = 40_000, audioFiles = 100_000, bigPlaylists = 50, smallPlaylists = 1_050, statuses = 500, requests = 600)
+            val SMALL =
+                Scale(albumTracks = 4_000, audioFiles = 10_000, bigPlaylists = 3, smallPlaylists = 1_050, statuses = 20, requests = 600)
         }
     }
 
@@ -61,7 +63,10 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         val order = (1..scale.albumTracks).shuffled(random)
         for (i in 0 until scale.albumTracks) {
             val n = order[i]
-            writeBytes("Hostile Artist/One Album/%05d.mp3".format(i), mp3(title = "Track $n", artist = "Hostile Artist", album = "One Album", track = n))
+            writeBytes(
+                "Hostile Artist/One Album/%05d.mp3".format(i),
+                mp3(title = "Track $n", artist = "Hostile Artist", album = "One Album", track = n),
+            )
         }
         var made = scale.albumTracks
         var album = 0
@@ -84,7 +89,10 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         val cover = hugeJpeg(20_000_000)
         writeBytes("Huge/Cover/big cover.mp3", mp3(title = "Big Cover", artist = "Huge", album = "Cover", track = 1, picture = cover))
         writeBytes("Huge/Cover/cover.jpg", cover)
-        writeBytes("Huge/Small Cover/small cover.mp3", mp3(title = "Small Cover", artist = "Huge", album = "Small Cover", track = 1, picture = smallJpeg()))
+        writeBytes(
+            "Huge/Small Cover/small cover.mp3",
+            mp3(title = "Small Cover", artist = "Huge", album = "Small Cover", track = 1, picture = smallJpeg()),
+        )
     }
 
     private fun deep() {
@@ -122,7 +130,8 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
             val id = "${1_700_000_000_000L + i}-%08x".format(i)
             writeBytes(
                 ".tunemesh/requests/$id.json",
-                """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile/$i","playlist":null,"playlistFromSource":false,"requestedBy":"hostile","requestedAt":"2026-10-20T00:00:00Z"}""".toByteArray(),
+                """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile/$i","playlist":null,"playlistFromSource":false,"requestedBy":"hostile","requestedAt":"2026-10-20T00:00:00Z"}"""
+                    .toByteArray(),
             )
         }
         for (i in 10_000 until 10_000 + scale.statuses) {
@@ -133,7 +142,8 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         val longInput = "y".repeat(9 * 1024)
         writeBytes(
             ".tunemesh/requests/${1_700_000_900_001L}-hostile1.json",
-            """{"version":1,"id":"x","input":"$longInput","playlist":null,"playlistFromSource":false,"requestedBy":"h","requestedAt":"x"}""".toByteArray(),
+            """{"version":1,"id":"x","input":"$longInput","playlist":null,"playlistFromSource":false,"requestedBy":"h","requestedAt":"x"}"""
+                .toByteArray(),
         )
         write(".tunemesh/status/${1_700_000_900_002L}-hostile2.json") { out -> status(out, "x", 2 * 1024 * 1024) }
         write(".tunemesh/worker.json") { out -> padded(out, 2 * 1024 * 1024) }
@@ -141,7 +151,8 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
 
     /** A status of about [bytes]: a 64 KiB message and short warnings filling the rest. */
     private fun status(out: OutputStream, id: String, bytes: Int) {
-        val head = """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile","state":"done","title":"${"T".repeat(4096)}","message":"${"m".repeat(64 * 1024)}","itemsDone":3,"itemsTotal":9,"failures":[{"item":"${"i".repeat(4096)}","error":"e"}],"warnings":["""
+        val head =
+            """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile","state":"done","title":"${"T".repeat(4096)}","message":"${"m".repeat(64 * 1024)}","itemsDone":3,"itemsTotal":9,"failures":[{"item":"${"i".repeat(4096)}","error":"e"}],"warnings":["""
         out.write(head.toByteArray())
         var written = head.length
         var n = 0
@@ -205,23 +216,35 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
             return out.toByteArray()
         }
 
-        private fun synchsafe(size: Int) = byteArrayOf(
-            (size shr 21 and 0x7F).toByte(),
-            (size shr 14 and 0x7F).toByte(),
-            (size shr 7 and 0x7F).toByte(),
-            (size and 0x7F).toByte(),
-        )
+        private fun synchsafe(size: Int) =
+            byteArrayOf(
+                (size shr 21 and 0x7F).toByte(),
+                (size shr 14 and 0x7F).toByte(),
+                (size shr 7 and 0x7F).toByte(),
+                (size and 0x7F).toByte(),
+            )
 
         /** [bytes] of JPEG whose header states 20,000 x 20,000 pixels (the rest is padding). */
         fun hugeJpeg(bytes: Int): ByteArray {
             val out = ByteArray(bytes)
-            val sof = byteArrayOf(
-                0xFF.toByte(), 0xD8.toByte(),
-                0xFF.toByte(), 0xC0.toByte(), 0, 11, 8,
-                (20_000 shr 8).toByte(), (20_000 and 0xFF).toByte(),
-                (20_000 shr 8).toByte(), (20_000 and 0xFF).toByte(),
-                1, 1, 0x11, 0,
-            )
+            val sof =
+                byteArrayOf(
+                    0xFF.toByte(),
+                    0xD8.toByte(),
+                    0xFF.toByte(),
+                    0xC0.toByte(),
+                    0,
+                    11,
+                    8,
+                    (20_000 shr 8).toByte(),
+                    (20_000 and 0xFF).toByte(),
+                    (20_000 shr 8).toByte(),
+                    (20_000 and 0xFF).toByte(),
+                    1,
+                    1,
+                    0x11,
+                    0,
+                )
             sof.copyInto(out)
             out[bytes - 2] = 0xFF.toByte()
             out[bytes - 1] = 0xD9.toByte()

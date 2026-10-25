@@ -15,6 +15,8 @@ import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import io.github.brainage04.tunemesh.data.LibraryState
+import java.io.File
+import java.util.concurrent.atomic.AtomicLong
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -23,20 +25,15 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
-import java.io.File
-import java.util.concurrent.atomic.AtomicLong
 
 /** Marks the stress tests: excluded from the normal instrumented run, run alone with `-Pstress`. */
-@Retention(AnnotationRetention.RUNTIME)
-@Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION)
-annotation class Stress
+@Retention(AnnotationRetention.RUNTIME) @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION) annotation class Stress
 
 /**
- * The hostile library ([HostileLibrary], `docs/library-format.md` "Limits") against the real app: generates it in
- * app storage, lets the app scan it, then opens Home, Your Library, the 40,000-track album, a 250,000-entry
- * playlist and Downloads through the UI. Fails on an OutOfMemoryError (the app and this test share a process, so
- * it ends the run), on a main-thread stall over [MAX_STALL_MS] (an ANR needs 5 s, so it is caught as a stall),
- * and when what the app shows does not follow the limits.
+ * The hostile library ([HostileLibrary], `docs/library-format.md` "Limits") against the real app: generates it in app storage, lets the app
+ * scan it, then opens Home, Your Library, the 40,000-track album, a 250,000-entry playlist and Downloads through the UI. Fails on an
+ * OutOfMemoryError (the app and this test share a process, so it ends the run), on a main-thread stall over [MAX_STALL_MS] (an ANR needs 5
+ * s, so it is caught as a stall), and when what the app shows does not follow the limits.
  *
  * Instrumentation argument `hostileScale`: `full` (default; the core generator's full profile) or `small`.
  */
@@ -45,7 +42,9 @@ annotation class Stress
 class HostileLibraryTest {
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context = instrumentation.targetContext
-    private val app get() = context.applicationContext as TuneMeshApp
+    private val app
+        get() = context.applicationContext as TuneMeshApp
+
     private val device = UiDevice.getInstance(instrumentation)
     private lateinit var root: File
     private lateinit var previousRoot: File
@@ -70,10 +69,11 @@ class HostileLibraryTest {
 
     @Test
     fun hostileLibraryStaysUsable() {
-        val scale = when (InstrumentationRegistry.getArguments().getString("hostileScale")) {
-            "small" -> HostileLibrary.Scale.SMALL
-            else -> HostileLibrary.Scale.FULL
-        }
+        val scale =
+            when (InstrumentationRegistry.getArguments().getString("hostileScale")) {
+                "small" -> HostileLibrary.Scale.SMALL
+                else -> HostileLibrary.Scale.FULL
+            }
         val library = HostileLibrary(root, scale)
         val generated = timed("generate") { library.generate() }
         report("generated $scale in $generated ms")
@@ -83,10 +83,13 @@ class HostileLibraryTest {
         launch()
         device.waitForIdle(5_000)
         watchdog.start()
-        val scanned = timed("scan") {
-            app.repository.setLibraryRoot(root.absolutePath)
-            waitFor(SCAN_TIMEOUT_MS, "the first full scan") { state -> state.loaded && !state.scanning && state.index.tracks.isNotEmpty() }
-        }
+        val scanned =
+            timed("scan") {
+                app.repository.setLibraryRoot(root.absolutePath)
+                waitFor(SCAN_TIMEOUT_MS, "the first full scan") { state ->
+                    state.loaded && !state.scanning && state.index.tracks.isNotEmpty()
+                }
+            }
         val state = app.repository.state.value
         report("scanned ${state.index.tracks.size} tracks, ${state.index.albums.size} albums in $scanned ms; ${heap()}")
 
@@ -150,16 +153,17 @@ class HostileLibraryTest {
     private fun runBlockingRefresh() = kotlinx.coroutines.runBlocking { app.repository.refresh() }
 
     private fun launch() {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)!!
-            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        val intent =
+            context.packageManager
+                .getLaunchIntentForPackage(context.packageName)!!
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         context.startActivity(intent)
         device.wait(Until.hasObject(By.pkg(context.packageName).depth(0)), 10_000)
     }
 
     private fun openFromSearch(text: String) {
         tap("Search")
-        val field = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 5_000)
-            ?: error("no search field")
+        val field = device.wait(Until.findObject(By.clazz("android.widget.EditText")), 5_000) ?: error("no search field")
         field.text = text // no keyboard opens, so nothing to close
         // The first match that is not the search field itself.
         val end = SystemClock.uptimeMillis() + 15_000
@@ -170,8 +174,7 @@ class HostileLibraryTest {
                     result.click()
                     device.waitForIdle(2_000)
                     return
-                } catch (_: StaleObjectException) {
-                }
+                } catch (_: StaleObjectException) {}
             }
             Thread.sleep(200)
         }
@@ -242,24 +245,29 @@ class HostileLibraryTest {
         private val worstMs = AtomicLong(0)
         @Volatile var label = "start"
         @Volatile var worstAt = ""
-        val worst: Long get() = worstMs.get()
+        val worst: Long
+            get() = worstMs.get()
 
         fun start() {
             running = true
-            Thread({
-                while (running) {
-                    val posted = SystemClock.uptimeMillis()
-                    val ran = java.util.concurrent.CountDownLatch(1)
-                    main.post { ran.countDown() }
-                    ran.await()
-                    val late = SystemClock.uptimeMillis() - posted
-                    if (late > worstMs.get()) {
-                        worstMs.set(late)
-                        worstAt = label
-                    }
-                    Thread.sleep(PERIOD_MS)
-                }
-            }, "main-thread-watchdog").start()
+            Thread(
+                    {
+                        while (running) {
+                            val posted = SystemClock.uptimeMillis()
+                            val ran = java.util.concurrent.CountDownLatch(1)
+                            main.post { ran.countDown() }
+                            ran.await()
+                            val late = SystemClock.uptimeMillis() - posted
+                            if (late > worstMs.get()) {
+                                worstMs.set(late)
+                                worstAt = label
+                            }
+                            Thread.sleep(PERIOD_MS)
+                        }
+                    },
+                    "main-thread-watchdog",
+                )
+                .start()
         }
 
         fun stop() {

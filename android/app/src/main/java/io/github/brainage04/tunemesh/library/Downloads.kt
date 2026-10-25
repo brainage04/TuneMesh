@@ -1,7 +1,5 @@
 package io.github.brainage04.tunemesh.library
 
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import java.io.File
 import java.io.IOException
 import java.time.Duration
@@ -9,6 +7,8 @@ import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 @Serializable
 data class DownloadRequest(
@@ -42,7 +42,8 @@ data class DownloadStatus(
     /** Things to know although the request went on, for example that a source was cut to the item limit. */
     val warnings: List<String> = emptyList(),
 ) {
-    val isFinal: Boolean get() = state in FINAL_STATES
+    val isFinal: Boolean
+        get() = state in FINAL_STATES
 
     companion object {
         val FINAL_STATES = setOf("done", "failed", "cancelled")
@@ -61,20 +62,26 @@ data class DownloadItem(
     val request: DownloadRequest?,
     val status: DownloadStatus?,
 ) {
-    val input: String get() = request?.input ?: status?.input.orEmpty()
-    val isFinal: Boolean get() = status?.isFinal == true
-    val canCancel: Boolean get() = request != null && !isFinal
+    val input: String
+        get() = request?.input ?: status?.input.orEmpty()
+
+    val isFinal: Boolean
+        get() = status?.isFinal == true
+
+    val canCancel: Boolean
+        get() = request != null && !isFinal
 
     /** Numeric `id` prefix, used for ordering. */
-    val sortKey: Long get() = DownloadStore.sortKey(id)
+    val sortKey: Long
+        get() = DownloadStore.sortKey(id)
 
     /** What the Downloads tab shows, worked out once here (off the main thread), bounded whatever the files hold. */
     val shown: ShownDownload = ShownDownload.of(input, status)
 }
 
 /**
- * The texts of one request as the Downloads tab shows them ([Limits] "Display"): single-line texts and each
- * message, failure and warning cut, at most [Limits.SHOWN_LIST_ROWS] rows; the counts cover all that was read.
+ * The texts of one request as the Downloads tab shows them ([Limits] "Display"): single-line texts and each message, failure and warning
+ * cut, at most [Limits.SHOWN_LIST_ROWS] rows; the counts cover all that was read.
  */
 data class ShownDownload(
     val input: String,
@@ -121,8 +128,8 @@ data class DownloadList(val items: List<DownloadItem>, val older: Int) {
 }
 
 /**
- * `.tunemesh/worker.json`: the device whose worker currently takes requests for this library. The worker also
- * writes `instance`, `pid` and `workerVersion`, which clients do not need.
+ * `.tunemesh/worker.json`: the device whose worker currently takes requests for this library. The worker also writes `instance`, `pid` and
+ * `workerVersion`, which clients do not need.
  */
 @Serializable
 data class WorkerInfo(
@@ -134,26 +141,29 @@ data class WorkerInfo(
 /** Who downloads requests, as clients show it. */
 sealed interface Downloader {
     data class Active(val device: String) : Downloader
+
     data object None : Downloader
 
     val description: String
-        get() = when (this) {
-            is Active -> "Downloads are handled by ${Limits.shownLine(device)}"
-            None -> "No device is downloading right now"
-        }
+        get() =
+            when (this) {
+                is Active -> "Downloads are handled by ${Limits.shownLine(device)}"
+                None -> "No device is downloading right now"
+            }
 
     companion object {
         /** A worker counts as active while its heartbeat is less than this far from now, either way. */
         val FRESH: Duration = Duration.ofMinutes(3)
 
         fun of(info: WorkerInfo?, now: Instant = Instant.now()): Downloader {
-            val heartbeat = info?.heartbeatAt?.let {
-                try {
-                    OffsetDateTime.parse(it).toInstant()
-                } catch (_: DateTimeParseException) {
-                    null
-                }
-            } ?: return None
+            val heartbeat =
+                info?.heartbeatAt?.let {
+                    try {
+                        OffsetDateTime.parse(it).toInstant()
+                    } catch (_: DateTimeParseException) {
+                        null
+                    }
+                } ?: return None
             val device = info.device.trim()
             if (device.isEmpty()) return None
             // Clocks of different devices drift a little, so a heartbeat slightly ahead of ours still counts.
@@ -164,11 +174,22 @@ sealed interface Downloader {
 }
 
 class DownloadStore(private val root: File) {
-    private val requests get() = File(root, "${LibraryFormat.STATE_DIR}/requests")
-    private val statuses get() = File(root, "${LibraryFormat.STATE_DIR}/status")
-    private val workerFile get() = File(root, "${LibraryFormat.STATE_DIR}/worker.json")
+    private val requests
+        get() = File(root, "${LibraryFormat.STATE_DIR}/requests")
 
-    fun submit(input: String, playlist: String?, playlistFromSource: Boolean, requestedBy: String, now: Instant = Instant.now()): DownloadRequest {
+    private val statuses
+        get() = File(root, "${LibraryFormat.STATE_DIR}/status")
+
+    private val workerFile
+        get() = File(root, "${LibraryFormat.STATE_DIR}/worker.json")
+
+    fun submit(
+        input: String,
+        playlist: String?,
+        playlistFromSource: Boolean,
+        requestedBy: String,
+        now: Instant = Instant.now(),
+    ): DownloadRequest {
         val trimmed = input.trim()
         require(trimmed.isNotEmpty()) { "Enter a link or search text" }
         val request = newRequest(trimmed, playlist?.trim()?.takeIf { it.isNotEmpty() }, playlistFromSource, requestedBy, now)
@@ -177,22 +198,33 @@ class DownloadStore(private val root: File) {
     }
 
     /**
-     * Submits one request per line of [text] (see [DownloadInputs]). With [saveAsPlaylists], playlist and album
-     * lines get `playlistFromSource`; a [playlist] target applies to every line instead. Request IDs keep paste
-     * order, so the worker downloads the lines top to bottom.
+     * Submits one request per line of [text] (see [DownloadInputs]). With [saveAsPlaylists], playlist and album lines get
+     * `playlistFromSource`; a [playlist] target applies to every line instead. Request IDs keep paste order, so the worker downloads the
+     * lines top to bottom.
      */
-    fun submitAll(text: String, playlist: String?, saveAsPlaylists: Boolean, requestedBy: String, now: Instant = Instant.now()): List<DownloadRequest> {
+    fun submitAll(
+        text: String,
+        playlist: String?,
+        saveAsPlaylists: Boolean,
+        requestedBy: String,
+        now: Instant = Instant.now(),
+    ): List<DownloadRequest> {
         val lines = DownloadInputs.lines(text)
         require(lines.isNotEmpty()) { "Enter a link or search text" }
         return lines.mapIndexed { index, line ->
-            submit(line, playlist, DownloadInputs.playlistFromSource(line, playlist, saveAsPlaylists), requestedBy, now.plusMillis(index.toLong()))
+            submit(
+                line,
+                playlist,
+                DownloadInputs.playlistFromSource(line, playlist, saveAsPlaylists),
+                requestedBy,
+                now.plusMillis(index.toLong()),
+            )
         }
     }
 
     /**
-     * The newest [Limits.MAX_DOWNLOADS_READ] requests by id (a request and its status file count once), each file
-     * read only when it is at most [Limits.MAX_JSON_BYTES] and its texts cut to the status limits. Older ones are
-     * only counted.
+     * The newest [Limits.MAX_DOWNLOADS_READ] requests by id (a request and its status file count once), each file read only when it is at
+     * most [Limits.MAX_JSON_BYTES] and its texts cut to the status limits. Older ones are only counted.
      */
     fun list(): DownloadList {
         val requestIds = jsonIds(requests)
@@ -200,8 +232,10 @@ class DownloadStore(private val root: File) {
         val all = (requestIds + statusIds).sortedWith(compareByDescending<String> { sortKey(it) }.thenByDescending { it })
         val newest = all.take(Limits.MAX_DOWNLOADS_READ)
         val items = newest.mapNotNull { id ->
-            val request = if (id in requestIds) read(File(requests, "$id.json")) { bounded(json.decodeFromString<DownloadRequest>(it)) } else null
-            val status = if (id in statusIds) read(File(statuses, "$id.json")) { bounded(json.decodeFromString<DownloadStatus>(it)) } else null
+            val request =
+                if (id in requestIds) read(File(requests, "$id.json")) { bounded(json.decodeFromString<DownloadRequest>(it)) } else null
+            val status =
+                if (id in statusIds) read(File(statuses, "$id.json")) { bounded(json.decodeFromString<DownloadStatus>(it)) } else null
             if (request == null && status == null) null else DownloadItem(id, request, status)
         }
         return DownloadList(items, all.size - newest.size)
@@ -227,26 +261,33 @@ class DownloadStore(private val root: File) {
 
     /** Deletes status files in a final state (of those [list] reads). */
     fun clearFinished() {
-        list().items.filter { it.isFinal }.forEach { item ->
-            File(statuses, "${item.id}.json").delete()
-        }
+        list()
+            .items
+            .filter { it.isFinal }
+            .forEach { item ->
+                File(statuses, "${item.id}.json").delete()
+            }
     }
 
     /** Ids of the request or status files in [directory] (names only; nothing is read). */
     private fun jsonIds(directory: File): Set<String> =
-        directory.list()?.filterTo(HashSet()) { name ->
-            name.endsWith(".json") && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
-        }?.mapTo(HashSet()) { it.removeSuffix(".json") } ?: emptySet()
+        directory
+            .list()
+            ?.filterTo(HashSet()) { name ->
+                name.endsWith(".json") && !LibraryFormat.isHidden(name) && !LibraryFormat.isConflictCopy(name)
+            }
+            ?.mapTo(HashSet()) { it.removeSuffix(".json") } ?: emptySet()
 
-    private fun <T> read(file: File, decode: (String) -> T): T? = try {
-        decode(Limits.readText(file, Limits.MAX_JSON_BYTES))
-    } catch (_: IOException) {
-        // Over Limits.MAX_JSON_BYTES, gone or unreadable: skipped.
-        null
-    } catch (_: IllegalArgumentException) {
-        // Half-synced or foreign JSON; it is picked up again on the next refresh.
-        null
-    }
+    private fun <T> read(file: File, decode: (String) -> T): T? =
+        try {
+            decode(Limits.readText(file, Limits.MAX_JSON_BYTES))
+        } catch (_: IOException) {
+            // Over Limits.MAX_JSON_BYTES, gone or unreadable: skipped.
+            null
+        } catch (_: IllegalArgumentException) {
+            // Half-synced or foreign JSON; it is picked up again on the next refresh.
+            null
+        }
 
     companion object {
         private val json = Json { ignoreUnknownKeys = true }
@@ -261,10 +302,11 @@ class DownloadStore(private val root: File) {
         fun sortKey(id: String): Long = id.substringBefore('-').toLongOrNull() ?: 0L
 
         /** [request] with its texts cut to [Limits]. */
-        fun bounded(request: DownloadRequest): DownloadRequest = request.copy(
-            input = Limits.cutUtf8(request.input, Limits.MAX_REQUEST_INPUT_BYTES),
-            playlist = request.playlist?.let { Limits.cutUtf8(it, Limits.MAX_REQUEST_PLAYLIST_BYTES) },
-        )
+        fun bounded(request: DownloadRequest): DownloadRequest =
+            request.copy(
+                input = Limits.cutUtf8(request.input, Limits.MAX_REQUEST_INPUT_BYTES),
+                playlist = request.playlist?.let { Limits.cutUtf8(it, Limits.MAX_REQUEST_PLAYLIST_BYTES) },
+            )
 
         /** [status] with its texts cut and its lists shortened to [Limits]. */
         fun bounded(status: DownloadStatus): DownloadStatus {
@@ -296,7 +338,6 @@ class DownloadStore(private val root: File) {
 
         /** `Alex's Pixel 8` → `alexs-pixel-8`. */
         fun deviceSlug(name: String): String =
-            name.lowercase().replace("'", "").replace("\u2019", "")
-                .replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "android" }
+            name.lowercase().replace("'", "").replace("\u2019", "").replace(Regex("[^a-z0-9]+"), "-").trim('-').ifEmpty { "android" }
     }
 }

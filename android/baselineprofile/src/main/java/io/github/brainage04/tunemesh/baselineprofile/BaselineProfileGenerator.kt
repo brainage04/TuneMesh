@@ -10,12 +10,12 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 @LargeTest
 class BaselineProfileGenerator {
-    @get:Rule
-    val baselineProfileRule = BaselineProfileRule()
+    @get:Rule val baselineProfileRule = BaselineProfileRule()
 
     @Test
-    fun generate() = baselineProfileRule.collect(packageName = "io.github.brainage04.tunemesh") {
-        pressHome()
-        startActivityAndWait()
-    }
+    fun generate() =
+        baselineProfileRule.collect(packageName = "io.github.brainage04.tunemesh") {
+            pressHome()
+            startActivityAndWait()
+        }
 }
