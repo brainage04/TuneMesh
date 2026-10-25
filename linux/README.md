@@ -75,6 +75,30 @@ CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
   linux/crates/tunemesh/scripts/gui-checks.sh stalls
 ```
 
+The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
+`CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`
+with `TUNEMESH_STALL_BUDGET_MS=1000000`, as heaptrack slows the walk down
+(without `--record-only` it opens heaptrack_gui inside the headless session
+and waits there). Read the result with `heaptrack_print -f /var/tmp/walk.zst`.
+The heap in use after each round, printed under the table, should stay
+level from the second round on.
+
+Both checks also run under AddressSanitizer with a nightly toolchain
+(`nix shell nixpkgs#rustup`, then `rustup toolchain install nightly`):
+
+```sh
+PATH=$(rustup +nightly which rustc | xargs dirname):$PATH \
+RUSTFLAGS=-Zsanitizer=address CARGO_TARGET_DIR=/var/tmp/target-asan \
+ASAN_OPTIONS=detect_leaks=1:log_path=/var/tmp/asan \
+  linux/crates/tunemesh/scripts/gui-checks.sh leaks --target x86_64-unknown-linux-gnu
+```
+
+`--target` keeps the sanitizer out of build scripts and proc macros.
+LeakSanitizer then lists about 0.9 MB that fontconfig keeps for pango's
+font map until exit; anything with a `tunemesh` frame in its stack is a
+real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
+`llvm-symbolizer` (`nixpkgs#llvm`).
+
 ## The app
 
 ```sh
