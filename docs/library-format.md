@@ -148,11 +148,14 @@ least 10 minutes in the past. Several devices may merge the same copy; with
 the same base they write the same bytes, and Syncthing does not turn two
 identical files into a conflict.
 
-How. A copy is merged only if its name is exactly as above and the playlist
-`<Name>.m3u8` exists; the winner and the copy are read with the playlist
-rules, and a too-large or unreadable one leaves both files alone. Copies of
-one playlist are merged one at a time, in byte order of their names, each
-into the result of the one before. An entry's key is its root-relative track
+How. A copy is merged only if its name is exactly as above (`<Name>` not
+empty, 8 digits, `-`, 6 digits, `-`, 7 characters of `A`-`Z` and `2`-`7`)
+and the playlist `<Name>.m3u8` exists; the winner and the copy are read with
+the playlist rules, and a too-large or unreadable one leaves both files
+alone. Copies of one playlist are merged one at a time, in byte order of
+their names, each into the playlist as the one before left it (that is the
+winner of the next), all with the same base; the base becomes the merged
+playlist only after the last one. An entry's key is its root-relative track
 path, or its line as written when it points outside the root. With base B,
 winner W and copy C, and b, w and c the number of entries with key k in
 each:
@@ -182,8 +185,8 @@ each:
    same bytes. Liked Songs is merged the same way: a like at the top of the
    copy stays at the top.
 5. The merged playlist is written only if it is within the limits, then the
-   copy is deleted, and the base set. A merge that would be too large
-   leaves both files as they are.
+   copy is deleted. A merge that would be too large leaves both files as
+   they are (and the base as it was).
 
 Shared test cases (base, winner, copy and the expected bytes) are in
 `docs/test-vectors/playlist-merge/`; every implementation runs them.
