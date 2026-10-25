@@ -422,6 +422,7 @@ mod tests {
     use std::os::unix::fs::symlink;
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn refuses_symlinks_on_the_way_and_at_the_end() {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret"), b"key").unwrap();
@@ -458,6 +459,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn move_in_never_replaces() {
         let work = tempfile::tempdir().unwrap();
         let lib = tempfile::tempdir().unwrap();
@@ -483,6 +485,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn entries_up_to_stops_at_the_limit() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..10 {

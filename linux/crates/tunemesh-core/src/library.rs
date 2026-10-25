@@ -878,6 +878,7 @@ mod tests {
     /// Review item 12: names with line breaks are not tracks, so they never
     /// reach a playlist line.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn scan_skips_names_with_line_breaks() {
         let d = tempfile::tempdir().unwrap();
         let root = d.path();
@@ -911,6 +912,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn scan_applies_exclusions_and_dir_cover() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -951,6 +953,7 @@ mod tests {
     /// directory (renameat2 RENAME_EXCHANGE) while the scan runs must never
     /// make it list or read a file from outside the root.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn scan_survives_directory_symlink_swaps() {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicBool, Ordering};
@@ -1002,6 +1005,7 @@ mod tests {
     /// descriptors for everything else. Runs in a child process because
     /// the limit is per process.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn deep_trees_never_exhaust_descriptors() {
         const CHILD: &str = "TUNEMESH_DEEP_TREE_CHILD";
         if std::env::var_os(CHILD).is_none() {
@@ -1128,6 +1132,7 @@ mod tests {
     /// still returns the other tracks. Uses a hand-made file, and an
     /// ffmpeg-made one with byte 37 set to 0 when ffmpeg is on `PATH`.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn zero_channel_opus_does_not_stop_the_scan() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path();
@@ -1187,6 +1192,7 @@ mod tests {
     /// R1-astra-3: a same-size rewrite within one second (only the
     /// nanoseconds of the modification time differ) is read again.
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn scan_cache_compares_nanoseconds() {
         use std::time::{Duration, SystemTime};
         let dir = tempfile::tempdir().unwrap();
@@ -1236,6 +1242,7 @@ mod tests {
     /// shuffled track numbers builds in well under a second (it took 8 s
     /// when each artist track looked up its album position linearly).
     #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn huge_album_builds_quickly() {
         let n = 40_000u32;
         let mut numbers: Vec<u32> = (1..=n).collect();
@@ -1270,6 +1277,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn scan_ignores_symlinks() {
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("secret.mp3"), b"x").unwrap();

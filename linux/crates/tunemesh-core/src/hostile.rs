@@ -458,6 +458,7 @@ mod tests {
     use crate::limits::{MAX_ARTISTS, MAX_TAG_TEXT_BYTES};
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn tags_and_covers_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
         for sub in ["Playlists", ".tunemesh/requests", ".tunemesh/status"] {
@@ -591,6 +592,7 @@ mod tests {
     /// The small hostile library: every limit applies and a client's start
     /// stays within seconds and a few hundred MiB.
     #[test]
+    #[cfg_attr(miri, ignore = "child process")]
     fn hostile_library_stays_bounded() {
         let report = check_in_child(&Options::small());
         // Measured: debug 0.4 s per step and 29 MiB, release 0.15 s.
