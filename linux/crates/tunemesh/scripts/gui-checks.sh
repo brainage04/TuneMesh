@@ -30,16 +30,40 @@ esac
 linux=$(cd "$(dirname "$0")/../../.." && pwd)
 run=$(mktemp -d "${TMPDIR:-/tmp}/tunemesh-gui.XXXXXX")
 sway_pid=
+bus_pid=
 cleanup() {
 	if [ -n "$sway_pid" ]; then
 		kill "$sway_pid" 2>/dev/null || true
 		wait "$sway_pid" 2>/dev/null || true
 	fi
+	if [ -n "$bus_pid" ]; then kill "$bus_pid" 2>/dev/null || true; fi
 	rm -rf "$run"
 }
 trap cleanup EXIT
 
 export XDG_RUNTIME_DIR=$run
+# A session bus that starts no services (no portals, no keyring), shared by
+# sway and the tests. It has to exist before sway starts: nixpkgs' sway
+# wrapper starts its own bus from the system's session.conf when it finds
+# none, and CI runners have no /etc/dbus-1/session.conf.
+cat >"$run/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$run</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+exec 3< <(dbus-daemon --nofork --print-address=1 --print-pid=1 --config-file="$run/bus.conf")
+read -r DBUS_SESSION_BUS_ADDRESS <&3
+read -r bus_pid <&3
+export DBUS_SESSION_BUS_ADDRESS
+
 printf '%s\n' 'output HEADLESS-1 resolution 1920x1080' 'default_border none' >"$run/sway.cfg"
 WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
 	sway --config "$run/sway.cfg" >"$run/sway.log" 2>&1 &
@@ -63,28 +87,13 @@ unset DISPLAY
 # cairo: the headless compositor has no GPU, and GL through llvmpipe spends
 # most of a frame copying pixels.
 export XDG_CONFIG_HOME=$run/config GDK_DEBUG=no-portals GSK_RENDERER=${GSK_RENDERER:-cairo}
-# A session bus that starts no services (no portals, no keyring).
-cat >"$run/bus.conf" <<EOF
-<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
- "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
-<busconfig>
-  <type>session</type>
-  <listen>unix:dir=$run</listen>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>
-EOF
-bus() { dbus-run-session --config-file="$run/bus.conf" -- "$@"; }
 
 cd "$linux"
 if [ "$what" != stalls ]; then
-	bus cargo test -p tunemesh "$@" -- --ignored --exact \
+	cargo test -p tunemesh "$@" -- --ignored --exact \
 		gui_tests::leaks::closed_pages_are_freed
 fi
 if [ "$what" != leaks ]; then
-	bus cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \
+	cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \
 		gui_tests::stalls::hostile_walk_stays_responsive
 fi

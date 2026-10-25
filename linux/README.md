@@ -355,7 +355,7 @@ nix develop .#nightly -c bash -c 'cd linux &&
   RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address \
   cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
     -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
-    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
+    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded --skip bulk_edits_are_linear'
 
 # Every fuzz target for 60 s (CI), or one target for longer
 nix develop .#nightly -c linux/fuzz/smoke.sh 60
@@ -367,7 +367,7 @@ nix develop -c bash -c 'cd linux && cargo mutants -p tunemesh-core -f src/limits
 
 Tests that use the file system or child processes are marked
 `#[cfg_attr(miri, ignore = "...")]`; every other new core test runs under
-Miri as well. The two tests skipped under AddressSanitizer check time and
+Miri as well. The three tests skipped under AddressSanitizer check time and
 memory bounds, which the sanitizer's overhead breaks.
 
 The fuzz targets (`linux/fuzz/fuzz_targets/`, a separate Cargo workspace)
