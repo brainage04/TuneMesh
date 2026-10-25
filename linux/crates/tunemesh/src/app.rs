@@ -26,6 +26,31 @@ pub fn cap_search(text: &str) -> String {
 
 pub const APP_ID: &str = "io.github.brainage04.TuneMesh";
 
+/// The app's colour scheme, style sheets and icons, for the default display
+/// (on application startup).
+pub fn load_style() {
+    adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    let display = gdk::Display::default().expect("display");
+    // libadwaita 1.6 moved its named colours to CSS variables; 1.5 still
+    // uses @define-color.
+    let colors = if adw::minor_version() >= 6 {
+        "colors.css"
+    } else {
+        "colors-adw15.css"
+    };
+    for name in [colors, "style.css"] {
+        let provider = gtk::CssProvider::new();
+        provider.load_from_resource(&format!("/io/github/brainage04/TuneMesh/{name}"));
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+    gtk::IconTheme::for_display(&display).add_resource_path("/io/github/brainage04/TuneMesh/icons");
+    gtk::Window::set_default_icon_name(APP_ID);
+}
+
 /// Narrowest window, in pixels: about a tiled half of a 1366-pixel screen.
 const MIN_WIDTH: i32 = 600;
 /// Lowest window, in pixels: fits a 1280 x 800 screen at 200 % scale
@@ -824,4 +849,19 @@ fn trim_heap_soon() {
         // SAFETY: malloc_trim only returns free pages; no allocation is touched.
         unsafe { libc::malloc_trim(0) };
     });
+}
+
+/// What the GUI tests look at.
+#[cfg(test)]
+impl App {
+    /// The root widget of the page shown.
+    pub fn page_widget(&self) -> Option<gtk::Widget> {
+        self.content.first_child()
+    }
+
+    /// The queue panel's widget.
+    pub fn queue_widget(&self) -> gtk::Widget {
+        let q = self.queue_panel.borrow();
+        q.as_ref().expect("queue panel").widget.clone().upcast()
+    }
 }

@@ -203,6 +203,11 @@ unsafe impl Sync for Mpv {}
 impl Mpv {
     /// Creates an audio-only player instance that opens local files only.
     pub fn new() -> Result<Arc<Self>, String> {
+        // The GUI tests play the generated silent files; nothing reaches a
+        // sound device.
+        #[cfg(test)]
+        return Self::create(&[BASE_OPTIONS, &[("ao", "null")]].concat(), LOCAL_ONLY);
+        #[cfg(not(test))]
         Self::create(BASE_OPTIONS, LOCAL_ONLY)
     }
 

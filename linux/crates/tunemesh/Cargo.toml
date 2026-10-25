@@ -28,3 +28,7 @@ qrcode = { version = "0.14", default-features = false }
 
 [build-dependencies]
 glib-build-tools = "0.22"
+
+[dev-dependencies]
+# The GUI tests (src/gui_tests) generate their libraries with it.
+tunemesh-core = { workspace = true, features = ["hostile"] }

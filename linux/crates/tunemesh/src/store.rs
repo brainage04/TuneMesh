@@ -170,11 +170,15 @@ impl Store {
     /// have reported.
     #[cfg(test)]
     fn settle(&self) {
+        self.settle_for(Duration::from_secs(10));
+    }
+
+    /// Tests: `settle`, waiting up to `max`.
+    #[cfg(test)]
+    pub fn settle_for(&self, max: Duration) {
         let ctx = glib::MainContext::ref_thread_default();
         let start = std::time::Instant::now();
-        while (self.scanning.get() || self.playlists_loading.get())
-            && start.elapsed() < Duration::from_secs(10)
-        {
+        while (self.scanning.get() || self.playlists_loading.get()) && start.elapsed() < max {
             ctx.iteration(true);
         }
     }
