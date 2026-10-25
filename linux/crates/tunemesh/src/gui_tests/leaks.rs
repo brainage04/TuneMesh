@@ -12,6 +12,7 @@ use tunemesh_core::hostile::{self, Options};
 
 use super::{Expect, Scratch, Seen, collect, leaked, on_gtk, open, pump, settle};
 use crate::app::{App, Route};
+use crate::store::wait_for;
 
 /// Visits per page.
 const ROUNDS: usize = 3;
@@ -60,12 +61,9 @@ fn walk() -> Vec<String> {
         .expect("big album")
         .key();
     let album_paths: Vec<String> = (0..300).map(hostile::album_track).collect();
-    app.store
-        .set_liked_paths(&album_paths[..20], true)
-        .expect("like");
-    let mixed = app.store.create_playlist("Mixed").expect("playlist");
-    app.store
-        .add_to_playlist(&mixed, &album_paths)
+    wait_for(|done| app.store.set_liked_paths(&album_paths[..20], true, done)).expect("like");
+    let mixed = wait_for(|done| app.store.create_playlist("Mixed", done)).expect("playlist");
+    wait_for(|done| app.store.add_to_playlist(&mixed, &album_paths, done))
         .expect("add to playlist");
     settle(&app);
 

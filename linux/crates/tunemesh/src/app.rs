@@ -161,6 +161,15 @@ impl App {
             .height_request(MIN_HEIGHT)
             .build();
         window.add_css_class("tunemesh");
+        // Drawn on the CPU (no GPU, or GSK_RENDERER=cairo): see `.tm-software`
+        // in style.css.
+        window.connect_realize(|w| {
+            if w.renderer()
+                .is_some_and(|r| r.is::<gtk::gsk::CairoRenderer>())
+            {
+                w.add_css_class("tm-software");
+            }
+        });
 
         let search_entry = gtk::SearchEntry::builder()
             .max_width_chars(40)
@@ -591,9 +600,22 @@ impl App {
             .as_ref()
             .map(|s| s.vadjustment().value());
         self.set_page(ui::pages::build(&self.rc(), &self.route()));
-        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone()) {
-            // The new page has no size yet; restore once laid out.
-            glib::idle_add_local_once(move || s.vadjustment().set_value(v));
+        if let (Some(v), Some(s)) = (value, self.scroller.borrow().clone())
+            && v > 0.0
+        {
+            // The new page has no size yet (a playlist's entries even arrive
+            // from a thread): restore once it is tall enough.
+            let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+            let h = handler.clone();
+            let id = s.vadjustment().connect_upper_notify(move |adj| {
+                if adj.upper() - adj.page_size() >= v {
+                    adj.set_value(v);
+                    if let Some(id) = h.borrow_mut().take() {
+                        adj.disconnect(id);
+                    }
+                }
+            });
+            *handler.borrow_mut() = Some(id);
         }
     }
 
@@ -689,6 +711,17 @@ impl App {
     pub fn error(&self, context: &str, e: impl std::fmt::Display) {
         eprintln!("tunemesh: {context}: {e}");
         self.toast(&format!("{context}: {e}"));
+    }
+
+    /// The callback for a background store edit: shows `context` and the
+    /// error if it failed.
+    pub fn on_error(&self, context: &'static str) -> impl FnOnce(std::io::Result<()>) + 'static {
+        let me = self.me.clone();
+        move |result| {
+            if let (Err(e), Some(app)) = (result, me.upgrade()) {
+                app.error(context, e);
+            }
+        }
     }
 
     /// Switches to another library folder and remembers it.

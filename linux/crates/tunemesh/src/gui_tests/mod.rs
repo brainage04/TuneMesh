@@ -29,6 +29,9 @@ type Job = Box<dyn FnOnce() + Send>;
 
 /// The thread of this test process that uses GTK, fed through a channel.
 static JOBS: LazyLock<Mutex<mpsc::Sender<Job>>> = LazyLock::new(|| {
+    // As in main(): two malloc arenas (threads made from now on share them).
+    // SAFETY: plain libc call.
+    unsafe { libc::mallopt(libc::M_ARENA_MAX, 2) };
     let (tx, rx) = mpsc::channel::<Job>();
     std::thread::Builder::new()
         .name("gtk".into())

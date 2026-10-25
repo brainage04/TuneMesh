@@ -7,7 +7,7 @@ use std::fs::File;
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
+use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
 use gtk::glib;
@@ -37,7 +37,7 @@ pub fn open_track(root: &Path, rel: &str) -> std::io::Result<OpenTrack> {
 /// The first of `candidates` (queue index, path) that opens safely.
 pub(crate) fn first_playable(
     root: &Path,
-    candidates: Vec<(usize, String)>,
+    candidates: impl IntoIterator<Item = (usize, String)>,
 ) -> Option<(usize, String, OpenTrack)> {
     candidates
         .into_iter()
@@ -172,15 +172,16 @@ struct State {
 impl State {
     /// Queue indices that may follow the current track, in play order:
     /// the rest of the queue, then (with repeat all) from the start again.
-    fn upcoming(&self) -> Vec<usize> {
-        let Some(cur) = self.current else {
-            return Vec::new();
+    fn upcoming(&self) -> impl Iterator<Item = usize> + use<> {
+        let (rest, again) = match self.current {
+            None => (0..0, 0..0),
+            Some(cur) if self.repeat == Repeat::All => (
+                cur + 1..self.items.len(),
+                0..(cur + 1).min(self.items.len()),
+            ),
+            Some(cur) => (cur + 1..self.items.len(), 0..0),
         };
-        let mut v: Vec<usize> = (cur + 1..self.items.len()).collect();
-        if self.repeat == Repeat::All {
-            v.extend(0..=cur.min(self.items.len().saturating_sub(1)));
-        }
-        v
+        rest.chain(again)
     }
 
     fn next_index(&self) -> Option<usize> {
@@ -246,11 +247,46 @@ pub struct Player {
     files: RefCell<TrackFiles>,
     save_scheduled: Cell<bool>,
     ticks_since_save: Cell<u32>,
+    /// The thread that writes `state.json`.
+    saver: mpsc::Sender<SaveJob>,
     me: Weak<Player>,
 }
 
+/// A state to write, and who waits for it to be written.
+type SaveJob = (Saved, Option<mpsc::Sender<()>>);
+
 fn state_file() -> PathBuf {
     config::state_dir().join("state.json")
+}
+
+/// Writes the saved states it is sent, in order; when several are waiting
+/// only the newest is written.
+fn saver_thread() -> mpsc::Sender<SaveJob> {
+    let (tx, rx) = mpsc::channel::<SaveJob>();
+    std::thread::Builder::new()
+        .name("state-save".into())
+        .spawn(move || {
+            while let Ok((mut saved, ack)) = rx.recv() {
+                let mut acks: Vec<mpsc::Sender<()>> = ack.into_iter().collect();
+                while let Ok((newer, ack)) = rx.try_recv() {
+                    saved = newer;
+                    acks.extend(ack);
+                }
+                match serde_json::to_vec(&saved) {
+                    Ok(json) => {
+                        if let Err(e) = tunemesh_core::atomic::write(&state_file(), &json) {
+                            eprintln!("tunemesh: saving state: {e}");
+                        }
+                    }
+                    Err(e) => eprintln!("tunemesh: saving state: {e}"),
+                }
+                for a in acks {
+                    let _ = a.send(());
+                }
+            }
+        })
+        .expect("spawn state thread");
+    tx
 }
 
 impl Player {
@@ -276,6 +312,7 @@ impl Player {
             files: RefCell::new(TrackFiles::default()),
             save_scheduled: Cell::new(false),
             ticks_since_save: Cell::new(0),
+            saver: saver_thread(),
         });
         player.restore();
         if let Some(mpv) = &player.mpv {
@@ -345,9 +382,6 @@ impl Player {
             .and_then(|c| st.items.get(c))
             .map(|i| i.path.clone())
     }
-    pub fn current_index(&self) -> Option<usize> {
-        self.st.borrow().current
-    }
     pub fn is_playing(&self) -> bool {
         self.st.borrow().playing
     }
@@ -369,8 +403,18 @@ impl Player {
     pub fn context_name(&self) -> String {
         self.st.borrow().context_name.clone()
     }
-    pub fn items(&self) -> Vec<QueueItem> {
-        self.st.borrow().items.clone()
+    /// The queue entry at `index`.
+    pub fn item(&self, index: usize) -> Option<QueueItem> {
+        self.st.borrow().items.get(index).cloned()
+    }
+    /// The queue's length, the current index and how many user-queued
+    /// entries follow the current one.
+    pub fn queue_shape(&self) -> (usize, Option<usize>, usize) {
+        let st = self.st.borrow();
+        let user = st.current.map_or(0, |c| {
+            st.items.iter().skip(c + 1).take_while(|i| i.user).count()
+        });
+        (st.items.len(), st.current, user)
     }
     pub fn has_track(&self) -> bool {
         self.current_path().is_some()
@@ -453,16 +497,16 @@ impl Player {
     /// track at this point).
     fn append_next(&self) {
         let Some(mpv) = self.mpv.clone() else { return };
-        let candidates: Vec<(usize, String)> = {
+        // Paths are copied one at a time, as candidates are tried: the queue
+        // may hold 40,000 tracks.
+        let found = {
             let st = self.st.borrow();
-            st.upcoming()
-                .into_iter()
-                .map(|i| (i, st.items[i].path.clone()))
-                .collect()
+            let candidates = st.upcoming().map(|i| (i, st.items[i].path.clone()));
+            // Tracks deleted or replaced since the scan are skipped, so
+            // playback goes on with the next one that opens.
+            first_playable(&self.root.borrow(), candidates)
         };
-        // Tracks deleted or replaced since the scan are skipped, so
-        // playback goes on with the next one that opens.
-        let Some((index, path, track)) = first_playable(&self.root.borrow(), candidates) else {
+        let Some((index, path, track)) = found else {
             return;
         };
         if let Err(e) = mpv.loadfile(&track.mpv_path, "append", None) {
@@ -1020,27 +1064,31 @@ impl Player {
         st.context_name = saved.context_name;
     }
 
+    fn snapshot(&self) -> Saved {
+        let st = self.st.borrow();
+        Saved {
+            items: st.items.clone(),
+            current: st.current,
+            position: st.position,
+            shuffle: st.shuffle,
+            repeat: st.repeat,
+            volume: st.volume,
+            context: st.context.clone(),
+            context_name: st.context_name.clone(),
+        }
+    }
+
+    /// Saves the queue and position on the state thread: with a long queue
+    /// writing it takes tens of milliseconds the window must not wait for.
     pub fn save(&self) {
-        let saved = {
-            let st = self.st.borrow();
-            Saved {
-                items: st.items.clone(),
-                current: st.current,
-                position: st.position,
-                shuffle: st.shuffle,
-                repeat: st.repeat,
-                volume: st.volume,
-                context: st.context.clone(),
-                context_name: st.context_name.clone(),
-            }
-        };
-        match serde_json::to_vec(&saved) {
-            Ok(json) => {
-                if let Err(e) = tunemesh_core::atomic::write(&state_file(), &json) {
-                    eprintln!("tunemesh: saving state: {e}");
-                }
-            }
-            Err(e) => eprintln!("tunemesh: saving state: {e}"),
+        let _ = self.saver.send((self.snapshot(), None));
+    }
+
+    /// Saves and waits until the state is on disk (before quitting).
+    fn save_now(&self) {
+        let (tx, rx) = mpsc::channel();
+        if self.saver.send((self.snapshot(), Some(tx))).is_ok() {
+            let _ = rx.recv();
         }
     }
 
@@ -1064,7 +1112,7 @@ impl Player {
         {
             self.st.borrow_mut().position = pos;
         }
-        self.save();
+        self.save_now();
         if let Some(mpv) = &self.mpv {
             mpv.quit();
         }
@@ -1195,10 +1243,10 @@ mod tests {
     #[test]
     fn upcoming_follows_the_queue_and_repeat() {
         let st = state(&["a", "b", "c", "d"], 1, Repeat::Off);
-        assert_eq!(st.upcoming(), vec![2, 3]);
+        assert_eq!(st.upcoming().collect::<Vec<_>>(), vec![2, 3]);
         let st = state(&["a", "b", "c", "d"], 1, Repeat::All);
-        assert_eq!(st.upcoming(), vec![2, 3, 0, 1]);
+        assert_eq!(st.upcoming().collect::<Vec<_>>(), vec![2, 3, 0, 1]);
         let st = state(&["a", "b"], 1, Repeat::Off);
-        assert!(st.upcoming().is_empty());
+        assert!(st.upcoming().next().is_none());
     }
 }

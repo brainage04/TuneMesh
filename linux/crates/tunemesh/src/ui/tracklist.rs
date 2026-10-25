@@ -406,9 +406,9 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
             row.heart.connect_clicked(move |_| {
                 if let Some(sh) = sh.upgrade()
                     && let Some(path) = pos.get().and_then(|i| sh.available(&a, i))
-                    && let Err(e) = a.store.toggle_like(&path)
                 {
-                    a.error("Could not update Liked Songs", e);
+                    a.store
+                        .toggle_like(&path, a.on_error("Could not update Liked Songs"));
                 }
             });
 
@@ -499,10 +499,13 @@ pub fn build(app: &Rc<App>, spec: Spec) -> gtk::ListView {
                     if dragged.playlist != name {
                         return false;
                     }
-                    if dragged.from.0 != to.0
-                        && let Err(e) = a.store.move_in_playlist(&name, &dragged.from, &to)
-                    {
-                        a.error("Could not reorder playlist", e);
+                    if dragged.from.0 != to.0 {
+                        a.store.move_in_playlist(
+                            &name,
+                            &dragged.from,
+                            &to,
+                            a.on_error("Could not reorder playlist"),
+                        );
                     }
                     true
                 });
