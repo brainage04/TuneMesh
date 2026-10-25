@@ -537,11 +537,23 @@ impl App {
     }
 
     fn set_page(&self, page: Page) {
+        // A page removed while the keyboard focus is inside it is never
+        // freed (GTK 4.22 keeps its scrolled window and the focus chain
+        // below it alive). Take the focus out first and give it to the new
+        // page.
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window)
+            .is_some_and(|f| f.is_ancestor(&self.content));
+        if focus {
+            gtk::prelude::GtkWindowExt::set_focus(&self.window, None::<&gtk::Widget>);
+        }
         while let Some(child) = self.content.first_child() {
             self.content.remove(&child);
         }
         page.widget.set_vexpand(true);
         self.content.append(&page.widget);
+        if focus {
+            page.widget.grab_focus();
+        }
         *self.scroller.borrow_mut() = page.scroller;
         trim_heap_soon();
     }
