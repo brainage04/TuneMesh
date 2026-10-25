@@ -732,15 +732,23 @@ pub fn page(app: &Rc<App>) -> Page {
         }
     });
 
+    // Weak: the text view's own key controller runs this, so a strong
+    // reference would keep the view and the whole form alive after the page
+    // is gone.
     let submit = {
         let (a, view, dropdown, switch, choices) = (
             app.clone(),
-            view.clone(),
-            dropdown.clone(),
-            switch.clone(),
+            view.downgrade(),
+            dropdown.downgrade(),
+            switch.downgrade(),
             choices.clone(),
         );
         move || {
+            let (Some(view), Some(dropdown), Some(switch)) =
+                (view.upgrade(), dropdown.upgrade(), switch.upgrade())
+            else {
+                return;
+            };
             let buf = view.buffer();
             let lines = input_lines(&buf.text(&buf.start_iter(), &buf.end_iter(), false));
             if lines.is_empty() {
