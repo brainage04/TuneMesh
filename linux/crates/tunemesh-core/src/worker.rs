@@ -68,7 +68,12 @@ pub fn read(root: &Path) -> Option<WorkerInfo> {
         .ok()?
         .read(FILE_NAME, crate::limits::MAX_JSON_BYTES)
         .ok()?;
-    serde_json::from_slice(&bytes).ok()
+    parse(&bytes)
+}
+
+/// A `worker.json` file's contents, if valid.
+pub fn parse(bytes: &[u8]) -> Option<WorkerInfo> {
+    serde_json::from_slice(bytes).ok()
 }
 
 /// The device downloading for this library right now, if any.
@@ -112,6 +117,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "file system")]
     fn round_trip() {
         let dir = tempfile::tempdir().unwrap();
         assert!(read(dir.path()).is_none());
