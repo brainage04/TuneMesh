@@ -17,12 +17,14 @@ import androidx.test.uiautomator.Until
 import io.github.brainage04.tunemesh.data.LibraryState
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
+import leakcanary.DetectLeaksAfterTestSuccess
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -40,6 +42,8 @@ import org.junit.runner.RunWith
 @Stress
 @RunWith(AndroidJUnit4::class)
 class HostileLibraryTest {
+    @get:Rule val leaks = DetectLeaksAfterTestSuccess()
+
     private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val context: Context = instrumentation.targetContext
     private val app

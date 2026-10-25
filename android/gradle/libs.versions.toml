@@ -19,6 +19,7 @@ junit5 = "5.14.4"
 # ktfmt runs through Spotless (spotlessCheck / spotlessApply).
 ktfmt = "0.64"
 kotlinxSerialization = "1.11.0"
+leakCanary = "2.14"
 media3 = "1.11.1"
 spotless = "8.10.4"
 uiAutomator = "2.3.0"
@@ -47,6 +48,8 @@ junit5-jupiter = { module = "org.junit.jupiter:junit-jupiter" }
 junit5-platform-launcher = { module = "org.junit.platform:junit-platform-launcher" }
 junit5-vintage-engine = { module = "org.junit.vintage:junit-vintage-engine" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinxSerialization" }
+leakcanary-android = { module = "com.squareup.leakcanary:leakcanary-android", version.ref = "leakCanary" }
+leakcanary-android-instrumentation = { module = "com.squareup.leakcanary:leakcanary-android-instrumentation", version.ref = "leakCanary" }
 
 [plugins]
 aboutlibraries = { id = "com.mikepenz.aboutlibraries.plugin", version.ref = "aboutLibraries" }

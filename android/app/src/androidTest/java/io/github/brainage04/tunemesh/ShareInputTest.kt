@@ -7,13 +7,17 @@ import android.text.SpannableString
 import android.text.Spanned
 import android.text.style.StyleSpan
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import leakcanary.DetectLeaksAfterTestSuccess
 import org.junit.Assert.assertEquals
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
 /** What the share sheet takes from an `ACTION_SEND` intent. */
 @RunWith(AndroidJUnit4::class)
 class ShareInputTest {
+    @get:Rule val leaks = DetectLeaksAfterTestSuccess()
+
     private fun share(text: CharSequence?): Intent {
         val intent = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
         // Through a parcel, as between the sharing app and TuneMesh.

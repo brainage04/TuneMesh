@@ -26,6 +26,7 @@ import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import kotlin.math.sin
+import leakcanary.DetectLeaksAfterTestSuccess
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -33,6 +34,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -42,6 +44,8 @@ import org.junit.runner.RunWith
  */
 @RunWith(AndroidJUnit4::class)
 class DeviceTest {
+    @get:Rule val leaks = DetectLeaksAfterTestSuccess()
+
     private val context: Context = InstrumentationRegistry.getInstrumentation().targetContext
     private val app
         get() = context.applicationContext as TuneMeshApp

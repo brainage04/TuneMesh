@@ -189,8 +189,12 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.uiautomator)
+    // Every instrumented test class has DetectLeaksAfterTestSuccess: a test fails when an activity, service or view model it
+    // destroyed is still reachable afterwards.
+    androidTestImplementation(libs.leakcanary.android.instrumentation)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
+    debugImplementation(libs.leakcanary.android)
     baselineProfile(project(":baselineprofile"))
 }
 

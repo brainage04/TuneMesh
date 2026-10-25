@@ -78,3 +78,7 @@ Run these from this directory before committing (they also run in CI):
   directory, or to `app/crash-<hash>` when the directory does not exist yet: fix the bug, add a unit test, and commit
   the input under that directory so it stays a regression input. The generated corpus (`app/.cifuzz-corpus/`) is
   git-ignored.
+- Leaks: LeakCanary is in debug builds (`debugImplementation`), and every instrumented test class has
+  `@get:Rule val leaks = DetectLeaksAfterTestSuccess()`: a test fails when an activity, view model, service or view it
+  destroyed is still reachable afterwards (the heap analysis is in the test output). `ActivityLeakTest` opens every tab,
+  an album and the share sheet, and recreates them as a rotation does. Give a new instrumented test class the same rule.
