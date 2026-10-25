@@ -11,3 +11,4 @@ captures/
 .externalNativeBuild/
 .cxx/
 .DS_Store
+.cifuzz-corpus/

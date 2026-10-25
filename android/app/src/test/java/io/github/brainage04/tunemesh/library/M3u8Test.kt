@@ -252,6 +252,16 @@ class M3u8Test {
         assertEquals("🎵".repeat(256), written)
     }
 
+    /** Jazzer: a label from a file name ending in white space was written untrimmed, read back trimmed, so each rewrite changed it. */
+    @Test
+    fun rewritingKeepsLabels() {
+        assertEquals("a b", M3u8.cleanLabel(" a b\u000B\n"))
+        val entries = M3u8.parse("../Gone/Song \u000B.mp3\nĂP\u000B\n", root)
+        val written = M3u8.write(entries) { null }
+        assertEquals("#EXTM3U\n#EXTINF:-1,Song\n../Gone/Song \u000B.mp3\n#EXTINF:-1,ĂP\n../Playlists/ĂP\u000B\n", written)
+        assertEquals(written, M3u8.write(M3u8.parse(written, root)) { null })
+    }
+
     @Test
     fun overLimitPlaylistsAreNotWritten() {
         val entry = M3u8.entryFor(track("A/x.mp3", "x", "A", 1_000))

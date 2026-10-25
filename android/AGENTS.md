@@ -71,3 +71,10 @@ Run these from this directory before committing (they also run in CI):
   (sizes, complexity, magic numbers, long strings) of code older than detekt; every other finding fails. Fix a finding,
   or suppress it at the one place with `@Suppress("Rule") // reason`; rewrite a baseline only to drop fixed entries
   (`./gradlew :app:detektBaselineDebug`).
+- Fuzzing: Jazzer `@FuzzTest`s in `app/src/test` (`*FuzzTest`: the M3u8 reader and writer, request/status/`worker.json`
+  parsing, pasted and shared links, the name sanitiser). `testDebugUnitTest` replays the saved inputs in
+  `app/src/test/resources/<package>/<Class>Inputs/<method>/`; `./gradlew --no-daemon :app:fuzz -Pfuzz.seconds=60`
+  fuzzes each target in turn for that long (through `heavy`, as any Gradle run). A failing input is written to that
+  directory, or to `app/crash-<hash>` when the directory does not exist yet: fix the bug, add a unit test, and commit
+  the input under that directory so it stays a regression input. The generated corpus (`app/.cifuzz-corpus/`) is
+  git-ignored.

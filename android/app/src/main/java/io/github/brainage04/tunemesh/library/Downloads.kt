@@ -232,10 +232,8 @@ class DownloadStore(private val root: File) {
         val all = (requestIds + statusIds).sortedWith(compareByDescending<String> { sortKey(it) }.thenByDescending { it })
         val newest = all.take(Limits.MAX_DOWNLOADS_READ)
         val items = newest.mapNotNull { id ->
-            val request =
-                if (id in requestIds) read(File(requests, "$id.json")) { bounded(json.decodeFromString<DownloadRequest>(it)) } else null
-            val status =
-                if (id in statusIds) read(File(statuses, "$id.json")) { bounded(json.decodeFromString<DownloadStatus>(it)) } else null
+            val request = if (id in requestIds) read(File(requests, "$id.json"), ::parseRequest) else null
+            val status = if (id in statusIds) read(File(statuses, "$id.json"), ::parseStatus) else null
             if (request == null && status == null) null else DownloadItem(id, request, status)
         }
         return DownloadList(items, all.size - newest.size)
@@ -245,13 +243,7 @@ class DownloadStore(private val root: File) {
     fun worker(): WorkerInfo? {
         val file = workerFile
         if (!file.isFile) return null
-        return try {
-            json.decodeFromString<WorkerInfo>(Limits.readText(file, Limits.MAX_JSON_BYTES))
-        } catch (_: IOException) {
-            null
-        } catch (_: IllegalArgumentException) {
-            null
-        }
+        return read(file, ::parseWorker)
     }
 
     /** Cancels a pending request by deleting its request file. */
@@ -279,14 +271,11 @@ class DownloadStore(private val root: File) {
             ?.mapTo(HashSet()) { it.removeSuffix(".json") }
             .orEmpty()
 
-    private fun <T> read(file: File, decode: (String) -> T): T? =
+    /** [file] parsed by [parse], or null when it is over [Limits.MAX_JSON_BYTES], gone or unreadable. */
+    private fun <T> read(file: File, parse: (String) -> T?): T? =
         try {
-            decode(Limits.readText(file, Limits.MAX_JSON_BYTES))
+            parse(Limits.readText(file, Limits.MAX_JSON_BYTES))
         } catch (_: IOException) {
-            // Over Limits.MAX_JSON_BYTES, gone or unreadable: skipped.
-            null
-        } catch (_: IllegalArgumentException) {
-            // Half-synced or foreign JSON; it is picked up again on the next refresh.
             null
         }
 
@@ -298,6 +287,26 @@ class DownloadStore(private val root: File) {
             encodeDefaults = true
             explicitNulls = true
         }
+
+        /**
+         * A request file's text as [bounded] request, or null when it is not a request: half-synced or foreign JSON, picked up again on the
+         * next refresh.
+         */
+        fun parseRequest(text: String): DownloadRequest? = decodeOrNull { bounded(json.decodeFromString<DownloadRequest>(text)) }
+
+        /** A status file's text as [bounded] status, or null when it is not a status. */
+        fun parseStatus(text: String): DownloadStatus? = decodeOrNull { bounded(json.decodeFromString<DownloadStatus>(text)) }
+
+        /** `worker.json`'s text, or null when it is not valid. */
+        fun parseWorker(text: String): WorkerInfo? = decodeOrNull { json.decodeFromString<WorkerInfo>(text) }
+
+        /** kotlinx.serialization reports invalid JSON and mismatched fields as IllegalArgumentException (SerializationException). */
+        private inline fun <T> decodeOrNull(decode: () -> T): T? =
+            try {
+                decode()
+            } catch (_: IllegalArgumentException) {
+                null
+            }
 
         /** Numeric `id` prefix, used for ordering. */
         fun sortKey(id: String): Long = id.substringBefore('-').toLongOrNull() ?: 0L

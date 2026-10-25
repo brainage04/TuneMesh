@@ -110,6 +110,10 @@ android {
     buildFeatures {
         compose = true
     }
+    // JUnit 5 for the Jazzer fuzz tests; the vintage engine runs the JUnit 4 tests.
+    testOptions {
+        unitTests.all { it.useJUnitPlatform() }
+    }
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
@@ -177,12 +181,56 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
+    testImplementation(platform(libs.junit5.bom))
+    testImplementation(libs.junit5.jupiter)
+    testImplementation(libs.jazzer.junit)
+    testRuntimeOnly(libs.junit5.vintage.engine)
+    testRuntimeOnly(libs.junit5.platform.launcher)
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
     androidTestImplementation(libs.androidx.test.uiautomator)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     baselineProfile(project(":baselineprofile"))
+}
+
+// Jazzer fuzz tests (@FuzzTest in src/test). testDebugUnitTest runs each once per saved input in
+// src/test/resources/<package path>/<Class>Inputs/<method>/ (regression mode). ./gradlew :app:fuzz fuzzes every
+// target in turn for -Pfuzz.seconds seconds each (default 60); an input that fails is saved in that directory and
+// becomes a regression input once committed. One task per target, as Jazzer fuzzes one test per JVM.
+val fuzzTargets =
+    mapOf(
+        "library.M3u8FuzzTest" to listOf("parseWriteRoundTrip", "readWithLimits"),
+        "library.DownloadJsonFuzzTest" to listOf("request", "status", "worker"),
+        "library.DownloadInputsFuzzTest" to listOf("pastedText", "sharedText"),
+        "library.SanitizeFuzzTest" to listOf("component", "fileName"),
+    )
+val fuzzSeconds = providers.gradleProperty("fuzz.seconds").orElse("60")
+val fuzzTasks = fuzzTargets.flatMap { (testClass, methods) ->
+    methods.map { method ->
+        tasks.register<Test>(
+            "fuzz${testClass.substringAfterLast('.').removeSuffix("FuzzTest")}${method.replaceFirstChar(Char::uppercase)}"
+        ) {
+            description = "Fuzzes $testClass.$method with Jazzer for -Pfuzz.seconds seconds."
+            group = "verification"
+            val unitTests = tasks.named<Test>("testDebugUnitTest").get()
+            testClassesDirs = unitTests.testClassesDirs
+            classpath = unitTests.classpath
+            useJUnitPlatform()
+            filter.includeTestsMatching("io.github.brainage04.tunemesh.$testClass.$method")
+            environment("JAZZER_FUZZ", "1")
+            systemProperty("jazzer.max_duration", "${fuzzSeconds.get()}s")
+            outputs.upToDateWhen { false }
+        }
+    }
+}
+
+fuzzTasks.zipWithNext { earlier, later -> later.configure { mustRunAfter(earlier) } }
+
+tasks.register("fuzz") {
+    description = "Fuzzes every Jazzer target in turn for -Pfuzz.seconds seconds each (default 60)."
+    group = "verification"
+    dependsOn(fuzzTasks)
 }
 
 // With a lineage, every APK is re-signed after packaging: the v3 block carries this app's key plus

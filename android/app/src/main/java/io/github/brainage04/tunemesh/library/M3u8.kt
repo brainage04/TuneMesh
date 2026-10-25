@@ -167,8 +167,14 @@ object M3u8 {
 
     private fun durationSeconds(track: Track): Long? = if (track.durationMs > 0) (track.durationMs + 500) / 1000 else null
 
-    /** [label] cut to [Limits.MAX_LABEL_BYTES], line breaks replaced: tunemesh-core's `clean_label`. */
-    fun cleanLabel(label: String): String = Limits.cutUtf8(label, Limits.MAX_LABEL_BYTES).replace('\n', ' ').replace('\r', ' ')
+    /**
+     * [label] as written: line breaks replaced, cut to [Limits.MAX_LABEL_BYTES], Unicode White_Space trimmed (tunemesh-core's
+     * `clean_label`). Readers trim labels, so an untrimmed one (a file name ending in a space, say) would change on every rewrite.
+     */
+    fun cleanLabel(label: String): String =
+        LibraryFormat.trimWhiteSpace(
+            Limits.cutUtf8(LibraryFormat.trimWhiteSpace(label.replace('\n', ' ').replace('\r', ' ')), Limits.MAX_LABEL_BYTES)
+        )
 
     /** An `#EXTINF` line as kept when read: its label cut to [Limits.MAX_LABEL_BYTES] when longer. */
     private fun boundedExtinf(line: String): String {
@@ -181,15 +187,15 @@ object M3u8 {
 
     private val durationPattern = Regex("[+-]?[0-9]+")
 
+    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
+    private const val MAX_DURATION = (1L shl 31) - 2
+
     /** Duration and label of an `#EXTINF` line, as tunemesh-core's `parse_extinf` reads them. */
     private fun parseExtinf(line: String): Pair<Long?, String?> {
         val info = line.removePrefix(EXTINF)
         val duration =
             LibraryFormat.trimWhiteSpace(info.substringBefore(','))
                 .takeIf(durationPattern::matches)
-    /** Longest duration kept from an `#EXTINF` line (tunemesh-core stores it in 31 bits). */
-    private const val MAX_DURATION = (1L shl 31) - 2
-
                 ?.toLongOrNull()
                 ?.takeIf { it >= 0 }
                 ?.coerceAtMost(MAX_DURATION)

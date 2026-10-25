@@ -17,6 +17,46 @@ object DownloadInputs {
     /** Trimmed non-blank lines, duplicates within one paste dropped, in paste order. */
     fun lines(text: String): List<String> = text.lineSequence().map { it.trim() }.filter { it.isNotEmpty() }.distinct().toList()
 
+    private val url = Regex("""https?://\S+""")
+
+    /** What a share to TuneMesh asks for: the first URL in the shared [text], or the whole text, trimmed, as a search. */
+    fun sharedInput(text: String): String {
+        val trimmed = text.trim()
+        return url.find(trimmed)?.value?.let(::trimTrailingPunctuation) ?: trimmed
+    }
+
+    private const val SENTENCE_END = ".,;:!?'\">"
+    private const val OPENING = "([{"
+    private const val CLOSING = ")]}"
+
+    /**
+     * [url] without the punctuation that ends the sentence around it (`.,;:!?'"` and closing brackets). A closing bracket stays when the
+     * URL opened it, as in `https://en.wikipedia.org/wiki/Song_(band)`. Linear in the length of [url]: shared text has no length limit.
+     */
+    internal fun trimTrailingPunctuation(url: String): String {
+        val opened = IntArray(OPENING.length)
+        val closed = IntArray(CLOSING.length)
+        for (char in url) {
+            OPENING.indexOf(char).takeIf { it >= 0 }?.let { opened[it]++ }
+            CLOSING.indexOf(char).takeIf { it >= 0 }?.let { closed[it]++ }
+        }
+        var end = url.length
+        while (end > 0) {
+            val char = url[end - 1]
+            val bracket = CLOSING.indexOf(char)
+            val keep =
+                when {
+                    char in SENTENCE_END -> false
+                    bracket >= 0 -> opened[bracket] >= closed[bracket]
+                    else -> true
+                }
+            if (keep) break
+            if (bracket >= 0) closed[bracket]--
+            end--
+        }
+        return url.substring(0, end)
+    }
+
     fun kind(input: String): InputKind {
         val line = LibraryFormat.trimWhiteSpace(input)
         val lower = line.lowercase(Locale.ROOT)

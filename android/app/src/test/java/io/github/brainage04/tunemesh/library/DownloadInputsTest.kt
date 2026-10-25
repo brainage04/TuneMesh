@@ -80,4 +80,24 @@ class DownloadInputsTest {
         assertFalse(DownloadInputs.playlistFromSource("https://open.spotify.com/playlist/x", null, false))
         assertFalse(DownloadInputs.playlistFromSource("https://open.spotify.com/playlist/x", "Road trip", true))
     }
+
+    @Test
+    fun sharedInputIsTheFirstLinkOrTheText() {
+        assertEquals("https://youtu.be/x", DownloadInputs.sharedInput("Listen: https://youtu.be/x. And https://youtu.be/y"))
+        assertEquals(
+            "https://en.wikipedia.org/wiki/Song_(band)",
+            DownloadInputs.sharedInput("(https://en.wikipedia.org/wiki/Song_(band))."),
+        )
+        assertEquals("https://a.example/[x]", DownloadInputs.sharedInput("https://a.example/[x]]}"))
+        assertEquals("artist – song", DownloadInputs.sharedInput("  artist – song \n"))
+        assertEquals("", DownloadInputs.sharedInput(""))
+    }
+
+    /** Each trailing bracket counted the whole link again (quadratic), on the main thread of the share sheet. */
+    @Test(timeout = 5_000)
+    fun trailingBracketsTakeLinearTime() {
+        val brackets = ")".repeat(200_000)
+        assertEquals("https://a.example/x", DownloadInputs.sharedInput("https://a.example/x$brackets"))
+        assertEquals("https://a.example/(x)", DownloadInputs.sharedInput("https://a.example/(x)$brackets"))
+    }
 }

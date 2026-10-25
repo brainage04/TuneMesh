@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import io.github.brainage04.tunemesh.library.DownloadInputs
 import io.github.brainage04.tunemesh.library.Downloader
 import io.github.brainage04.tunemesh.ui.AppIcons
 import io.github.brainage04.tunemesh.ui.screens.DownloaderBanner
@@ -72,55 +73,12 @@ class ShareActivity : ComponentActivity() {
     }
 
     companion object {
-        private val url = Regex("""https?://\S+""")
-
         /**
-         * The first URL in the shared text, or the whole text as a search. Read as a CharSequence: apps may share styled text (a Spanned),
-         * for which getStringExtra returns null.
+         * The first URL in the shared text, or the whole text as a search ([DownloadInputs.sharedInput]). Read as a CharSequence: apps may
+         * share styled text (a Spanned), for which getStringExtra returns null.
          */
-        fun sharedInput(intent: Intent?): String {
-            val text = intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty().trim()
-            return url.find(text)?.value?.let(::trimTrailingPunctuation) ?: text
-        }
-
-        /**
-         * [url] without the punctuation that ends the sentence around it (`.,;:!?'"` and closing brackets). A closing bracket stays when
-         * the URL opened it, as in `https://en.wikipedia.org/wiki/Song_(band)`.
-         */
-        internal fun trimTrailingPunctuation(url: String): String {
-            var end = url.length
-            while (end > 0) {
-                val char = url[end - 1]
-                val keep =
-                    when (char) {
-                        '.',
-                        ',',
-                        ';',
-                        ':',
-                        '!',
-                        '?',
-                        '\'',
-                        '"',
-                        '>' -> false
-                        ')',
-                        ']',
-                        '}' -> {
-                            val open =
-                                when (char) {
-                                    ')' -> '('
-                                    ']' -> '['
-                                    else -> '{'
-                                }
-                            val part = url.substring(0, end)
-                            part.count { it == open } >= part.count { it == char }
-                        }
-                        else -> true
-                    }
-                if (keep) break
-                end--
-            }
-            return url.substring(0, end)
-        }
+        fun sharedInput(intent: Intent?): String =
+            DownloadInputs.sharedInput(intent?.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty())
     }
 }
 
