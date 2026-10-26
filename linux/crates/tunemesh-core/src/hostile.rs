@@ -200,7 +200,7 @@ pub(crate) fn request_json(id: &str, len: usize) -> String {
 /// reader the most per byte), filled up with one-character tracks.
 pub(crate) fn status_json(i: usize, len: usize) -> String {
     let long = |c: &str, n: usize| c.repeat(n);
-    if i % 2 == 0 {
+    if i.is_multiple_of(2) {
         let v = serde_json::json!({
             "version": 1, "id": long("i", 1_000), "input": long("q", 100_000),
             "state": "done", "title": long("t", 50_000), "progress": 0.5,
