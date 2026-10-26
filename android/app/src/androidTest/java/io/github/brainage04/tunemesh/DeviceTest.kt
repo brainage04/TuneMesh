@@ -15,6 +15,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.brainage04.tunemesh.data.CoverProvider
 import io.github.brainage04.tunemesh.data.LibraryScanner
+import io.github.brainage04.tunemesh.data.LibraryState
 import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlaybackService
@@ -167,6 +168,45 @@ class DeviceTest {
         File(root, "G/A/cover.jpg").apply { parentFile!!.mkdirs() }.writeBytes(HostileLibrary.smallJpeg())
         assertNotNull(loader.diskFile(root, track("G/A/plain.mp3", HostileLibrary.mp3("p", "G", "A", 1))))
         File(context.cacheDir, "test-covers").deleteRecursively()
+    }
+
+    /**
+     * A scan of the previous library folder that ends after the folder changed is not shown under the new one, and the new folder's scan
+     * does not start from the old folder's tracks.
+     */
+    @Test
+    fun aScanOfThePreviousFolderIsNotShownUnderTheNewOne() {
+        InstrumentationRegistry.getInstrumentation()
+            .uiAutomation
+            .executeShellCommand("appops set --uid ${context.packageName} MANAGE_EXTERNAL_STORAGE allow")
+            .close()
+        repeat(OLD_TRACKS) { writeWav(File(root, "Old/Album/$it.wav"), seconds = 1) }
+        val next =
+            File(context.cacheDir, "test-library-next").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+        try {
+            writeWav(File(next, "New/Album/new.wav"), seconds = 1)
+            app.repository.setLibraryRoot(root.absolutePath)
+            val scanning = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < scanning && !app.repository.state.value.scanning) Thread.sleep(1)
+            app.repository.setLibraryRoot(next.absolutePath)
+            var stale: String? = null
+            var settled = false
+            val end = System.currentTimeMillis() + 60_000
+            while (!settled && System.currentTimeMillis() < end) {
+                val state = app.repository.state.value
+                val shown = state.root == next
+                if (shown) stale = stale ?: state.index.tracks.firstOrNull { it.path.startsWith("Old/") }?.path
+                settled = shown && state.scanned()
+                Thread.sleep(2)
+            }
+            assertNull("shown under the new folder: ${stale.orEmpty()}", stale)
+            assertEquals(listOf("New/Album/new.wav"), app.repository.state.value.index.tracks.map { it.path })
+        } finally {
+            next.deleteRecursively()
+        }
     }
 
     /** R2-opus-5: quick playlist changes run one after another, so none is lost. */
@@ -361,6 +401,13 @@ class DeviceTest {
         file.parentFile!!.mkdirs()
         val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF1ED760.toInt()) }
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+    }
+
+    private fun LibraryState.scanned() = loaded && !scanning && index.tracks.isNotEmpty()
+
+    private companion object {
+        /** Enough files that their scan is still running when the folder changes. */
+        const val OLD_TRACKS = 200
     }
 
     private fun writeWav(file: File, seconds: Int) {

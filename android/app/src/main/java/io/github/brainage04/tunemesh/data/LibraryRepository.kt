@@ -200,18 +200,23 @@ class LibraryRepository(
     private fun refreshLocked() {
         val access = hasAccess()
         val root = settings.libraryRoot
-        if (!access) {
-            _state.update { it.copy(root = root, hasAccess = false) }
-            return
-        }
         // An unchanged library keeps its index (the scan returns the one it was given): a new one would make every screen showing it
         // recompose (and an open playlist look its entries up again) after each periodic rescan.
-        val previous = _state.value.let { if (it.root == root) it.index else LibraryIndex.EMPTY }
-        _state.update { it.copy(root = root, hasAccess = true, scanning = true) }
+        var previous = LibraryIndex.EMPTY
+        // The state is that of another folder when the library folder changed after [root] was read: that change starts a refresh of its
+        // own, so this one does nothing.
+        val current =
+            updateIfRoot(root) {
+                previous = it.index
+                if (access) it.copy(hasAccess = true, scanning = true) else it.copy(hasAccess = false)
+            }
+        if (!current || !access) return
         try {
             ensureRoot(root)
             val result = scanner.scan(root, previous)
-            _state.update { it.copy(index = result.index, loaded = true, error = null) }
+            // The library folder changed during the scan: the old folder's tracks are not shown under the new one (the change starts a
+            // scan of its own, which also must not take them as its previous index).
+            if (!updateIfRoot(root) { it.copy(index = result.index, loaded = true, error = null) }) return
             // A new index: playlist entries hold track ordinals of the index they were read with, so the open one is read again.
             reloadPlaylists(changed = if (result.index === previous) emptySet() else null)
             // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
@@ -219,10 +224,20 @@ class LibraryRepository(
             reloadDownloads()
             observe(result.directories)
         } catch (error: IOException) {
-            _state.update { it.copy(loaded = true, error = error.message ?: "Cannot read $root") }
+            updateIfRoot(root) { it.copy(loaded = true, error = error.message ?: "Cannot read $root") }
         } finally {
-            _state.update { it.copy(scanning = false) }
+            updateIfRoot(root) { it.copy(scanning = false) }
         }
+    }
+
+    /** Applies [change] while the state is still that of library [root]; false when the library folder changed meanwhile. */
+    private fun updateIfRoot(root: File, change: (LibraryState) -> LibraryState): Boolean {
+        var applied = false
+        _state.update { state ->
+            applied = state.root == root
+            if (applied) change(state) else state
+        }
+        return applied
     }
 
     private fun ensureRoot(root: File) {
@@ -384,7 +399,8 @@ class LibraryRepository(
     }
 
     fun setLibraryRoot(path: String) {
-        val file = File(path.trim())
+        // Absolute, as the settings keep it: a refresh applies its scan only while the state's root is the one it read from the settings.
+        val file = File(path.trim()).absoluteFile
         settings.libraryRoot = file
         _state.update { LibraryState(file, hasAccess()) }
         stopObserving()

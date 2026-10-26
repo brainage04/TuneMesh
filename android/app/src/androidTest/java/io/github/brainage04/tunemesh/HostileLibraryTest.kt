@@ -119,7 +119,7 @@ class HostileLibraryTest {
             timed("scan") {
                 app.repository.setLibraryRoot(root.absolutePath)
                 waitFor(SCAN_TIMEOUT_MS, "the first full scan") { state ->
-                    state.loaded && !state.scanning && state.index.tracks.isNotEmpty()
+                    state.root == root && state.loaded && !state.scanning && state.index.tracks.isNotEmpty()
                 }
             }
         val state = app.repository.state.value
