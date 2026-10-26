@@ -276,7 +276,8 @@ pub fn conflict_copy(file: &str) -> Option<(&str, &str)> {
 
 /// Merges the conflict copies in `Playlists/` that are due (contract: "Who
 /// merges"): at once those naming `own_device_id`'s short form (the first 7
-/// characters of this device's Syncthing ID, when known), others once their
+/// characters of this device's Syncthing ID, when known; Syncthing names a
+/// copy after the device that made the winning version), others once their
 /// modification time is `MERGE_AFTER` before `now`. Each playlist is merged
 /// under the `Playlists/` lock; returns the playlists merged into, each with
 /// its result (an error leaves its files as they were).
@@ -332,6 +333,10 @@ fn merge_copies(root: &Path, bases: &Bases, name: &str, copies: &[String]) -> io
     let base = bases.base(name);
     let mut last = None;
     for file in copies {
+        // Merged meanwhile by another process on this machine.
+        if !dir.is_file(file) {
+            continue;
+        }
         let copy_name = &file[..file.len() - ".m3u8".len()];
         let winner = Playlist::read(root, name)?;
         let copy = Playlist::read(root, copy_name)?;
@@ -515,6 +520,34 @@ mod tests {
         let done = merge_conflicts(root, &Bases::none(), None, later);
         assert_eq!(done.len(), 1);
         assert_eq!(read_keys(root, "P"), "abx");
+    }
+
+    /// Two mergers on one machine: the lock makes the second find the copy
+    /// gone, so it neither fails nor writes.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn concurrent_merges_merge_once() {
+        let lib = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        write(root, "P.m3u8", &lines("ab"));
+        write(
+            root,
+            "P.sync-conflict-20261019-101500-AAAAAAA.m3u8",
+            &lines("abx"),
+        );
+        let results = std::thread::scope(|s| {
+            let run = || merge_conflicts(root, &Bases::none(), Some("AAAAAAA"), SystemTime::now());
+            let (t1, t2) = (s.spawn(run), s.spawn(run));
+            [t1.join().unwrap(), t2.join().unwrap()]
+        });
+        for r in results.iter().flatten() {
+            assert!(r.1.is_ok(), "{:?}", r.1);
+        }
+        assert_eq!(read_keys(root, "P"), "abx");
+        assert_eq!(
+            fs::read_dir(playlist::playlists_dir(root)).unwrap().count(),
+            1
+        );
     }
 
     /// A merge that would be too large, or a copy without its playlist,

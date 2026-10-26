@@ -1,0 +1,9 @@
+#EXTM3U
+#EXTINF:400,X - D
+../X/Album/d.mp3
+#EXTINF:100,X - A
+../X/Album/a.mp3
+#EXTINF:200,X - B
+../X/Album/b.mp3
+#EXTINF:300,X - C
+../X/Album/c.mp3

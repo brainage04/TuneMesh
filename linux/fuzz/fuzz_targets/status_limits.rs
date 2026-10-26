@@ -41,30 +41,31 @@ struct Input {
 fuzz_target!(|i: Input| {
     // Each text at most 16 KiB, past every per-field limit.
     const T: usize = 16 * 1024;
+    let tracks: Vec<String> = (0..i.tracks.min(12_000))
+        .map(|n| format!("{}{n}", i.track.get(362)))
+        .collect();
     let status = Status {
         version: 1,
-        id: ID.to_owned(),
-        input: i.input.get(T),
+        id: ID.into(),
+        input: i.input.get(T).into(),
         state: RequestState::Done,
-        title: i.title.map(|t| t.get(T)),
+        title: i.title.map(|t| t.get(T).into()),
         progress: i.progress.filter(|p| p.is_finite()),
-        message: i.message.map(|t| t.get(T)),
+        message: i.message.map(|t| t.get(T).into()),
         // Up to 12,000 library paths (three 120-byte components each).
-        tracks: (0..i.tracks.min(12_000))
-            .map(|n| format!("{}{n}", i.track.get(362)))
-            .collect(),
+        tracks: tracks.iter().map(String::as_str).collect(),
         items_done: None,
         items_total: None,
         failures: (0..i.failures.min(300))
             .map(|_| Failure {
-                item: i.item.get(T),
-                error: i.error.get(T),
+                item: i.item.get(T).into(),
+                error: i.error.get(T).into(),
             })
             .collect(),
         warnings: (0..i.warnings)
-            .map(|n| format!("{}{n}", i.warning.get(T)))
+            .map(|n| format!("{}{n}", i.warning.get(T)).into())
             .collect(),
-        updated_at: "2026-10-25T00:00:00Z".to_owned(),
+        updated_at: "2026-10-25T00:00:00Z".into(),
     };
     let json = status.to_json().unwrap();
     assert!(
@@ -74,9 +75,7 @@ fuzz_target!(|i: Input| {
     );
     let back = parse_status(&json, ID).expect("a written status reads back");
     assert_eq!(back.state, status.state);
-    assert_eq!(back.input, {
-        let mut s = status.clone();
-        s.clamp();
-        s.input
-    });
+    assert_eq!(back.input, status.input);
+    // What the worker keeps is what it writes: its fields are cut already.
+    assert!(back.tracks.iter().eq(status.tracks.iter().take(back.tracks.len())));
 });

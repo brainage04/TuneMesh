@@ -16,7 +16,7 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 serde_json = "1"
 tunemesh-core = { path = "../crates/tunemesh-core" }
-tunemesh-worker = { path = "../crates/tunemesh-worker" }
+tunemesh-worker = { path = "../crates/tunemesh-worker", features = ["fuzzing"] }
 
 [profile.release]
 debug = 1

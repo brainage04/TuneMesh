@@ -376,10 +376,12 @@ fn existing_casing(parent: &Dir, name: &str) -> String {
         .unwrap_or_else(|| name.to_owned())
 }
 
-pub enum Input {
+fuzz_pub! {
+enum Input {
     Spotify(String),
     Url(String),
     Search(String),
+}
 }
 
 fn host(url: &str) -> Option<String> {
@@ -389,9 +391,10 @@ fn host(url: &str) -> Option<String> {
     Some(host.to_ascii_lowercase())
 }
 
+fuzz_pub! {
 /// Classifies request input: Spotify URL, other URL, or search text. Bare
 /// `host.tld/path` input without a scheme counts as an https URL.
-pub fn classify(input: &str) -> Input {
+fn classify(input: &str) -> Input {
     let input = input.trim();
     let lower = input.to_ascii_lowercase();
     let url = if lower.starts_with("http://") || lower.starts_with("https://") {
@@ -414,6 +417,7 @@ pub fn classify(input: &str) -> Input {
         Some(u) => Input::Url(u),
         None => Input::Search(input.to_owned()),
     }
+}
 }
 
 /// Appends `tracks` to the playlist `name` (Liked Songs: inserted at the

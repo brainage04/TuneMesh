@@ -20,5 +20,9 @@ sha2 = "0.10"
 flate2 = "1"
 lofty = "0.25"
 
+[features]
+# Makes the parsers and filters public for the fuzz targets in `linux/fuzz`.
+fuzzing = []
+
 [dev-dependencies]
 tempfile = "3"

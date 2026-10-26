@@ -7,10 +7,11 @@ use std::time::{Duration, UNIX_EPOCH};
 
 use libfuzzer_sys::fuzz_target;
 use tunemesh_core::limits::{
-    MAX_FAILURES, MAX_INPUT_BYTES, MAX_JSON_BYTES, MAX_MESSAGE_BYTES, MAX_REQUEST_PLAYLIST_BYTES,
-    MAX_STATUS_TRACKS, MAX_TEXT_BYTES, MAX_WARNINGS,
+    MAX_DEVICE_BYTES, MAX_FAILURES, MAX_INPUT_BYTES, MAX_JSON_BYTES, MAX_LISTED_WARNINGS,
+    MAX_MESSAGE_BYTES, MAX_REQUEST_PLAYLIST_BYTES, MAX_STATUS_TRACKS, MAX_TEXT_BYTES,
+    MAX_TIMESTAMP_BYTES, MAX_TRACK_PATH_BYTES, MAX_WARNINGS, MAX_WORKER_ID_BYTES,
 };
-use tunemesh_core::request::{Status, parse_request, parse_status};
+use tunemesh_core::request::{Status, parse_request, parse_status, parse_status_row};
 use tunemesh_core::worker;
 
 const ID: &str = "1791265297123-3f9c2a1b";
@@ -39,7 +40,9 @@ fuzz_target!(|data: &[u8]| {
                 .as_ref()
                 .is_none_or(|p| p.len() <= MAX_REQUEST_PLAYLIST_BYTES)
         );
-        assert!(r.requested_by.len() <= MAX_TEXT_BYTES);
+        assert!(r.input.len() <= MAX_INPUT_BYTES);
+        assert!(r.requested_by.len() <= MAX_DEVICE_BYTES);
+        assert!(r.requested_at.len() <= MAX_TIMESTAMP_BYTES);
         let json = serde_json::to_vec_pretty(&r).unwrap();
         assert_eq!(parse_request(&json, ID).unwrap(), r);
     }
@@ -62,9 +65,15 @@ fuzz_target!(|data: &[u8]| {
                 .all(|f| f.item.len() <= MAX_TEXT_BYTES && f.error.len() <= MAX_TEXT_BYTES)
         );
         assert!(s.tracks.len() <= MAX_STATUS_TRACKS);
-        let mut c = s.clone();
-        c.clamp();
-        assert_eq!(c, s, "clamp is not idempotent");
+        assert!(s.tracks.iter().all(|t| t.len() <= MAX_TRACK_PATH_BYTES));
+        assert!(s.updated_at.len() <= MAX_TIMESTAMP_BYTES);
+        // A list row of the same file agrees and keeps less.
+        let row = parse_status_row(data, ID).expect("a valid status is a valid row");
+        assert_eq!((row.state, &row.input, &row.title), (s.state, &s.input, &s.title));
+        assert_eq!(row.track_count.get(), s.tracks.len());
+        assert_eq!(row.failure_count.get(), s.failures.len());
+        assert!(row.warnings.len() <= MAX_LISTED_WARNINGS);
+        assert_eq!(row.warning_count(), s.warnings.len());
         // What the worker would write for it reads back the same.
         let json = s.to_json().unwrap();
         assert!(json.len() as u64 <= MAX_JSON_BYTES);
@@ -77,6 +86,12 @@ fuzz_target!(|data: &[u8]| {
         for secs in [0, 1_791_265_297, u64::from(u32::MAX), 1 << 40] {
             let _ = w.is_fresh_at(UNIX_EPOCH + Duration::from_secs(secs));
         }
+        assert!(w.device.len() <= MAX_DEVICE_BYTES && w.heartbeat_at.len() <= MAX_TIMESTAMP_BYTES);
+        assert!(
+            [&w.machine, &w.instance, &w.worker_version]
+                .iter()
+                .all(|f| f.len() <= MAX_WORKER_ID_BYTES)
+        );
         let json = serde_json::to_vec_pretty(&w).unwrap();
         assert_eq!(worker::parse(&json), Some(w));
     }

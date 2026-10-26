@@ -160,14 +160,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
-      # std is rebuilt with the sanitizer too (-Zbuild-std). The three skipped
+      # std is rebuilt with the sanitizer too (-Zbuild-std). The two skipped
       # tests assert time and memory bounds, which ASan's overhead breaks.
       - run: |
           nix develop .#nightly -c bash -c 'cd linux &&
             RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address ASAN_OPTIONS=detect_leaks=1 \
             cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
               -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
-              --skip huge_album_builds_quickly --skip hostile_library_stays_bounded --skip bulk_edits_are_linear'
+              --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
 
   android:
     name: Android (unit tests, debug build)

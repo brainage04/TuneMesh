@@ -120,8 +120,8 @@ When two devices change one playlist before Syncthing has synced either
 change, Syncthing keeps one version as `Playlists/<Name>.m3u8` (the winner)
 and renames the other to
 `Playlists/<Name>.sync-conflict-<YYYYMMDD>-<HHMMSS>-<ID7>.m3u8` (the copy),
-where `<ID7>` is the first 7 characters of the Syncthing device ID of the
-device whose version lost. The apps merge each copy into the playlist and
+where `<ID7>` is the first 7 characters of a Syncthing device ID (see "Who
+merges"). The apps merge each copy into the playlist and
 delete it, so neither device's edit is lost, and a removal (an unlike, a
 removed entry) is never undone by the other device's unchanged entries.
 
@@ -140,13 +140,24 @@ storage (`filesDir/playlist-base/`). A base follows the playlist limits (a
 too-large playlist has none); renaming a playlist moves its base, deleting
 one removes it.
 
-Who merges. The device whose short ID a copy names merges it as soon as it
-sees it, if it knows its own Syncthing device ID (the desktop app asks its
-Syncthing). Any other device, and a device that does not know its ID
-(Android, the worker), merges a copy once the copy's modification time is at
-least 10 minutes in the past. Several devices may merge the same copy; with
-the same base they write the same bytes, and Syncthing does not turn two
-identical files into a conflict.
+Who merges. `<ID7>` names the device that made the winning version (tested
+with Syncthing 2.1.3: of two concurrent edits the later one wins, and both
+devices name the copy after the winner's device). That device merges the
+copy as soon as it sees it, if it knows its own Syncthing device ID (the
+desktop app asks its Syncthing). Every other device merges a copy only once
+the copy's modification time is at least 10 minutes in the past; a device
+that cannot know its own ID (Android, which never talks to Syncthing, and
+the worker) is always such an other device.
+
+The merge is a pure function of the playlist file (the winner), the copy and
+the merging device's base, so two devices with the same base write the same
+bytes, and Syncthing does not turn two identical concurrent writes into a
+conflict (tested with Syncthing 2.1.3). Two devices with different bases
+can write different results (the `different-bases-*` test cases); Syncthing
+then keeps the later one and makes the other a new conflict copy, which is
+merged in turn. On one machine the merge runs under the `Playlists/` lock
+and re-reads the playlist and the copy there, so a second merger finds the
+copy gone instead of overwriting the first merger's result.
 
 How. A copy is merged only if its name is exactly as above (`<Name>` not
 empty, 8 digits, `-`, 6 digits, `-`, 7 characters of `A`-`Z` and `2`-`7`)

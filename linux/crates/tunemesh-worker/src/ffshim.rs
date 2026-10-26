@@ -24,12 +24,14 @@ use std::process::Command;
 use std::sync::OnceLock;
 use std::{env, fs, io};
 
+fuzz_pub! {
 /// Demuxers ffmpeg may use on files yt-dlp hands it. None of them opens
 /// other files or URLs (`mov` ignores data references unless
 /// `enable_drefs` is set). `ffmetadata` reads the chapter files yt-dlp
 /// writes itself.
-pub const FORMATS: &str = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,mp3,flac,wav,aac,aiff,mpegts,flv,\
+const FORMATS: &str = "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm,ogg,mp3,flac,wav,aac,aiff,mpegts,flv,\
                            ffmetadata,image2,jpeg_pipe,png_pipe,webp_pipe,gif";
+}
 
 const ENV_FFMPEG: &str = "TUNEMESH_REAL_FFMPEG";
 const ENV_FFPROBE: &str = "TUNEMESH_REAL_FFPROBE";
@@ -379,13 +381,14 @@ fn check_args<'a>(args: &'a [OsString], root: &Path) -> Result<Vec<Arg<'a>>, Str
     Ok(out)
 }
 
+fuzz_pub! {
 /// The real program's arguments, after `check_args`. ffmpeg gets the
 /// confinement options right before every input option (`-i`, `-i:x`), so
 /// they come after any option the caller gave for that input. ffprobe gets
 /// the caller's options, then the confinement options, then `-i <input>`
 /// (its input is the last argument). A call with no input (`-version`)
 /// passes unchanged.
-pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
+fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsString>, String> {
     let parsed = check_args(args, root)?;
     let positional = parsed
         .iter()
@@ -420,6 +423,7 @@ pub fn rewrite(program: &str, args: &[OsString], root: &Path) -> Result<Vec<OsSt
         }
     }
     Ok(out)
+}
 }
 
 /// Runs as the `ffmpeg` or `ffprobe` shim; returns only on error.

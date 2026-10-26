@@ -1347,6 +1347,60 @@ mod tests {
         );
     }
 
+    /// The desktop app's writer and a worker on the same machine both edit
+    /// playlists: edits from two processes are serialised by the
+    /// `Playlists/` lock, so none is lost (without it, each re-read and
+    /// write raced the other's).
+    #[test]
+    #[cfg_attr(miri, ignore = "child processes")]
+    fn edits_from_two_processes_are_all_kept() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        Playlist::create(root, "Shared").unwrap();
+        let children: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|tag| {
+                std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "playlist::tests::lock_child",
+                        "--include-ignored",
+                    ])
+                    .env("TUNEMESH_LOCK_ROOT", root)
+                    .env("TUNEMESH_LOCK_TAG", tag)
+                    .spawn()
+                    .unwrap()
+            })
+            .collect();
+        for mut c in children {
+            assert!(c.wait().unwrap().success());
+        }
+        let p = Playlist::read(root, "Shared").unwrap();
+        assert_eq!(p.entries.len(), 2 * LOCK_EDITS);
+    }
+
+    const LOCK_EDITS: usize = 150;
+
+    /// The child half of `edits_from_two_processes_are_all_kept`.
+    #[test]
+    #[ignore = "run by edits_from_two_processes_are_all_kept"]
+    fn lock_child() {
+        let (Some(root), Some(tag)) = (
+            std::env::var_os("TUNEMESH_LOCK_ROOT"),
+            std::env::var("TUNEMESH_LOCK_TAG").ok(),
+        ) else {
+            return;
+        };
+        let root = Path::new(&root);
+        for i in 0..LOCK_EDITS {
+            Playlist::edit(root, &Bases::none(), "Shared", &|_| None, |p| {
+                p.append([format!("{tag}{i}.mp3").as_str()]);
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
     /// Round 3 (trivial): a 30,003-byte line of invalid UTF-8, within the
     /// 32 KiB line limit, failed `read` as too large (its U+FFFD
     /// replacements did not fit a 16-bit span) while `summary` listed it.
@@ -1474,30 +1528,36 @@ mod tests {
         assert_eq!(names[0], "P0000");
     }
 
-    /// Bulk edits are linear: removing or unliking 100,000 entries is quick
-    /// (they were quadratic: 11 s for 100,000 unlikes).
+    /// Bulk edits are linear: removing, unliking and liking 4n entries takes
+    /// about 4 times as long as n (they were quadratic: 11 s for 100,000
+    /// unlikes). A ratio rather than a time limit, so it holds under
+    /// sanitizers and on slow machines.
     #[test]
     #[cfg_attr(miri, ignore = "too slow under Miri")]
     fn bulk_edits_are_linear() {
-        let tracks: Vec<String> = (0..100_000).map(|i| format!("A/B/{i}.mp3")).collect();
-        let mut p = Playlist::new(LIKED_SONGS);
-        p.append(tracks.iter().map(String::as_str));
-        let start = std::time::Instant::now();
-        let mut q = p.clone();
-        q.remove_positions(&(0..100_000).step_by(2).collect::<Vec<_>>());
-        assert_eq!(q.entries.len(), 50_000);
-        assert_eq!(q.entries.get(0).unwrap().track(), Some("A/B/1.mp3"));
-        p.unlike_all(tracks.iter().skip(1).map(String::as_str));
-        assert_eq!(p.entries.len(), 1);
-        p.like_all(tracks.iter().map(String::as_str));
-        assert_eq!(p.entries.len(), 100_000);
-        assert_eq!(p.entries.get(0).unwrap().track(), Some("A/B/1.mp3"));
-        assert_eq!(p.entries.get(99_999).unwrap().track(), Some("A/B/0.mp3"));
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(2),
-            "{:?}",
+        fn edits(n: usize) -> std::time::Duration {
+            let tracks: Vec<String> = (0..n).map(|i| format!("A/B/{i}.mp3")).collect();
+            let mut p = Playlist::new(LIKED_SONGS);
+            p.append(tracks.iter().map(String::as_str));
+            let start = std::time::Instant::now();
+            let mut q = p.clone();
+            q.remove_positions(&(0..n).step_by(2).collect::<Vec<_>>());
+            assert_eq!(q.entries.len(), n / 2);
+            assert_eq!(q.entries.get(0).unwrap().track(), Some("A/B/1.mp3"));
+            p.unlike_all(tracks.iter().skip(1).map(String::as_str));
+            assert_eq!(p.entries.len(), 1);
+            p.like_all(tracks.iter().map(String::as_str));
+            assert_eq!(p.entries.len(), n);
+            assert_eq!(p.entries.get(0).unwrap().track(), Some("A/B/1.mp3"));
+            assert_eq!(p.entries.get(n - 1).unwrap().track(), Some("A/B/0.mp3"));
             start.elapsed()
-        );
+        }
+        // The fastest of three runs, so a pause elsewhere does not count.
+        let best = |n| (0..3).map(|_| edits(n)).min().unwrap();
+        let (small, large) = (best(25_000), best(100_000));
+        let ratio = large.as_secs_f64() / small.as_secs_f64().max(1e-6);
+        // Linear: about 4 (n log n: under 5); quadratic: about 16.
+        assert!(ratio < 8.0, "{small:?} for 25,000, {large:?} for 100,000");
     }
 
     /// The span storage behaves like a plain list under random edits, and

@@ -12,8 +12,8 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
 use crate::limits::{
-    MAX_JSON_BYTES, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_LINE_BYTES,
-    MAX_PLAYLISTS,
+    MAX_JSON_BYTES, MAX_LABEL_BYTES, MAX_LISTED_REQUESTS, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES,
+    MAX_PLAYLIST_LINE_BYTES, MAX_PLAYLISTS, MAX_STIGNORE_BYTES,
 };
 
 /// What to generate.
@@ -23,7 +23,8 @@ pub struct Options {
     pub album_tracks: usize,
     /// Audio files in total; the rest are albums of 10 under `Artist N/`.
     pub files: usize,
-    /// Status files of about 1 MiB (the read limit) full of warnings.
+    /// Status files just under 1 MiB (the read limit), every field past
+    /// its limit or as many tiny entries as fit, without request files.
     pub statuses: usize,
     /// Request files (URLs the worker refuses), more than it considers.
     pub requests: usize,
@@ -164,23 +165,122 @@ fn id(i: usize) -> String {
     format!("{}-{:08x}", 1_700_000_000_000u64 + i as u64, i)
 }
 
-/// A status file of about `len` bytes, mostly warnings.
-fn status_json(id: &str, len: usize) -> String {
-    let mut warnings = Vec::new();
-    let mut size = 0;
-    let mut n = 0;
-    while size + 120 < len {
-        let w = format!("Warning {n:06}: {}", "w".repeat(60));
-        size += w.len() + 8;
-        warnings.push(w);
-        n += 1;
+/// JSON of `v` with `field` (a list) filled with `item(i)` until the file
+/// is about `len` bytes.
+fn fill(
+    mut v: serde_json::Value,
+    field: &str,
+    len: usize,
+    item: impl Fn(usize) -> serde_json::Value,
+) -> String {
+    let base = v.to_string().len();
+    let one = item(0).to_string().len() + 1;
+    let n = len.saturating_sub(base) / one;
+    v[field] = (0..n).map(item).collect();
+    v.to_string()
+}
+
+/// A request file of about `len` bytes with every field longer than its
+/// limit (the input most).
+fn request_json(id: &str, len: usize) -> String {
+    let v = serde_json::json!({
+        "version": 1, "id": "i".repeat(1_000), "input": "",
+        "playlist": "p".repeat(20_000), "playlistFromSource": true,
+        "requestedBy": "d".repeat(20_000), "requestedAt": "t".repeat(20_000),
+    });
+    let input = len.saturating_sub(v.to_string().len());
+    let mut v = v;
+    v["input"] = format!("https://127.0.0.1/hostile/{id}/{}", "q".repeat(input)).into();
+    v.to_string()
+}
+
+/// A status file of about `len` bytes. Even `i`: every text field longer
+/// than its limit and every list past its count, filled up with long track
+/// paths. Odd `i`: as many tiny entries as fit (the shape that costs a
+/// reader the most per byte), filled up with one-character tracks.
+fn status_json(i: usize, len: usize) -> String {
+    let long = |c: &str, n: usize| c.repeat(n);
+    if i % 2 == 0 {
+        let v = serde_json::json!({
+            "version": 1, "id": long("i", 1_000), "input": long("q", 100_000),
+            "state": "done", "title": long("t", 50_000), "progress": 0.5,
+            "message": long("m", 100_000), "itemsDone": u32::MAX, "itemsTotal": u32::MAX,
+            "warnings": (0..60).map(|n| format!("{n} {}", long("w", 2_000))).collect::<Vec<_>>(),
+            "failures": (0..250).map(|_| serde_json::json!({"item": long("f", 1_000), "error": long("e", 1_000)})).collect::<Vec<_>>(),
+            "updatedAt": long("u", 50_000), "tracks": [],
+        });
+        fill(v, "tracks", len, |n| {
+            format!("{n:06}{}", long("p", 5_000)).into()
+        })
+    } else {
+        let v = serde_json::json!({
+            "version": 1, "input": "q", "state": "failed", "title": "t", "message": "m",
+            "warnings": vec!["w"; 80],
+            "failures": vec![serde_json::json!({"item": "", "error": ""}); 300],
+            "updatedAt": "u", "tracks": [],
+        });
+        fill(v, "tracks", len, |_| "a".into())
     }
-    serde_json::json!({
-        "version": 1, "id": id, "input": "https://127.0.0.1/hostile",
-        "state": "done", "title": "Hostile", "message": "m".repeat(64 * 1024),
-        "tracks": [], "warnings": warnings, "updatedAt": "2026-10-20T00:00:00Z",
-    })
-    .to_string()
+}
+
+/// A `worker.json` of about `len` bytes with every field longer than its
+/// limit (a heartbeat that is not fresh).
+fn worker_json(len: usize) -> String {
+    let v = serde_json::json!({
+        "version": 1, "device": "", "machine": "m".repeat(10_000),
+        "instance": "i".repeat(10_000), "pid": u32::MAX,
+        "workerVersion": "v".repeat(10_000), "heartbeatAt": "h".repeat(10_000),
+    });
+    let device = len.saturating_sub(v.to_string().len());
+    let mut v = v;
+    v["device"] = "d".repeat(device).into();
+    v.to_string()
+}
+
+/// Size of the files `max_requests` and `max_statuses` write: just under
+/// the read limit.
+const MAX_FILE: usize = MAX_JSON_BYTES as usize - 1024;
+
+/// Writes `n` request files (ids `id(0)`..`id(n)`), each just under the
+/// 1 MiB read limit with every field longer than its limit.
+pub fn max_requests(root: &Path, n: usize) -> io::Result<()> {
+    requests_at(root, 0..n, |_| true)
+}
+
+/// Writes `n` status files with the same ids as `max_requests`, each just
+/// under the 1 MiB read limit: every field past its limit, or (every other
+/// file) as many tiny entries as fit.
+pub fn max_statuses(root: &Path, n: usize) -> io::Result<()> {
+    statuses_at(root, 0..n)
+}
+
+fn requests_at(
+    root: &Path,
+    ids: std::ops::Range<usize>,
+    big: impl Fn(usize) -> bool,
+) -> io::Result<()> {
+    for i in ids {
+        let json = if big(i) {
+            request_json(&id(i), MAX_FILE)
+        } else {
+            request_json(&id(i), 0)
+        };
+        write(
+            &root.join(format!(".tunemesh/requests/{}.json", id(i))),
+            json.as_bytes(),
+        )?;
+    }
+    Ok(())
+}
+
+fn statuses_at(root: &Path, ids: std::ops::Range<usize>) -> io::Result<()> {
+    for i in ids {
+        write(
+            &root.join(format!(".tunemesh/status/{}.json", id(i))),
+            status_json(i, MAX_FILE).as_bytes(),
+        )?;
+    }
+    Ok(())
 }
 
 /// The track path at index `i` of the big album.
@@ -244,26 +344,36 @@ pub fn generate(root: &Path, o: &Options) -> io::Result<()> {
         )?;
     }
 
-    // Requests (more than the worker considers) and status files.
-    for i in 0..o.requests {
-        let json = serde_json::json!({
-            "version": 1, "id": id(i), "input": format!("https://127.0.0.1/hostile/{i}"),
-            "playlist": null, "playlistFromSource": false,
-            "requestedBy": "hostile", "requestedAt": "2026-10-20T00:00:00Z",
-        });
-        write(
-            &root.join(format!(".tunemesh/requests/{}.json", id(i))),
-            json.to_string().as_bytes(),
-        )?;
+    // Requests (more than the worker considers; the newest that clients
+    // list at the file limit with every field past its limit, the rest
+    // smaller) and status files without requests, in both
+    // of `status_json`'s shapes.
+    let listed = o.requests.saturating_sub(MAX_LISTED_REQUESTS + 10);
+    requests_at(root, 0..o.requests, |i| i >= listed)?;
+    statuses_at(root, 10_000..10_000 + o.statuses)?;
+    // worker.json, .stignore and a playlist of over-long labels: at their
+    // limits, every field filled.
+    write(
+        &root.join(".tunemesh/worker.json"),
+        worker_json(MAX_FILE).as_bytes(),
+    )?;
+    let mut stignore = String::from("// TuneMesh\n(?d).~tunemesh-*\n");
+    while stignore.len() + 101 < MAX_STIGNORE_BYTES as usize {
+        stignore.push_str(&format!("// {}\n", "s".repeat(97)));
     }
-    for i in 0..o.statuses {
-        let id = id(10_000 + i);
-        let json = status_json(&id, MAX_JSON_BYTES as usize - 4 * 1024);
-        write(
-            &root.join(format!(".tunemesh/status/{id}.json")),
-            json.as_bytes(),
-        )?;
-    }
+    write(&root.join(".stignore"), stignore.as_bytes())?;
+    let label = "L".repeat(2 * MAX_LABEL_BYTES);
+    let entries = MAX_PLAYLIST_BYTES as usize / (label.len() + 60);
+    playlist(
+        root,
+        "Long Labels",
+        (0..entries).map(|i| {
+            format!(
+                "#EXTINF:{i},{label}\n../{}",
+                album_track(i % o.album_tracks.max(1))
+            )
+        }),
+    )?;
 
     if o.huge {
         huge(root)?;
@@ -370,14 +480,7 @@ fn huge(root: &Path) -> io::Result<()> {
     )?;
     write(
         &root.join(format!(".tunemesh/status/{}.json", id(900_002))),
-        status_json(&id(900_002), 2 * mib).as_bytes(),
-    )?;
-    write(
-        &root.join(".tunemesh/worker.json"),
-        json(
-            serde_json::json!({"version": 1, "device": pad, "heartbeatAt": "2026-10-20T00:00:00Z"}),
-        )
-        .as_bytes(),
+        status_json(0, 2 * mib).as_bytes(),
     )?;
     write(
         &root.join(".stignore"),

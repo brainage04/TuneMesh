@@ -77,8 +77,9 @@ pub enum Parsed {
     Version,
 }
 
+fuzz_pub! {
 /// `500M`, `2G`, `1.5G`, `800K` or plain bytes (binary multiples).
-pub fn parse_size(s: &str) -> Result<u64> {
+fn parse_size(s: &str) -> Result<u64> {
     let s = s.trim();
     let (num, mult) = match s.char_indices().last() {
         Some((i, c)) if c.is_ascii_alphabetic() => {
@@ -101,6 +102,7 @@ pub fn parse_size(s: &str) -> Result<u64> {
         bail!("bad size {s:?}");
     }
     Ok((n * mult as f64) as u64)
+}
 }
 
 pub fn parse_args(args: impl IntoIterator<Item = String>) -> Result<Parsed> {

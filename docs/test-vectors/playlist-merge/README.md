@@ -25,6 +25,12 @@ in the writers' format and compares it byte for byte with `merged.m3u8`.
 - `duplicates`: one device removed one of two A entries, the other added a
   third.
 - `both-reorder`: both devices changed the order; the winner's order wins.
+- `different-bases-a`, `different-bases-b`: the same winner and copy merged
+  by two devices with different bases. Device A last saw `A B C` and gets
+  `D A C` (B stays unliked); device B's base is an older `A`, so for it B
+  looks added by the copy and comes back: `D A B C`. Syncthing keeps the
+  later of the two writes and makes the other a new conflict copy, merged
+  in turn.
 - `labels-and-outside`: entries keep their own `#EXTINF` data; an entry
   without one gets its file name's title; a line outside the root is kept
   as written.
