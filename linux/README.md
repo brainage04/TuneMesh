@@ -51,19 +51,21 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
   page for going back, and the check counts those); likewise the queue
   panel's rows, the now-playing bar and the setup assistant. A failure
   lists what is still alive by type and page.
-- `stalls` (release build, about 10 minutes plus the build): generates a
+- `stalls` (release build, about 30 minutes plus the build): generates a
   typical library (5,000 tracks with covers) and the hostile library of
   `docs/library-format.md` "Limits" (together about 2.4 GB under
-  `/var/tmp`), walks every page and action three times on each and prints
-  the longest main-loop stall each caused, with the GTK thread's CPU time in
-  it. It fails when an action exceeds `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one
-  frame at 60 Hz) in more than one round (a single late round is the
-  machine, not the app). Start-up until the first frame (loading the GPU
-  driver, compiling the first shaders) is listed as platform time and not
-  held to the budget. The script draws with `GSK_RENDERER=cairo` on a
-  compositor without a GPU; to measure on one, give the compositor a render
-  node: `WLR_RENDERER=gles2 WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128
-  GSK_RENDERER=gl`. `TUNEMESH_TYPICAL_LIBRARY=<dir>` and
+  `/var/tmp`), walks every page and action ten times on each and prints
+  the median, 95th percentile and worst of the longest main-loop stall
+  each caused, with the GTK thread's CPU time in the worst. It fails when
+  an action's 95th percentile (interpolated between ranks) exceeds
+  `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one frame at 60 Hz): a late round
+  now and then is the machine, not the app. Start-up until the first frame
+  (loading the GPU driver, compiling the first shaders) is listed as
+  platform time and not held to the budget. The script draws with
+  `GSK_RENDERER=cairo` on a compositor without a GPU; to measure on one,
+  give the compositor a render node: `WLR_RENDERER=gles2
+  WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 GSK_RENDERER=gl`.
+  `TUNEMESH_TYPICAL_LIBRARY=<dir>` and
   `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuse (or generate once into) a library
   directory (the hostile one can also be made with
   `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`),
@@ -77,12 +79,17 @@ around it:
 
 ```sh
 mkfifo /var/tmp/ctl /var/tmp/ack
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -g --call-graph dwarf \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -k CLOCK_MONOTONIC -g --call-graph dwarf \
   --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
 TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
 CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
   linux/crates/tunemesh/scripts/gui-checks.sh stalls
 ```
+
+Each round's line in the output ends with its longest gap on
+`CLOCK_MONOTONIC` (`gap <start>,<end>`); `perf report --time <start>,<end>`
+shows what the main loop did in that gap alone, so a slow round can be told
+apart from the usual ones.
 
 The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`

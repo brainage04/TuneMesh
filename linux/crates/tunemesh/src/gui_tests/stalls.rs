@@ -1,9 +1,10 @@
-//! The stall walks: every page and action, three times, on a typical
-//! library (`typical`) and on one at the contract's limits
+//! The stall walks: every page and action, ten times, on a typical library
+//! (`typical`) and on one at the contract's limits
 //! (`tunemesh_core::hostile::Options::full`), recording the longest
-//! main-loop stall each causes. A release build must stay under the budget
-//! (`TUNEMESH_STALL_BUDGET_MS`, 16.6 ms by default: one frame at 60 Hz) in
-//! all but one round of each action.
+//! main-loop stall each causes. In a release build the 95th percentile of
+//! each action's stalls (interpolated between ranks) must stay under the
+//! budget (`TUNEMESH_STALL_BUDGET_MS`, 16.6 ms by default: one frame at
+//! 60 Hz); the table shows the median, the 95th percentile and the worst.
 //!
 //! A timeout at high priority ticks every 2 ms; a stall is the longest gap
 //! between two ticks while an action and everything it scheduled run
@@ -16,9 +17,13 @@
 //! Start-up until the first frame is drawn is reported apart and not held
 //! to the budget: creating the window loads the GPU driver (EGL or Vulkan
 //! vendors) and the first frame compiles its shaders, both in the
-//! platform's code. A single late round of an action is likewise allowed:
-//! the first time a page draws a new kind of node the driver compiles a
-//! shader for it, and another process can take the CPU.
+//! platform's code. A late round now and then is likewise below the 95th
+//! percentile: the first time a page draws a new kind of node the driver
+//! compiles a shader for it, and another process can take the CPU.
+//!
+//! Each round's stall is printed with its gap on `CLOCK_MONOTONIC`, the
+//! clock of `perf record -k CLOCK_MONOTONIC`: `perf report --time
+//! <start>,<end>` then shows what ran in that gap alone.
 //!
 //! `TUNEMESH_TYPICAL_LIBRARY=<dir>` and `TUNEMESH_HOSTILE_LIBRARY=<dir>`
 //! reuse a generated library (the hostile one: `cargo run --release -p
@@ -46,28 +51,36 @@ use crate::app::{App, Route};
 use crate::store::wait_for;
 
 const TICK: Duration = Duration::from_millis(2);
-const ROUNDS: usize = 3;
+/// Rounds of the walk: enough that the median and 95th percentile of an
+/// action separate its cost from a late round now and then.
+const ROUNDS: usize = 10;
 
 /// One walk at a time: each owns the machine while it measures.
 static WALK: Mutex<()> = Mutex::new(());
 
 /// CPU time the calling thread has used.
 fn thread_cpu() -> Duration {
+    clock(libc::CLOCK_THREAD_CPUTIME_ID)
+}
+
+fn clock(id: libc::clockid_t) -> Duration {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: valid out-pointer.
-    unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    unsafe { libc::clock_gettime(id, &mut ts) };
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
-/// A stall: how long the main loop did not run, and the GTK thread's CPU
-/// time in that gap.
+/// A stall: how long the main loop did not run, the GTK thread's CPU time
+/// in that gap, and when it ended on `CLOCK_MONOTONIC` (perf's clock with
+/// `perf record -k CLOCK_MONOTONIC`, to look at just that gap).
 #[derive(Clone, Copy, Default)]
 struct Stall {
     wall: Duration,
     cpu: Duration,
+    end: Duration,
 }
 
 /// The main-loop probe.
@@ -93,12 +106,13 @@ impl Probe {
     fn tick(&self) {
         let now = (Instant::now(), thread_cpu());
         let (t, c) = self.last.replace(now);
-        let gap = Stall {
-            wall: now.0 - t,
-            cpu: now.1.saturating_sub(c),
-        };
-        if gap.wall > self.worst.get().wall {
-            self.worst.set(gap);
+        let wall = now.0 - t;
+        if wall > self.worst.get().wall {
+            self.worst.set(Stall {
+                wall,
+                cpu: now.1.saturating_sub(c),
+                end: clock(libc::CLOCK_MONOTONIC),
+            });
         }
     }
 
@@ -113,7 +127,7 @@ impl Probe {
         let s = self.worst.get();
         Stall {
             wall: s.wall.saturating_sub(TICK),
-            cpu: s.cpu,
+            ..s
         }
     }
 }
@@ -390,6 +404,7 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
     let created = Stall {
         wall: start.elapsed(),
         cpu: thread_cpu() - cpu,
+        end: clock(libc::CLOCK_MONOTONIC),
     };
     probe.reset();
     first_frame(&app);
@@ -451,11 +466,16 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
             if profiled {
                 perf("disable");
             }
+            // The gap as perf's `--time` takes it (with `-k
+            // CLOCK_MONOTONIC`), to look at the slow rounds alone.
+            let end = stall.end.as_secs_f64();
             eprintln!(
-                "{}, round {round}: {name}: {:.0} ms ({:.0} ms on CPU)",
+                "{}, round {round}: {name}: {:.1} ms ({:.1} ms on CPU), gap {:.6},{:.6}",
                 shape.name,
                 stall.wall.as_secs_f64() * 1000.0,
-                stall.cpu.as_secs_f64() * 1000.0
+                stall.cpu.as_secs_f64() * 1000.0,
+                end - stall.wall.as_secs_f64() - TICK.as_secs_f64(),
+                end,
             );
             rows[first + i].2.push(stall);
         }
@@ -477,20 +497,67 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
     }
 }
 
+/// The `q` quantile of `v`, interpolated between the two nearest ranks
+/// (what spreadsheets call `PERCENTILE.INC`).
+fn quantile(v: &[Duration], q: f64) -> Duration {
+    let mut v = v.to_vec();
+    v.sort_unstable();
+    let Some(last) = v.len().checked_sub(1) else {
+        return Duration::ZERO;
+    };
+    let pos = q * last as f64;
+    let (lo, hi) = (pos.floor() as usize, pos.ceil() as usize);
+    v[lo].mul_f64(1.0 - (pos - lo as f64)) + v[hi].mul_f64(pos - lo as f64)
+}
+
+/// The 95th percentile of an action's stalls: what is held to the budget.
+fn p95(stalls: &[Stall]) -> Duration {
+    let walls: Vec<Duration> = stalls.iter().map(|s| s.wall).collect();
+    quantile(&walls, 0.95)
+}
+
+#[test]
+fn quantiles_interpolate_between_ranks() {
+    let ms = |v: &[u64]| {
+        v.iter()
+            .map(|&m| Duration::from_millis(m))
+            .collect::<Vec<_>>()
+    };
+    let ten = ms(&[1, 2, 3, 4, 5, 6, 7, 8, 9, 100]);
+    assert_eq!(quantile(&ten, 0.5), Duration::from_micros(5_500));
+    // 9 ms and 100 ms weighted 0.45 and 0.55.
+    assert_eq!(quantile(&ten, 0.95), Duration::from_micros(59_050));
+    assert_eq!(quantile(&ms(&[7]), 0.95), Duration::from_millis(7));
+    assert_eq!(quantile(&[], 0.95), Duration::ZERO);
+}
+
 fn table(w: &Walk, budget: Duration) -> String {
     let ms = |d: Duration| format!("{:.1}", d.as_secs_f64() * 1000.0);
-    let cell = |s: &Stall| format!("{} ({})", ms(s.wall), ms(s.cpu));
-    let mut out = String::from("| Action | Worst stall per round, ms (on CPU) |\n| --- | --- |\n");
+    let mut out = String::from(
+        "| Action | Median, ms | p95, ms | Worst, ms (on CPU) |\n| --- | --- | --- | --- |\n",
+    );
     for (name, kind, stalls) in &w.rows {
-        let cells: Vec<String> = stalls.iter().map(cell).collect();
+        let walls: Vec<Duration> = stalls.iter().map(|s| s.wall).collect();
+        let worst = stalls
+            .iter()
+            .max_by_key(|s| s.wall)
+            .copied()
+            .unwrap_or_default();
         let mark = if *kind == Kind::Platform {
             " (platform, not budgeted)"
-        } else if stalls.iter().any(|s| s.wall > budget) {
+        } else if p95(stalls) > budget {
             " **over**"
         } else {
             ""
         };
-        let _ = writeln!(out, "| {name}{mark} | {} |", cells.join(" / "));
+        let _ = writeln!(
+            out,
+            "| {name}{mark} | {} | {} | {} ({}) |",
+            ms(quantile(&walls, 0.5)),
+            ms(p95(stalls)),
+            ms(worst.wall),
+            ms(worst.cpu),
+        );
     }
     let mib = |b: usize| format!("{:.0}", b as f64 / 1_048_576.0);
     let heap: Vec<String> = w.heap.iter().map(|b| mib(*b)).collect();
@@ -529,17 +596,13 @@ fn run(name: &'static str, library: PathBuf, shape: impl FnOnce(&Path) -> Shape 
         let file = path.with_file_name(format!("{stem}-{name}.md"));
         std::fs::write(file, &table).expect("write report");
     }
-    // An action fails when it went over the budget in more than one round
-    // (or in its only one): a single late round is the machine (another
-    // process, an efficiency core) or a first shader compile, a repeated
-    // one is the app.
+    // An action fails when the 95th percentile of its stalls is over the
+    // budget: one late round now and then is the machine (another
+    // process, an efficiency core) or a first shader compile.
     let over: Vec<String> = w
         .rows
         .iter()
-        .filter(|(_, kind, s)| {
-            let n = s.iter().filter(|d| d.wall > budget).count();
-            *kind == Kind::App && (n > 1 || (n == 1 && s.len() == 1))
-        })
+        .filter(|(_, kind, s)| *kind == Kind::App && p95(s) > budget)
         .map(|(n, _, _)| n.clone())
         .collect();
     assert!(
