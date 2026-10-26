@@ -38,8 +38,9 @@ pub fn diff_by(
 
 /// Rows GTK keeps a widget for in a list view (`GTK_LIST_VIEW_MAX_LIST_ITEMS`).
 pub const LIST_WINDOW: u32 = 200;
-/// Rows a list shows per frame while it fills or empties: about a screen.
-pub const LIST_CHUNK: u32 = 40;
+/// Rows a list shows per frame while it fills or empties: a screen of
+/// track rows in a 1080-pixel-high window (40 took 17-21 ms a frame).
+pub const LIST_CHUNK: u32 = 24;
 
 mod imp {
     use std::cell::{Cell, RefCell};
@@ -186,6 +187,17 @@ impl LazyRows {
         next < len
     }
 
+    /// `splice`, except that rows replaced one for one stay: GTK keeps
+    /// their widgets and the caller binds them again (rows are bound by
+    /// position). Replacing the 200 rows of a list (other search results)
+    /// then costs a rebind instead of 200 widgets destroyed and made.
+    /// Returns the range kept, `position..position + n`.
+    pub fn replace(&self, position: u32, removed: u32, added: u32) -> std::ops::Range<u32> {
+        let same = removed.min(added);
+        self.splice(position + same, removed - same, added - same);
+        position..position + same
+    }
+
     /// Replaces `removed` items at `position` of the data with `added` new
     /// ones. Rows not shown yet change without GTK seeing them; many new
     /// rows at the end of what is shown appear a chunk per frame.
@@ -212,13 +224,18 @@ impl LazyRows {
 
     /// Removes up to a chunk of rows that have widgets, after dropping at
     /// once the rows that have none; whether the model is empty. Run once a
-    /// frame, this tears a list down without a long frame.
+    /// frame, this tears a list down without a long frame. The rows with
+    /// widgets can sit at both ends (GTK keeps the first rows besides the
+    /// ones around the scroll position): every run of rows between them goes
+    /// at once, or each chunk taken from the end brought 40 more rows into
+    /// GTK's window, each made and destroyed again (a 40,000-track album
+    /// took 20 ms a frame for minutes).
     pub fn drain_step(&self) -> bool {
         let imp = self.imp();
         imp.draining.set(true);
-        imp.len.set(imp.shown.get());
         let mut shown = imp.shown.get();
-        let bound = imp
+        imp.len.set(shown);
+        let mut bound: Vec<u32> = imp
             .items
             .borrow()
             .iter()
@@ -226,25 +243,25 @@ impl LazyRows {
             .filter(|li| li.item().is_some())
             .map(|li| li.position())
             .filter(|&p| p < shown)
-            .fold(None, |r: Option<(u32, u32)>, p| {
-                Some(r.map_or((p, p), |(lo, hi)| (lo.min(p), hi.max(p))))
-            });
-        if let Some((lo, hi)) = bound {
-            if hi + 1 < shown {
-                imp.shown.set(hi + 1);
-                self.changed(hi + 1, shown - hi - 1, 0);
-                shown = hi + 1;
+            .collect();
+        bound.sort_unstable();
+        bound.dedup();
+        // From the end, so that the positions before stay valid.
+        let mut end = shown;
+        for &p in bound.iter().rev().chain(std::iter::once(&u32::MAX)) {
+            let start = p.wrapping_add(1);
+            if start < end {
+                shown -= end - start;
+                imp.shown.set(shown);
+                imp.len.set(shown);
+                self.changed(start, end - start, 0);
             }
-            if lo > 0 {
-                imp.shown.set(shown - lo);
-                self.changed(0, lo, 0);
-                shown -= lo;
-            }
+            end = p;
         }
         let k = imp.chunk.get().min(shown);
         imp.shown.set(shown - k);
+        imp.len.set(shown - k);
         self.changed(shown - k, k, 0);
-        imp.len.set(imp.shown.get());
         imp.shown.get() == 0
     }
 }
@@ -321,6 +338,12 @@ mod tests {
         // Fully shown: exactly the change.
         rows.splice(5, 0, 1);
         assert_eq!((last(), rows.n_items()), ((5, 0, 1), 982));
+        // Replaced one for one: GTK keeps those rows and sees only the rest.
+        let changes = log.borrow().len();
+        assert_eq!(rows.replace(10, 50, 50), 10..60);
+        assert_eq!(log.borrow().len(), changes);
+        assert_eq!(rows.replace(10, 50, 20), 10..30);
+        assert_eq!((last(), rows.n_items()), ((30, 30, 0), 952));
         // Many new rows at the end come a chunk at a time.
         rows.replace_all(1);
         rows.splice(0, 1, 1000);

@@ -505,7 +505,7 @@ impl App {
         self.connect_player(move |changes| {
             let Some(app) = weak.upgrade() else { return };
             if changes.has(Change::Track) {
-                app.refresh_track_rows();
+                app.mark_current_rows();
                 if let Some(s) = app.sidebar.borrow().as_ref() {
                     s.update_playing();
                 }
@@ -1055,6 +1055,20 @@ impl App {
             .collect();
         for l in lists {
             l.refresh_rows(self);
+        }
+    }
+
+    /// Marks the track playing in every track list.
+    fn mark_current_rows(&self) {
+        let current = self.player.current_path();
+        let lists: Vec<_> = self
+            .track_lists
+            .borrow()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .collect();
+        for l in lists {
+            l.mark_current(current.as_deref());
         }
     }
 

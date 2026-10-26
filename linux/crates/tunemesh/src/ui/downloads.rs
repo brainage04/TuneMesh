@@ -825,13 +825,32 @@ pub fn page(app: &Rc<App>) -> Page {
     let names = app.store.playlist_names();
     let mut choices: Vec<String> = vec!["None".to_owned(), tunemesh_core::LIKED_SONGS.to_owned()];
     choices.extend(names);
-    let shown: Vec<String> = choices
-        .iter()
-        .map(|c| limits::clip_line(c).into_owned())
-        .collect();
-    let refs: Vec<&str> = shown.iter().map(String::as_str).collect();
-    let dropdown = gtk::DropDown::from_strings(&refs);
-    dropdown.set_valign(gtk::Align::Center);
+    // The list of a drop-down gets its rows when the drop-down is made, a
+    // row per playlist (1,000 at most): it is filled when first opened.
+    let model = gtk::StringList::new(&["None"]);
+    let dropdown = gtk::DropDown::builder()
+        .model(&model)
+        .valign(gtk::Align::Center)
+        .build();
+    let fill_choices = {
+        let (model, choices) = (model.clone(), choices.clone());
+        move || {
+            if model.n_items() < choices.len() as u32 {
+                let rest: Vec<String> = choices[1..]
+                    .iter()
+                    .map(|c| limits::clip_line(c).into_owned())
+                    .collect();
+                let refs: Vec<&str> = rest.iter().map(String::as_str).collect();
+                model.splice(1, model.n_items() - 1, &refs);
+            }
+        }
+    };
+    let click = gtk::GestureClick::new();
+    click.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let f = fill_choices.clone();
+    click.connect_pressed(move |_, _, _, _| f());
+    dropdown.add_controller(click);
+    dropdown.connect_activate(move |_| fill_choices());
     options.append(&dropdown);
     let spacer = gtk::Box::builder().width_request(24).build();
     options.append(&spacer);

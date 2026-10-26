@@ -184,6 +184,21 @@ impl Shared {
         }
     }
 
+    /// Marks the row of the track playing, and only that: a track change
+    /// does not set every label of every row of every list kept again.
+    pub fn mark_current(&self, current: Option<&str>) {
+        let widgets = self.widgets.borrow().clone();
+        let entries = self.entries.borrow();
+        for r in &widgets {
+            let Some(i) = self.entry_of(r) else { continue };
+            if current.is_some() && entries.path(i) == current {
+                r.root.add_css_class("current");
+            } else {
+                r.root.remove_css_class("current");
+            }
+        }
+    }
+
     fn update_row(&self, app: &App, r: &RowW, i: usize) {
         let lib = app.store.library();
         let entries = self.entries.borrow();
@@ -258,8 +273,14 @@ impl TrackList {
             }
             slot.append(&h);
         }
-        sh.rows
-            .splice(sh.offset + p as u32, removed as u32, added as u32);
+        let kept = sh
+            .rows
+            .replace(sh.offset + p as u32, removed as u32, added as u32);
+        if !kept.is_empty()
+            && let Some(sel) = self.view.model().and_downcast::<gtk::MultiSelection>()
+        {
+            sel.unselect_range(kept.start, kept.end - kept.start);
+        }
         sh.refresh_rows(app);
     }
 

@@ -632,8 +632,9 @@ impl Grid {
         let (p, removed, added) = rows::diff(&self.keys.borrow(), &data.keys);
         *self.keys.borrow_mut() = data.keys;
         *self.bind.borrow_mut() = data.bind;
-        self.rows.splice(p as u32, removed as u32, added as u32);
-        // Tiles that stayed show what changed in them (counts, covers).
+        self.rows.replace(p as u32, removed as u32, added as u32);
+        // Tiles that stayed or were replaced in place show what changed in
+        // them (other albums, counts, covers).
         let bound: Vec<(u32, Tile)> = self
             .tiles
             .borrow()
