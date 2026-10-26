@@ -7,8 +7,9 @@ import androidx.benchmark.traceprocessor.TraceProcessor
 /**
  * The app's main-thread stalls in the trace of one iteration, as the hostile-library test's watchdog sees them: how long a message posted
  * to the main thread can wait. The trace has no slice per looper message, so a stall is a top-level main-thread slice (a frame, an activity
- * start, a service start; each runs inside one message), or untraced work: a stretch in which the main thread does not sleep (pauses under
- * [GAP_NS] included) and that overlaps no such slice. Reports
+ * start, a service start; each runs inside one message), or untraced work: one continuous stretch in which the main thread does not sleep
+ * at all, and that overlaps no such slice. Short runs with sleeps between them are separate messages (UiAutomator's accessibility queries
+ * arrive as trains of sub-millisecond messages), not one stall.
  * - `mainThreadStallMaxMs`: the longest stall,
  * - `mainThreadWorkMaxMs`: the longest stall less the time the main thread waits for its render thread: in `postAndWait`, or asleep while
  *   the render thread draws a frame (the first frames wait there without a `postAndWait` slice). On an emulator without a GPU the software
@@ -32,7 +33,7 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
                 .mapValues { (_, frames) -> frames.minBy { it.start }.end }
         fun counted(span: Span) = !afterFirstFrame || span.start >= (firstFrameEnd[span.utid] ?: Long.MAX_VALUE)
         val stalls = (slices + untraced(slices, busyStretches(traceSession))).filter(::counted)
-        val waits = merge(renderWaits(traceSession), gap = 0).groupBy { it.utid }
+        val waits = merge(renderWaits(traceSession)).groupBy { it.utid }
         fun work(stall: Span) =
             stall.length - waits[stall.utid].orEmpty().sumOf { maxOf(0L, minOf(it.end, stall.end) - maxOf(it.start, stall.start)) }
         return listOf(
@@ -96,7 +97,7 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
             .map { Span(it.long("utid"), it.long("start"), it.long("end")) }
             .toList()
 
-    /** Stretches in which the main thread does not sleep. */
+    /** Stretches in which the main thread does not sleep at all (running, runnable or in uninterruptible waits, back to back). */
     private fun busyStretches(session: TraceProcessor.Session): List<Span> =
         merge(
             session
@@ -121,12 +122,12 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
         }
     }
 
-    /** [spans] of each thread joined where they overlap or are less than [gap] apart. */
-    private fun merge(spans: List<Span>, gap: Long = GAP_NS): List<Span> {
+    /** [spans] of each thread joined where they overlap or touch. */
+    private fun merge(spans: List<Span>): List<Span> {
         val merged = ArrayList<Span>()
         for (span in spans.sortedWith(compareBy<Span>({ it.utid }, { it.start }))) {
             val last = merged.lastOrNull()
-            if (last != null && last.utid == span.utid && span.start <= last.end + gap) {
+            if (last != null && last.utid == span.utid && span.start <= last.end) {
                 last.end = maxOf(last.end, span.end)
             } else {
                 merged += Span(span.utid, span.start, span.end)
@@ -142,8 +143,5 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
         const val LAUNCH = "clientTransactionExecuted"
         const val NS_PER_MS = 1_000_000L
         const val STALL_REPORTED_NS = 50 * NS_PER_MS
-
-        /** A pause shorter than this (a garbage collector handshake, a short lock wait) does not end untraced work. */
-        const val GAP_NS = NS_PER_MS
     }
 }
