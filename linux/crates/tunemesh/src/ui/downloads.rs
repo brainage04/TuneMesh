@@ -1019,10 +1019,18 @@ mod tests {
     #[test]
     fn listed_downloads_keep_only_a_bounded_projection() {
         use tunemesh_core::limits::*;
-        let root = std::path::Path::new("/var/tmp")
-            .join(format!("tunemesh-downloads-mem-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        // About 400 MB of files: disk-backed /var/tmp when it is writable,
+        // else the system temporary directory (the Nix build sandbox has a
+        // read-only /var/tmp and a disk-backed $TMPDIR).
+        let name = format!("tunemesh-downloads-mem-{}", std::process::id());
+        let root = [std::path::PathBuf::from("/var/tmp"), std::env::temp_dir()]
+            .into_iter()
+            .map(|base| base.join(&name))
+            .find(|root| {
+                let _ = std::fs::remove_dir_all(root);
+                std::fs::create_dir_all(root).is_ok()
+            })
+            .expect("no writable temporary directory");
         tunemesh_core::hostile::max_requests(&root, MAX_LISTED_REQUESTS).unwrap();
         tunemesh_core::hostile::max_statuses(&root, MAX_LISTED_REQUESTS).unwrap();
         let file_bytes: u64 = [request::requests_dir(&root), request::status_dir(&root)]
