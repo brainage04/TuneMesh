@@ -391,10 +391,11 @@ impl ListState {
     }
 }
 
-/// Time a pass may spend building rows: half a 60 Hz frame. A row with long
-/// warnings took a millisecond or two to build and lay out, so a fixed
-/// number of rows per frame was 19-37 ms with the hostile library.
-const PASS_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
+/// Time a pass may spend building rows. A row with long warnings took a
+/// millisecond or two to build and lay out, so a fixed number of rows per
+/// frame was 19-37 ms with the hostile library; with 8 ms passes the frame
+/// that also builds the page and lays it out still took about 18 ms.
+const PASS_BUDGET: std::time::Duration = std::time::Duration::from_millis(4);
 
 /// A `show` in progress.
 struct Fill {
@@ -709,11 +710,7 @@ const PREVIEW_CHARS: usize = 160;
 
 /// The start of `text` on one line, as much as a row can show.
 fn preview(text: &str) -> String {
-    let line = limits::clip_line(text);
-    match line.char_indices().nth(PREVIEW_CHARS) {
-        Some((i, _)) => format!("{}…", &line[..i]),
-        None => line.into_owned(),
-    }
+    widgets::clip_to(text, PREVIEW_CHARS)
 }
 
 /// Request detail in the list: wrapped when short, else the start of its

@@ -14,14 +14,14 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gdk, glib};
 
-use tunemesh_core::{Playlist, limits};
+use tunemesh_core::Playlist;
 
 use crate::app::App;
 use crate::covers::Source;
 use crate::store::EntryRef;
 use crate::ui::menu::{self, MenuCtx};
 use crate::ui::rows::{self, LIST_CHUNK, LIST_WINDOW, LazyRows};
-use crate::ui::widgets::{fmt_duration, label};
+use crate::ui::widgets::{ROW_CHARS, clip_to, fmt_duration, label};
 
 /// What a track list shows. A playlist is held once, as read: a long one
 /// costs no second copy, and rows are made only for what is on screen.
@@ -206,10 +206,10 @@ impl Shared {
         r.index.set_label(&(i + 1).to_string());
         match track {
             Some(t) => {
-                r.title.set_label(&limits::clip_line(&t.title));
-                r.artist.set_label(&limits::clip_line(&t.artist));
+                r.title.set_label(&clip_to(&t.title, ROW_CHARS));
+                r.artist.set_label(&clip_to(&t.artist, ROW_CHARS));
                 if let Some(a) = &r.album {
-                    a.set_label(&limits::clip_line(&t.album));
+                    a.set_label(&clip_to(&t.album, ROW_CHARS));
                 }
                 r.duration
                     .set_label(&t.duration_secs().map(fmt_duration).unwrap_or_default());
@@ -241,7 +241,7 @@ impl Shared {
             }
             None => {
                 let label = entries.label(i);
-                r.title.set_label(&limits::clip_line(&label));
+                r.title.set_label(&clip_to(&label, ROW_CHARS));
                 r.artist.set_label("Unavailable on this device");
                 if let Some(a) = &r.album {
                     a.set_label("");

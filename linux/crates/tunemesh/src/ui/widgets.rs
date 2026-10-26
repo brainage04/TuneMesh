@@ -51,6 +51,25 @@ pub fn label(text: &str, classes: &[&str]) -> gtk::Label {
     l
 }
 
+/// The start of `text` on one line, at most `chars` characters: what a
+/// label `chars` characters wide can show before it ellipsizes. GTK shapes
+/// the whole text of a label to measure it, and the synced folder's names
+/// go up to `limits::MAX_LINE_CHARS` (300) characters: shaping them in a
+/// grid of tiles 25 characters wide was most of the frame that showed it.
+pub fn clip_to(text: &str, chars: usize) -> String {
+    let line = limits::clip_line(text);
+    match line.char_indices().nth(chars) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.into_owned(),
+    }
+}
+
+/// Characters a tile's title or subtitle can show.
+pub const TILE_CHARS: usize = 48;
+/// Characters a track row's title, artist or album column can show in a
+/// window as wide as a 4K screen.
+pub const ROW_CHARS: usize = 160;
+
 pub fn section_title(text: &str) -> gtk::Label {
     let l = label(text, &["tm-section-title"]);
     l.set_margin_bottom(4);
@@ -266,10 +285,10 @@ impl Tile {
                 }
             }
         }
-        let title = limits::clip_line(title);
-        p.title.set_label(&title);
-        *p.full_title.borrow_mut() = title.into_owned();
-        p.subtitle.set_label(&limits::clip_line(subtitle));
+        // The tooltip shows the whole title; the labels only what fits.
+        p.title.set_label(&clip_to(title, TILE_CHARS));
+        *p.full_title.borrow_mut() = limits::clip_line(title).into_owned();
+        p.subtitle.set_label(&clip_to(subtitle, TILE_CHARS));
         *p.open.borrow_mut() = Some(Rc::new(open));
         *p.play.borrow_mut() = Some(Rc::new(play));
     }
@@ -487,4 +506,19 @@ pub fn empty(text: &str) -> gtk::Label {
         .margin_top(48)
         .margin_bottom(48)
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_get_only_what_they_can_show() {
+        assert_eq!(clip_to("short", 48), "short");
+        assert_eq!(clip_to("a\nb", 48), "a b");
+        let long = "é".repeat(300);
+        let cut = clip_to(&long, TILE_CHARS);
+        assert_eq!(cut.chars().count(), TILE_CHARS + 1);
+        assert!(cut.ends_with('…'));
+    }
 }

@@ -17,7 +17,7 @@ use crate::app::App;
 use crate::covers::Source;
 use crate::ui::menu::{self, MenuCtx};
 use crate::ui::rows::{self, LIST_CHUNK, LIST_WINDOW, LazyRows};
-use crate::ui::widgets::{icon_button, label};
+use crate::ui::widgets::{TILE_CHARS, clip_to, icon_button, label};
 
 /// What a row of the panel shows.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -256,13 +256,15 @@ impl QueuePanel {
                 let lib = app.store.library();
                 match lib.track(&path) {
                     Some(t) => {
-                        q.title.set_label(&limits::clip_line(&t.title));
-                        q.artist.set_label(&limits::clip_line(&t.artist));
+                        // The panel is at most 340 pixels wide.
+                        q.title.set_label(&clip_to(&t.title, TILE_CHARS));
+                        q.artist.set_label(&clip_to(&t.artist, TILE_CHARS));
                         app.covers.apply(&q.cover, Source::for_track(t), 40);
                     }
                     None => {
-                        q.title.set_label(&limits::clip_line(
+                        q.title.set_label(&clip_to(
                             path.rsplit('/').next().unwrap_or(&path),
+                            TILE_CHARS,
                         ));
                         q.artist.set_label("Unavailable");
                         app.covers.apply(&q.cover, Source::Placeholder(path), 40);
