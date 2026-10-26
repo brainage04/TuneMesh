@@ -33,6 +33,8 @@ struct ListState {
     shown: RefCell<Vec<(Row, gtk::Widget)>>,
     /// Bumped by every `show`; a fill still running for an older one stops.
     fill: Cell<u64>,
+    /// The page was left: its rows are being taken away.
+    closed: Cell<bool>,
 }
 
 /// Re-renders the request list if the Downloads page is open (called when
@@ -46,14 +48,25 @@ pub fn refresh_if_shown() {
 
 // ---- who downloads ---------------------------------------------------------
 
+/// Shows who downloads in `l`. Reading `worker.json` (up to 1 MiB, written
+/// by another device) runs on a thread.
 fn apply_status(app: &App, l: &gtk::Label) {
-    let (text, error) = downloader::summary(&app.store.root(), &app.downloader.state());
-    l.set_text(&text);
-    if error {
-        l.add_css_class("tm-error")
-    } else {
-        l.remove_css_class("tm-error")
-    }
+    let (root, state) = (app.store.root(), app.downloader.state());
+    let weak = l.downgrade();
+    glib::spawn_future_local(async move {
+        let Ok((text, error)) =
+            gio::spawn_blocking(move || downloader::summary(&root, &state)).await
+        else {
+            return;
+        };
+        let Some(l) = weak.upgrade() else { return };
+        l.set_text(&text);
+        if error {
+            l.add_css_class("tm-error")
+        } else {
+            l.remove_css_class("tm-error")
+        }
+    });
 }
 
 /// A line saying which device downloads and how this device's downloader is
@@ -266,10 +279,11 @@ impl ListState {
     }
 
     /// Shows `rows`: a row whose request and status are unchanged keeps its
-    /// widget, and new rows are built `ROWS_PER_PASS` at a time, so neither
-    /// opening the page nor a status update holds up the window.
+    /// widget, and new rows are built a few milliseconds' worth per frame
+    /// (`PASS_BUDGET`), so neither opening the page nor a status update
+    /// holds up the window.
     fn show(self: &Rc<Self>, app: &Rc<App>, rows: Vec<Row>, total: usize) {
-        let Some(container) = self.container.upgrade() else {
+        let Some(container) = self.container.upgrade().filter(|_| !self.closed.get()) else {
             return;
         };
         let fill = self.fill.get() + 1;
@@ -307,23 +321,33 @@ impl ListState {
             return;
         };
         let mut prev = f.placed.borrow().last().map(|(_, w)| w.clone());
+        let started = std::time::Instant::now();
+        let width = container.width();
         let (mut i, mut built) = (start, 0);
-        while i < f.rows.len() && built < ROWS_PER_PASS {
+        while i < f.rows.len() && (built == 0 || started.elapsed() < PASS_BUDGET) {
             let row = &f.rows[i];
-            let w = match f.old.borrow_mut().remove(&row.id) {
-                Some((old, w)) if old == *row => w,
+            let (w, new) = match f.old.borrow_mut().remove(&row.id) {
+                Some((old, w)) if old == *row => (w, false),
                 stale => {
                     if let Some((_, w)) = stale {
                         container.remove(&w);
                     }
                     built += 1;
-                    request_row(&app, row.clone())
+                    (request_row(&app, row.clone()), true)
                 }
             };
             if w.parent().is_some() {
                 container.reorder_child_after(&w, prev.as_ref());
             } else {
                 container.insert_child_after(&w, prev.as_ref());
+            }
+            if new {
+                // Lays its text out now, inside the pass's time, rather
+                // than in the next frame (GTK keeps the result).
+                w.measure(
+                    gtk::Orientation::Vertical,
+                    if width > 0 { width } else { -1 },
+                );
             }
             prev = Some(w.clone());
             f.placed.borrow_mut().push((row.clone(), w));
@@ -367,9 +391,10 @@ impl ListState {
     }
 }
 
-/// Request rows built per frame; a row with long warnings takes a
-/// millisecond or two to build and lay out.
-const ROWS_PER_PASS: usize = 12;
+/// Time a pass may spend building rows: half a 60 Hz frame. A row with long
+/// warnings took a millisecond or two to build and lay out, so a fixed
+/// number of rows per frame was 19-37 ms with the hostile library.
+const PASS_BUDGET: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// A `show` in progress.
 struct Fill {
@@ -484,19 +509,19 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
         .spacing(2)
         .hexpand(true)
         .build();
-    let t = label(&limits::clip_line(&title), &["title"]);
+    let t = label(&preview(&title), &["title"]);
     t.add_css_class("heading");
     text.append(&t);
     let mut sub = Vec::new();
     if title != input {
-        sub.push(limits::clip_line(&input).into_owned());
+        sub.push(preview(&input));
     }
     if let Some(r) = &row.request {
         if !r.requested_by.is_empty() {
-            sub.push(format!("from {}", limits::clip_line(&r.requested_by)));
+            sub.push(format!("from {}", preview(&r.requested_by)));
         }
         if let Some(p) = &r.playlist {
-            sub.push(format!("→ {}", limits::clip_line(p)));
+            sub.push(format!("→ {}", preview(p)));
         } else if r.playlist_from_source {
             sub.push("saved as a playlist".to_owned());
         }
@@ -511,7 +536,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     if !when.is_empty() {
         sub.push(when);
     }
-    text.append(&label(&sub.join(" • "), &["dim", "tm-small"]));
+    text.append(&label(&preview(&sub.join(" • ")), &["dim", "tm-small"]));
     top.append(&text);
     let state = gtk::Label::builder()
         .label(&state_text)
@@ -677,13 +702,28 @@ fn is_long(text: &str) -> bool {
     text.contains('\n') || text.chars().nth(limits::MAX_LINE_CHARS).is_some()
 }
 
-/// Request detail in the list: wrapped when short, else one cut line.
+/// Characters of a one-line text the list lays out: more than a row is
+/// wide. Shaping whole lines of the hostile library's text (300 characters
+/// each, a dozen per row) was two thirds of a fill pass.
+const PREVIEW_CHARS: usize = 160;
+
+/// The start of `text` on one line, as much as a row can show.
+fn preview(text: &str) -> String {
+    let line = limits::clip_line(text);
+    match line.char_indices().nth(PREVIEW_CHARS) {
+        Some((i, _)) => format!("{}…", &line[..i]),
+        None => line.into_owned(),
+    }
+}
+
+/// Request detail in the list: wrapped when short, else the start of its
+/// first line.
 fn detail_text(text: &str, class: &str) -> gtk::Label {
     if !is_long(text) {
         return small_text(text, class);
     }
     gtk::Label::builder()
-        .label(limits::clip_line(text))
+        .label(preview(text))
         .xalign(0.0)
         .single_line_mode(true)
         .ellipsize(gtk::pango::EllipsizeMode::End)
@@ -986,9 +1026,11 @@ pub fn page(app: &Rc<App>) -> Page {
         again: Cell::new(false),
         shown: RefCell::new(Vec::new()),
         fill: Cell::new(0),
+        closed: Cell::new(false),
     });
     state.render();
     LIST.with(|l| *l.borrow_mut() = Rc::downgrade(&state));
+    let weak_state = Rc::downgrade(&state);
     // The list state lives as long as its container.
     unsafe { container.set_data("tm-list-state", state) };
 
@@ -1002,11 +1044,33 @@ pub fn page(app: &Rc<App>) -> Page {
             view.grab_focus();
         });
     }
-    Page {
-        widget: scroller.clone().upcast(),
-        scroller: Some(scroller),
-    }
+    let mut page = Page::plain(scroller.clone(), Some(scroller));
+    // Once left: no more fills, and the rows go a few per frame.
+    let c = container.downgrade();
+    page.drain = Some(Rc::new(move || {
+        if let Some(st) = weak_state.upgrade() {
+            st.closed.set(true);
+            st.fill.set(st.fill.get() + 1);
+            LIST.with(|l| {
+                if l.borrow().ptr_eq(&weak_state) {
+                    *l.borrow_mut() = Weak::new();
+                }
+            });
+        }
+        let Some(c) = c.upgrade() else { return true };
+        for _ in 0..DRAIN_ROWS {
+            match c.last_child() {
+                Some(w) => c.remove(&w),
+                None => break,
+            }
+        }
+        c.first_child().is_none()
+    }));
+    page
 }
+
+/// Request rows removed per frame once the page is left.
+const DRAIN_ROWS: usize = 8;
 
 #[cfg(test)]
 mod tests {

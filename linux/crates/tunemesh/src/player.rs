@@ -137,6 +137,30 @@ pub enum Change {
     Seeked,
 }
 
+impl Change {
+    const fn bit(self) -> u8 {
+        1 << self as u8
+    }
+}
+
+/// Changes that happened since the window last showed them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Changes(u8);
+
+impl Changes {
+    pub fn add(&mut self, c: Change) {
+        self.0 |= c.bit();
+    }
+
+    pub fn has(self, c: Change) -> bool {
+        self.0 & c.bit() != 0
+    }
+}
+
+/// Tracks in a row that mpv could not play before playback stops: a queue
+/// of broken files otherwise fails through hundreds of them a second.
+const MAX_FAILED_IN_ROW: u32 = 10;
+
 #[derive(Serialize, Deserialize)]
 struct Saved {
     items: Vec<QueueItem>,
@@ -167,6 +191,11 @@ struct State {
     current_entry: Option<i64>,
     /// mpv playlist entry id, queue index and path of the preloaded next track.
     next_entry: Option<(i64, usize, String)>,
+    /// Bumped whenever `items` changes (not `current`).
+    version: u64,
+    /// Tracks that failed to play since one played to its end or the user
+    /// started playback.
+    failed_in_row: u32,
 }
 
 impl State {
@@ -229,9 +258,17 @@ impl State {
             new_cur = Some(0);
         }
         self.items = kept;
+        self.version += 1;
         self.current = new_cur;
         self.context.retain(|p| !paths.contains(p));
         current_gone
+    }
+
+    /// The current track could not be played: whether playback should
+    /// stop rather than go on to the next one.
+    fn failed(&mut self) -> bool {
+        self.failed_in_row += 1;
+        self.failed_in_row >= MAX_FAILED_IN_ROW
     }
 }
 
@@ -416,6 +453,25 @@ impl Player {
         });
         (st.items.len(), st.current, user)
     }
+    /// Changes whenever the queue's entries change (not the current one).
+    pub fn queue_version(&self) -> u64 {
+        self.st.borrow().version
+    }
+    /// A hash of each queue entry's path, in queue order: what tells the
+    /// queue panel which rows an edit left as they were.
+    pub fn queue_hashes(&self) -> Vec<u64> {
+        use std::hash::{Hash, Hasher};
+        self.st
+            .borrow()
+            .items
+            .iter()
+            .map(|i| {
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                i.path.hash(&mut h);
+                h.finish()
+            })
+            .collect()
+    }
     pub fn has_track(&self) -> bool {
         self.current_path().is_some()
     }
@@ -480,6 +536,7 @@ impl Player {
             st.position = start;
             st.duration = 0.0;
             st.playing = play;
+            st.failed_in_row = 0;
         }
         let id = self.entry_id_at(0);
         self.st.borrow_mut().current_entry = id;
@@ -606,11 +663,25 @@ impl Player {
                 match reason {
                     EndReason::Error(e) => {
                         eprintln!("tunemesh: cannot play {:?}: {e}", self.current_path());
+                        if self.st.borrow_mut().failed() {
+                            // mpv would go on to the preloaded next track.
+                            eprintln!(
+                                "tunemesh: {MAX_FAILED_IN_ROW} tracks in a row could not be played; stopping"
+                            );
+                            if let Some(mpv) = &self.mpv {
+                                let _ = mpv.command(&["stop"]);
+                            }
+                            self.ended();
+                        } else if !has_next {
+                            self.ended();
+                        }
+                    }
+                    EndReason::Eof => {
+                        self.st.borrow_mut().failed_in_row = 0;
                         if !has_next {
                             self.ended();
                         }
                     }
-                    EndReason::Eof if !has_next => self.ended(),
                     _ => {}
                 }
             }
@@ -753,6 +824,7 @@ impl Player {
                 st.items = items;
                 st.current = Some(start);
             }
+            st.version += 1;
         }
         self.load_current(0.0, true);
         self.emit(&[Change::Options]);
@@ -880,6 +952,7 @@ impl Player {
                 fastrand::shuffle(&mut rest);
                 st.items = std::iter::once(current).chain(user).chain(rest).collect();
                 st.current = Some(0);
+                st.version += 1;
             } else {
                 match (!current.user)
                     .then(|| ctx.iter().position(|i| i.path == current.path))
@@ -891,10 +964,12 @@ impl Player {
                         items.extend(ctx[p + 1..].iter().cloned());
                         st.items = items;
                         st.current = Some(p);
+                        st.version += 1;
                     }
                     None => {
                         st.items = std::iter::once(current).chain(user).chain(ctx).collect();
                         st.current = Some(0);
+                        st.version += 1;
                     }
                 }
             }
@@ -945,6 +1020,7 @@ impl Player {
                 None => {
                     st.items = new;
                     st.current = Some(0);
+                    st.version += 1;
                     st.context.clear();
                     st.context_name = "Queue".into();
                     true
@@ -957,6 +1033,7 @@ impl Player {
                         }
                     }
                     st.items.splice(at..at, new);
+                    st.version += 1;
                     false
                 }
             }
@@ -985,6 +1062,7 @@ impl Player {
                 return;
             }
             st.items.remove(index);
+            st.version += 1;
             if index < cur {
                 st.current = Some(cur - 1);
             }
@@ -1004,6 +1082,7 @@ impl Player {
             }
             let item = st.items.remove(from);
             st.items.insert(to, item);
+            st.version += 1;
         }
         self.sync_next();
         self.emit(&[Change::Queue]);
@@ -1238,6 +1317,40 @@ mod tests {
         drop(files);
         assert_eq!(fds_on(&bad), 0);
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A queue of files mpv cannot play stops after `MAX_FAILED_IN_ROW` of
+    /// them instead of failing through all (hundreds a second, each one a
+    /// change the window showed).
+    #[test]
+    fn failures_in_a_row_stop_playback() {
+        let mut st = state(&["a", "b"], 0, Repeat::Off);
+        for _ in 1..MAX_FAILED_IN_ROW {
+            assert!(!st.failed());
+        }
+        assert!(st.failed());
+        // A track that played to its end (or the user starting playback)
+        // starts the count again.
+        st.failed_in_row = 0;
+        assert!(!st.failed());
+    }
+
+    #[test]
+    fn changes_combine() {
+        let mut c = Changes::default();
+        c.add(Change::Track);
+        c.add(Change::Queue);
+        c.add(Change::Track);
+        assert!(c.has(Change::Track) && c.has(Change::Queue));
+        assert!(!c.has(Change::Playing) && !c.has(Change::Seeked));
+    }
+
+    #[test]
+    fn removing_entries_changes_the_queue_version() {
+        let mut st = state(&["a", "b", "c"], 0, Repeat::Off);
+        let v = st.version;
+        remove(&mut st, &["b"]);
+        assert_ne!(st.version, v);
     }
 
     #[test]

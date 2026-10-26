@@ -210,8 +210,5 @@ pub fn page(app: &Rc<App>) -> Page {
         .vexpand(true)
         .child(&b)
         .build();
-    Page {
-        widget: scroller.clone().upcast(),
-        scroller: Some(scroller),
-    }
+    Page::plain(scroller.clone(), Some(scroller))
 }

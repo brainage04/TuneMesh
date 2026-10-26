@@ -264,14 +264,19 @@ impl NowPlaying {
         });
 
         let me = self.clone();
-        app.player.connect(move |c| match c {
-            Change::Track => {
+        app.connect_player(move |c| {
+            if c.has(Change::Track) {
                 me.update_track();
+            }
+            if c.has(Change::Playing) {
+                me.update_playing();
+            }
+            if c.has(Change::Track) || c.has(Change::Position) || c.has(Change::Seeked) {
                 me.update_position();
             }
-            Change::Playing => me.update_playing(),
-            Change::Position | Change::Seeked => me.update_position(),
-            Change::Options | Change::Queue => me.update_options(),
+            if c.has(Change::Options) || c.has(Change::Queue) {
+                me.update_options();
+            }
         });
         let me = Rc::downgrade(self);
         app.store.connect(move |c| {

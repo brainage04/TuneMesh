@@ -4,8 +4,8 @@
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-use gtk::glib;
 use gtk::prelude::*;
+use gtk::{gio, glib};
 use mpris_server::{LoopStatus, Metadata, PlaybackStatus, Player as MprisPlayer, Time, TrackId};
 
 use crate::app::{APP_ID, App};
@@ -27,6 +27,7 @@ fn clip(s: &str) -> String {
     tunemesh_core::limits::clip_line(s).into_owned()
 }
 
+/// The current track's metadata, without its art: `with_art` adds that.
 fn metadata(app: &App) -> Metadata {
     let lib = app.store.library();
     let Some(path) = app.player.current_path() else {
@@ -56,12 +57,27 @@ fn metadata(app: &App) -> Metadata {
     if let Some(n) = t.track_number {
         b = b.track_number(n as i32);
     }
-    if let Some(file) = covers::art_file(&root, t)
+    b.build()
+}
+
+/// `md` with the current track's art, which is copied to a cache file on a
+/// thread: reading a cover from a track and writing it is disk work the
+/// window must not wait for.
+async fn with_art(app: &App, mut md: Metadata) -> Metadata {
+    let Some(t) = app
+        .player
+        .current_path()
+        .and_then(|p| app.store.library().track(&p).cloned())
+    else {
+        return md;
+    };
+    let root = app.store.root();
+    if let Ok(Some(file)) = gio::spawn_blocking(move || covers::art_file(&root, &t)).await
         && let Ok(uri) = glib::filename_to_uri(&file, None)
     {
-        b = b.art_url(uri.to_string());
+        md.set_art_url(Some(uri.to_string()));
     }
-    b.build()
+    md
 }
 
 fn status(app: &App) -> PlaybackStatus {
@@ -104,7 +120,7 @@ pub fn start(app: &Rc<App>) {
             .loop_status(loop_status(app.player.repeat()))
             .shuffle(app.player.shuffle())
             .volume(app.player.volume() / 100.0)
-            .metadata(metadata(&app))
+            .metadata(with_art(&app, metadata(&app)).await)
             .build()
             .await;
         let mpris = match built {
@@ -162,57 +178,62 @@ pub fn start(app: &Rc<App>) {
 
         let weak_app = Rc::downgrade(&app);
         let m = mpris.clone();
-        app.player.connect(move |c| {
+        // Bumped by every track change: art read for an older track is
+        // not shown.
+        let generation = Rc::new(std::cell::Cell::new(0u64));
+        app.connect_player(move |c| {
             let Some(app) = weak_app.upgrade() else {
                 return;
             };
-            let m = m.clone();
-            match c {
-                Change::Position => {
-                    m.set_position(Time::from_micros((app.player.position() * 1e6) as i64));
-                }
-                Change::Seeked => {
-                    let t = Time::from_micros((app.player.position() * 1e6) as i64);
-                    m.set_position(t);
-                    glib::spawn_future_local(async move {
-                        let _ = m.seeked(t).await;
-                    });
-                }
-                Change::Track => {
-                    let md = metadata(&app);
-                    let pos = Time::from_micros((app.player.position() * 1e6) as i64);
-                    m.set_position(pos);
-                    let st = status(&app);
-                    glib::spawn_future_local(async move {
+            let position = || Time::from_micros((app.player.position() * 1e6) as i64);
+            if c.has(Change::Position) {
+                m.set_position(position());
+            }
+            if c.has(Change::Seeked) {
+                let (m, t) = (m.clone(), position());
+                m.set_position(t);
+                glib::spawn_future_local(async move {
+                    let _ = m.seeked(t).await;
+                });
+            }
+            if c.has(Change::Track) {
+                let n = generation.get() + 1;
+                generation.set(n);
+                let md = metadata(&app);
+                m.set_position(position());
+                let (m, g, a) = (m.clone(), generation.clone(), app.clone());
+                glib::spawn_future_local(async move {
+                    let md = with_art(&a, md).await;
+                    if g.get() == n {
                         let _ = m.set_metadata(md).await;
-                        let _ = m.set_playback_status(st).await;
-                    });
-                }
-                Change::Playing => {
-                    let st = status(&app);
-                    m.set_position(Time::from_micros((app.player.position() * 1e6) as i64));
-                    glib::spawn_future_local(async move {
-                        let _ = m.set_playback_status(st).await;
-                    });
-                }
-                Change::Options | Change::Queue => {
-                    let (l, s, v) = (
-                        loop_status(app.player.repeat()),
-                        app.player.shuffle(),
-                        app.player.volume() / 100.0,
-                    );
-                    glib::spawn_future_local(async move {
-                        if m.loop_status() != l {
-                            let _ = m.set_loop_status(l).await;
-                        }
-                        if m.shuffle() != s {
-                            let _ = m.set_shuffle(s).await;
-                        }
-                        if (m.volume() - v).abs() > 1e-6 {
-                            let _ = m.set_volume(v).await;
-                        }
-                    });
-                }
+                    }
+                });
+            }
+            if c.has(Change::Track) || c.has(Change::Playing) {
+                let (m, st) = (m.clone(), status(&app));
+                m.set_position(position());
+                glib::spawn_future_local(async move {
+                    let _ = m.set_playback_status(st).await;
+                });
+            }
+            if c.has(Change::Options) || c.has(Change::Queue) {
+                let (l, s, v) = (
+                    loop_status(app.player.repeat()),
+                    app.player.shuffle(),
+                    app.player.volume() / 100.0,
+                );
+                let m = m.clone();
+                glib::spawn_future_local(async move {
+                    if m.loop_status() != l {
+                        let _ = m.set_loop_status(l).await;
+                    }
+                    if m.shuffle() != s {
+                        let _ = m.set_shuffle(s).await;
+                    }
+                    if (m.volume() - v).abs() > 1e-6 {
+                        let _ = m.set_volume(v).await;
+                    }
+                });
             }
         });
         mpris.run().await;

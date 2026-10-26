@@ -80,7 +80,6 @@ fn walk() -> Vec<String> {
         Route::Downloads,
         Route::Settings,
     ];
-    let away = Route::Search(String::new());
 
     let mut failures = Vec::new();
     let mut window = Vec::new();
@@ -96,7 +95,16 @@ fn walk() -> Vec<String> {
             let mut seen = Vec::new();
             collect(&page, &mut seen);
             drop(page);
-            app.navigate(away.clone());
+            let away = if *route == Route::Settings {
+                Route::Downloads
+            } else {
+                Route::Settings
+            };
+            app.navigate(away);
+            quiesce(&app);
+            // Pages are kept for going back to them; once let go they must
+            // be freed.
+            app.forget_kept_pages();
             quiesce(&app);
             report(
                 &mut failures,
@@ -104,6 +112,21 @@ fn walk() -> Vec<String> {
                 &seen,
                 Expect::AllFreed,
             );
+        }
+        // At most the four library pages, one detail page and the search
+        // page stay.
+        for route in &routes {
+            app.navigate(route.clone());
+            quiesce(&app);
+        }
+        app.navigate(Route::Search(String::new()));
+        quiesce(&app);
+        let kept = app.forget_kept_pages();
+        quiesce(&app);
+        if kept > 5 {
+            failures.push(format!(
+                "round {round}: {kept} pages kept besides the search page"
+            ));
         }
 
         // The queue panel: a long queue, then a short one; rows the list
@@ -154,7 +177,7 @@ fn walk() -> Vec<String> {
         );
     }
     collect(app.window.upcast_ref(), &mut window);
-    app.navigate(away);
+    app.navigate(Route::Settings);
     quiesce(&app);
     report(
         &mut failures,
