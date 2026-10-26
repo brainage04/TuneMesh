@@ -104,23 +104,27 @@ impl Route {
     }
 
     /// Which pages stay alive when left, so that going back to them is a
-    /// matter of showing them again: the library's top pages, one detail
-    /// page (album, artist or playlist) and the search page.
+    /// matter of showing them again: Home and Settings, the last library
+    /// grid (albums, artists or playlists: a grid's covers are most of a
+    /// page's memory, 30-50 MiB on a large library, and one is built again
+    /// within a frame), the last detail page (album, artist or playlist)
+    /// and the search page.
     fn kept(&self) -> Option<Kept> {
         match self {
-            Route::Home | Route::Albums | Route::Artists | Route::Playlists => Some(Kept::Top),
+            Route::Home | Route::Settings => Some(Kept::Top),
+            Route::Albums | Route::Artists | Route::Playlists => Some(Kept::Grid),
             Route::Album(_) | Route::Artist(_) | Route::Playlist(_) => Some(Kept::Detail),
             Route::Search(_) => Some(Kept::Search),
-            Route::Downloads | Route::Settings => None,
+            Route::Downloads => None,
         }
     }
 
     /// Whether `change` changes what the page of this route shows.
     fn shows(&self, change: StoreChange) -> bool {
         match change {
-            StoreChange::Library => !matches!(self, Route::Downloads | Route::Settings),
+            StoreChange::Library => *self != Route::Downloads,
             StoreChange::Playlists => match self {
-                Route::Home | Route::Playlists | Route::Search(_) => true,
+                Route::Home | Route::Playlists | Route::Search(_) | Route::Settings => true,
                 Route::Playlist(name) => name != LIKED_SONGS,
                 _ => false,
             },
@@ -137,6 +141,7 @@ impl Route {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kept {
     Top,
+    Grid,
     Detail,
     Search,
 }
@@ -840,8 +845,8 @@ impl App {
                     i += 1;
                     continue;
                 }
-                // One detail page and one search page stay; the other pages
-                // left for good go.
+                // One grid, one detail page and one search page stay; the
+                // other pages left for good go.
                 let k = s.route.kept();
                 if k.is_none() || (k != Some(Kept::Top) && k == kind) {
                     gone.push(slots.remove(i).page);
@@ -1124,6 +1129,13 @@ impl App {
         self.downloader.set_root(path.clone());
         self.store.set_root(path);
         self.toast("Library folder changed");
+        self.settings_changed();
+    }
+
+    /// The kept Settings page shows the library folder and the downloader
+    /// switch: it is the one page that shows `StoreChange::Scanning`.
+    fn settings_changed(&self) {
+        self.update_pages(StoreChange::Scanning);
     }
 
     /// Points history entries at a renamed playlist and re-shows the page.
@@ -1163,6 +1175,7 @@ impl App {
             }
         }
         self.downloader.set_enabled(on);
+        self.settings_changed();
     }
 
     // ---- running in the background --------------------------------------

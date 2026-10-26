@@ -330,6 +330,9 @@ struct Walk {
     rows: Vec<(String, Kind, Vec<Stall>)>,
     /// Heap in use after each round, in bytes.
     heap: Vec<usize>,
+    /// After the last round: the heap once the kept pages are let go, and
+    /// once the cached covers are too.
+    heap_without: (usize, usize),
 }
 
 /// Writes `cmd` to perf's control FIFO (`perf record --control
@@ -458,9 +461,20 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
         }
         heap.push(heap_in_use());
     }
+    app.forget_kept_pages();
+    settle(&app);
+    pump(Duration::from_millis(2500));
+    let no_pages = heap_in_use();
+    app.covers.forget_all();
+    pump(Duration::from_millis(500));
+    let no_covers = heap_in_use();
     drop(app);
     pump(Duration::from_millis(500));
-    Walk { rows, heap }
+    Walk {
+        rows,
+        heap,
+        heap_without: (no_pages, no_covers),
+    }
 }
 
 fn table(w: &Walk, budget: Duration) -> String {
@@ -478,15 +492,15 @@ fn table(w: &Walk, budget: Duration) -> String {
         };
         let _ = writeln!(out, "| {name}{mark} | {} |", cells.join(" / "));
     }
-    let heap: Vec<String> = w
-        .heap
-        .iter()
-        .map(|b| format!("{:.0}", *b as f64 / 1_048_576.0))
-        .collect();
+    let mib = |b: usize| format!("{:.0}", b as f64 / 1_048_576.0);
+    let heap: Vec<String> = w.heap.iter().map(|b| mib(*b)).collect();
     let _ = writeln!(
         out,
-        "\nHeap in use after each round (MiB): {}",
-        heap.join(" / ")
+        "\nHeap in use after each round (MiB): {}; with the kept pages let go: {}; \
+         and the cached covers: {}",
+        heap.join(" / "),
+        mib(w.heap_without.0),
+        mib(w.heap_without.1),
     );
     out
 }

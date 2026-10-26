@@ -46,11 +46,11 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
 - `leaks` (debug build, about a minute, also in CI): opens every page three
   times on a small generated library, with the keyboard focus inside it, and
   checks through weak references that each page's widgets, list models and
-  items are freed once the window lets it go (it keeps the four library
-  pages, the last album, artist or playlist page and the search page for
-  going back, and the check counts those); likewise the queue panel's rows,
-  the now-playing bar and the setup assistant. A failure lists what is
-  still alive by type and page.
+  items are freed once the window lets it go (it keeps Home, Settings, the
+  last library grid, the last album, artist or playlist page and the search
+  page for going back, and the check counts those); likewise the queue
+  panel's rows, the now-playing bar and the setup assistant. A failure
+  lists what is still alive by type and page.
 - `stalls` (release build, about 10 minutes plus the build): generates a
   typical library (5,000 tracks with covers) and the hostile library of
   `docs/library-format.md` "Limits" (together about 2.4 GB under

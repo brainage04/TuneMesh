@@ -426,6 +426,78 @@ fn find(lib: &Library, playlists: Vec<Summary>, text: &str) -> Found {
     }
 }
 
+/// A titled row of tiles whose tiles are bound again for each new result
+/// instead of made anew (a query's three sections made up to 36 tiles).
+struct TileSection {
+    root: gtk::Box,
+    flow: gtk::FlowBox,
+    see_all: Option<gtk::Button>,
+    tiles: RefCell<Vec<Tile>>,
+    round: bool,
+}
+
+impl TileSection {
+    fn new(title: &str, round: bool, see_all: Option<(Rc<App>, Route)>) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let t = section_title(title);
+        t.set_hexpand(true);
+        head.append(&t);
+        let see_all = see_all.map(|(app, route)| {
+            let btn = gtk::Button::builder()
+                .label("Show all")
+                .css_classes(["flat", "tm-link", "dim"])
+                .valign(gtk::Align::Center)
+                .build();
+            // Weak: the button is part of a page the window may keep.
+            let app = Rc::downgrade(&app);
+            btn.connect_clicked(move |_| {
+                if let Some(app) = app.upgrade() {
+                    app.navigate(route.clone());
+                }
+            });
+            head.append(&btn);
+            btn
+        });
+        root.append(&head);
+        let flow = tile_flow();
+        flow.set_max_children_per_line(8);
+        root.append(&flow);
+        root.set_visible(false);
+        Self {
+            root,
+            flow,
+            see_all,
+            tiles: RefCell::new(Vec::new()),
+            round,
+        }
+    }
+
+    /// Shows `n` tiles, bound by `bind`, and the "Show all" button if `more`.
+    fn fill(&self, n: usize, more: bool, bind: impl Fn(usize, &Tile)) {
+        let mut tiles = self.tiles.borrow_mut();
+        while tiles.len() > n {
+            let t = tiles.pop().expect("tile");
+            if let Some(child) = t.widget.parent() {
+                self.flow.remove(&child);
+            }
+        }
+        for (i, t) in tiles.iter().enumerate() {
+            bind(i, t);
+        }
+        for i in tiles.len()..n {
+            let t = Tile::new(self.round);
+            bind(i, &t);
+            self.flow.append(&t.widget);
+            tiles.push(t);
+        }
+        self.root.set_visible(n > 0);
+        if let Some(b) = &self.see_all {
+            b.set_visible(more);
+        }
+    }
+}
+
 /// The search page. It stays while the query changes: each query is
 /// searched on a thread (100,000 tracks take 5-7 ms), and only the newest
 /// one's results are shown.
@@ -437,8 +509,9 @@ struct SearchPage {
     message: gtk::Box,
     songs: gtk::Box,
     list: TrackList,
-    /// The artist, album and playlist sections.
-    tiles: gtk::Box,
+    artists: TileSection,
+    albums: TileSection,
+    lists: TileSection,
 }
 
 impl SearchPage {
@@ -477,9 +550,6 @@ impl SearchPage {
         while let Some(c) = self.message.first_child() {
             self.message.remove(&c);
         }
-        while let Some(c) = self.tiles.first_child() {
-            self.tiles.remove(&c);
-        }
         let Some((lib, found)) = found else {
             self.message.append(&label("Search", &["tm-page-title"]));
             self.message.append(&widgets::empty(
@@ -488,6 +558,9 @@ impl SearchPage {
             self.songs.set_visible(false);
             self.list
                 .set_entries(app, Entries::Tracks(Vec::new()), None);
+            for s in [&self.artists, &self.albums, &self.lists] {
+                s.fill(0, false, |_, _| {});
+            }
             return;
         };
         if found.nothing {
@@ -498,39 +571,16 @@ impl SearchPage {
         self.list.set_context(&format!("Search “{text}”"));
         self.list
             .set_entries(app, Entries::Tracks(found.tracks), None);
-        let artists: Vec<gtk::Widget> = found
-            .artists
-            .iter()
-            .map(|&i| {
-                let t = Tile::new(true);
-                artist_tile(app, lib, i, &t);
-                t.widget.upcast()
-            })
-            .collect();
-        if let Some(s) = flow_section("Artists", artists, None) {
-            self.tiles.append(&s);
-        }
-        let albums: Vec<gtk::Widget> = found
-            .albums
-            .iter()
-            .map(|&i| {
-                let t = Tile::new(false);
-                album_tile(app, lib, i, &t, true);
-                t.widget.upcast()
-            })
-            .collect();
-        if let Some(s) = flow_section("Albums", albums, None) {
-            self.tiles.append(&s);
-        }
-        let more = found.more_lists.then(|| (app.clone(), Route::Playlists));
-        let lists: Vec<gtk::Widget> = found
-            .lists
-            .iter()
-            .map(|p| playlist_tile(app, lib, p))
-            .collect();
-        if let Some(s) = flow_section("Playlists", lists, more) {
-            self.tiles.append(&s);
-        }
+        self.artists.fill(found.artists.len(), false, |k, t| {
+            artist_tile(app, lib, found.artists[k], t)
+        });
+        self.albums.fill(found.albums.len(), false, |k, t| {
+            album_tile(app, lib, found.albums[k], t, true)
+        });
+        self.lists
+            .fill(found.lists.len(), found.more_lists, |k, t| {
+                bind_playlist_tile(app, lib, &found.lists[k], t)
+            });
     }
 }
 
@@ -556,6 +606,12 @@ fn search(app: &Rc<App>, text: &str) -> Page {
     songs.append(&list.view);
     b.append(&songs);
     let tiles = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let artists = TileSection::new("Artists", true, None);
+    let albums = TileSection::new("Albums", false, None);
+    let lists = TileSection::new("Playlists", false, Some((app.clone(), Route::Playlists)));
+    for s in [&artists, &albums, &lists] {
+        tiles.append(&s.root);
+    }
     b.append(&tiles);
     let page = Rc::new(SearchPage {
         text: RefCell::new(String::new()),
@@ -563,7 +619,9 @@ fn search(app: &Rc<App>, text: &str) -> Page {
         message,
         songs,
         list,
-        tiles,
+        artists,
+        albums,
+        lists,
     });
     page.set_query(app, text);
     let mut out = with_tiles(&b);

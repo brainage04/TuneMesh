@@ -91,6 +91,11 @@ type Callback = Box<dyn FnOnce(&gdk::Texture)>;
 pub struct Covers {
     root: RefCell<PathBuf>,
     cache: RefCell<HashMap<Key, (gdk::Texture, u64)>>,
+    /// Every texture made that may still be on screen, also after the
+    /// cache let go of it: a cover shown again (a page kept, a grid
+    /// scrolled back) gets the same texture instead of a second copy, and
+    /// the GPU renderer keeps its upload.
+    alive: RefCell<HashMap<Key, glib::WeakRef<gdk::Texture>>>,
     cache_bytes: Cell<usize>,
     clock: Cell<u64>,
     pending: RefCell<HashMap<Key, Vec<Callback>>>,
@@ -263,6 +268,7 @@ impl Covers {
         let covers = Rc::new(Self {
             root: RefCell::new(root),
             cache: RefCell::new(HashMap::new()),
+            alive: RefCell::new(HashMap::new()),
             cache_bytes: Cell::new(0),
             clock: Cell::new(0),
             pending: RefCell::new(HashMap::new()),
@@ -284,6 +290,15 @@ impl Covers {
         *self.root.borrow_mut() = root;
         self.library.borrow_mut().take();
         self.cache.borrow_mut().clear();
+        self.alive.borrow_mut().clear();
+        self.cache_bytes.set(0);
+    }
+
+    /// Drops every cached cover (the stall walk's heap accounting).
+    #[cfg(test)]
+    pub fn forget_all(&self) {
+        self.cache.borrow_mut().clear();
+        self.alive.borrow_mut().clear();
         self.cache_bytes.set(0);
     }
 
@@ -305,11 +320,13 @@ impl Covers {
             };
             (old.mtime, old.mtime_nsec, &old.cover) == (new.mtime, new.mtime_nsec, &new.cover)
         };
-        self.cache.borrow_mut().retain(|(s, _, _), _| match s {
+        let keep = |(s, _, _): &Key| match s {
             Source::Placeholder(_) => true,
             Source::Embedded(p) => unchanged(p),
             Source::File(_) => false,
-        });
+        };
+        self.cache.borrow_mut().retain(|k, _| keep(k));
+        self.alive.borrow_mut().retain(|k, _| keep(k));
         let bytes = self.cache.borrow().keys().map(key_bytes).sum();
         self.cache_bytes.set(bytes);
     }
@@ -340,6 +357,14 @@ impl Covers {
         let bytes = key_bytes(&key);
         let tick = self.clock.get() + 1;
         self.clock.set(tick);
+        {
+            let mut alive = self.alive.borrow_mut();
+            // Forget textures no longer shown anywhere, now and then.
+            if alive.len() > 4096 {
+                alive.retain(|_, w| w.upgrade().is_some());
+            }
+            alive.insert(key.clone(), texture.downgrade());
+        }
         let mut cache = self.cache.borrow_mut();
         if cache.insert(key, (texture, tick)).is_none() {
             self.cache_bytes.set(self.cache_bytes.get() + bytes);
@@ -362,6 +387,12 @@ impl Covers {
             self.clock.set(tick);
             *used = tick;
             let tex = tex.clone();
+            cb(&tex);
+            return;
+        }
+        let shown = self.alive.borrow().get(&key).and_then(|w| w.upgrade());
+        if let Some(tex) = shown {
+            self.insert(key, tex.clone());
             cb(&tex);
             return;
         }
@@ -405,7 +436,11 @@ impl Covers {
                     p.data::<String>("tm-cover-source")
                         .map(|d| d.as_ref().clone())
                 };
-                if current.as_deref() == Some(tag.as_str()) {
+                // Setting the same texture again still clears the image and
+                // redraws it: every row of every list, at each like.
+                if current.as_deref() == Some(tag.as_str())
+                    && p.paintable().as_ref() != Some(tex.upcast_ref())
+                {
                     p.set_paintable(Some(tex));
                 }
             }

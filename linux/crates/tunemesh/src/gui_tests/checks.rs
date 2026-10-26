@@ -189,6 +189,50 @@ fn a_reload_older_than_an_edit_keeps_the_edit_shown() {
     });
 }
 
+/// The text of the first entry under `w`.
+fn entry_text(w: &gtk::Widget) -> Option<String> {
+    if let Some(e) = w.downcast_ref::<gtk::Entry>() {
+        return Some(e.text().into());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(t) = entry_text(&c) {
+            return Some(t);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+/// Settings stays alive when left, and shows a library folder changed
+/// elsewhere (the setup assistant) when shown again.
+#[test]
+#[ignore = "needs a display; run by scripts/gui-checks.sh"]
+fn kept_settings_follow_changes_made_elsewhere() {
+    on_gtk(|| {
+        let dir = Scratch::new("settings-check");
+        let (a, b) = (dir.0.join("a"), dir.0.join("b"));
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        let app = open(&a);
+        settle(&app);
+        app.navigate(Route::Settings);
+        settle(&app);
+        let page = app.page_widget().expect("page");
+        assert_eq!(entry_text(&page).as_deref(), Some(&*a.to_string_lossy()));
+        app.navigate(Route::Home);
+        settle(&app);
+        app.set_library_path(b.clone());
+        settle(&app);
+        app.navigate(Route::Settings);
+        settle(&app);
+        let again = app.page_widget().expect("page");
+        assert_eq!(again, page, "Settings was built again");
+        assert_eq!(entry_text(&page).as_deref(), Some(&*b.to_string_lossy()));
+        drop(app);
+    });
+}
+
 /// Bytes in use on the heap, after returning free pages.
 fn heap_in_use() -> usize {
     // SAFETY: plain libc queries.

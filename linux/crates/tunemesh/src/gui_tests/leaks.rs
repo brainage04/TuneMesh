@@ -113,8 +113,8 @@ fn walk() -> Vec<String> {
                 Expect::AllFreed,
             );
         }
-        // At most the four library pages, one detail page and the search
-        // page stay.
+        // At most Home, Settings, one library grid, one detail page and the
+        // search page stay.
         for route in &routes {
             app.navigate(route.clone());
             quiesce(&app);
@@ -123,7 +123,7 @@ fn walk() -> Vec<String> {
         quiesce(&app);
         let kept = app.forget_kept_pages();
         quiesce(&app);
-        if kept > 5 {
+        if kept > 4 {
             failures.push(format!(
                 "round {round}: {kept} pages kept besides the search page"
             ));

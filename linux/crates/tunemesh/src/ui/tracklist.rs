@@ -219,11 +219,15 @@ impl Shared {
                 r.root.remove_css_class("unavailable");
                 r.heart.set_visible(true);
                 let liked = app.store.is_liked(&t.path);
-                r.heart.set_icon_name(Some(if liked {
+                let icon = if liked {
                     "tm-heart-filled-symbolic"
                 } else {
                     "tm-heart-outline-symbolic"
-                }));
+                };
+                // The same icon set again is a new one to look up and draw.
+                if r.heart.icon_name().as_deref() != Some(icon) {
+                    r.heart.set_icon_name(Some(icon));
+                }
                 if liked {
                     r.heart.add_css_class("liked");
                 } else {
