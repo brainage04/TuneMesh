@@ -100,7 +100,7 @@ pub struct Spec {
 
 #[derive(Clone)]
 struct RowW {
-    root: gtk::Box,
+    root: gtk::Grid,
     index: gtk::Label,
     cover: Option<gtk::Image>,
     title: gtk::Label,
@@ -300,54 +300,61 @@ impl TrackList {
     }
 }
 
+/// A row is one grid: index, cover, title over artist, album, heart and
+/// duration, with no boxes in between (a list makes 200 rows, and every
+/// widget is made, styled and measured). Title and album expand alike, so
+/// they share the free width equally, as the header's captions do.
 fn new_row(spec_album: bool, spec_cover: bool) -> RowW {
-    let root = gtk::Box::builder()
-        .spacing(16)
+    let root = gtk::Grid::builder()
+        .column_spacing(16)
         .css_classes(["tm-track-row"])
         .build();
     let index = gtk::Label::builder()
         .width_chars(3)
         .xalign(1.0)
+        .valign(gtk::Align::Center)
         .css_classes(["index"])
         .build();
-    root.append(&index);
+    root.attach(&index, 0, 0, 1, 2);
+    let mut col = 1;
     let cover = spec_cover.then(|| {
         let p = crate::ui::widgets::cover_image(40);
-        root.append(&p);
+        p.set_valign(gtk::Align::Center);
+        root.attach(&p, col, 0, 1, 2);
+        col += 1;
         p
     });
-    // Title and album share the free width equally, in rows and the header.
-    let cols = gtk::Box::builder()
-        .spacing(16)
-        .homogeneous(true)
-        .hexpand(true)
-        .build();
-    let text = gtk::Box::builder()
-        .orientation(gtk::Orientation::Vertical)
-        .valign(gtk::Align::Center)
-        .build();
     let title = label("", &["title"]);
     title.set_max_width_chars(1);
+    title.set_hexpand(true);
+    // The pair is centred: title at the bottom of the top half, artist at
+    // the top of the bottom half.
+    title.set_vexpand(true);
+    title.set_valign(gtk::Align::End);
     let artist = label("", &["artist"]);
     artist.set_max_width_chars(1);
-    text.append(&title);
-    text.append(&artist);
-    cols.append(&text);
+    artist.set_vexpand(true);
+    artist.set_valign(gtk::Align::Start);
+    root.attach(&title, col, 0, 1, 1);
+    root.attach(&artist, col, 1, 1, 1);
+    col += 1;
     let album = spec_album.then(|| {
         let a = label("", &["album"]);
         a.set_max_width_chars(1);
-        cols.append(&a);
+        a.set_hexpand(true);
+        root.attach(&a, col, 0, 1, 2);
+        col += 1;
         a
     });
-    root.append(&cols);
     let heart = heart_image();
-    root.append(&heart);
+    root.attach(&heart, col, 0, 1, 2);
     let duration = gtk::Label::builder()
         .width_request(54)
         .xalign(1.0)
+        .valign(gtk::Align::Center)
         .css_classes(["duration"])
         .build();
-    root.append(&duration);
+    root.attach(&duration, col + 1, 0, 1, 2);
     RowW {
         root,
         index,
@@ -369,42 +376,48 @@ fn heart_image() -> gtk::Image {
         .build()
 }
 
-/// The column captions shown above the rows.
-pub fn columns_header(show_album: bool, show_cover: bool) -> gtk::Box {
-    let b = gtk::Box::builder()
-        .spacing(16)
+/// The column captions shown above the rows, laid out like a row.
+pub fn columns_header(show_album: bool, show_cover: bool) -> gtk::Grid {
+    let b = gtk::Grid::builder()
+        .column_spacing(16)
         .css_classes(["tm-tracks-head"])
         .build();
-    b.append(
+    let caption = |text: &str| {
+        let l = label(text, &[]);
+        l.set_max_width_chars(1);
+        l.set_hexpand(true);
+        l
+    };
+    b.attach(
         &gtk::Label::builder()
             .label("#")
             .width_chars(3)
             .xalign(1.0)
             .build(),
+        0,
+        0,
+        1,
+        1,
     );
+    let mut col = 1;
     if show_cover {
-        b.append(&gtk::Box::builder().width_request(40).build());
+        b.attach(&gtk::Box::builder().width_request(40).build(), col, 0, 1, 1);
+        col += 1;
     }
-    let cols = gtk::Box::builder()
-        .spacing(16)
-        .homogeneous(true)
-        .hexpand(true)
-        .build();
-    cols.append(&gtk::Label::builder().label("Title").xalign(0.0).build());
+    b.attach(&caption("Title"), col, 0, 1, 1);
+    col += 1;
     if show_album {
-        cols.append(&gtk::Label::builder().label("Album").xalign(0.0).build());
+        b.attach(&caption("Album"), col, 0, 1, 1);
+        col += 1;
     }
-    b.append(&cols);
     // Same size as the rows' heart.
     let spacer = heart_image();
     spacer.set_opacity(0.0);
-    b.append(&spacer);
+    b.attach(&spacer, col, 0, 1, 1);
     let clock = gtk::Image::from_icon_name("document-open-recent-symbolic");
-    let clock_box = gtk::Box::builder().width_request(54).hexpand(false).build();
-    clock.set_hexpand(true);
     clock.set_halign(gtk::Align::End);
-    clock_box.append(&clock);
-    b.append(&clock_box);
+    clock.set_size_request(54, -1);
+    b.attach(&clock, col + 1, 0, 1, 1);
     b
 }
 
@@ -656,7 +669,7 @@ fn connect_reorder(app: &Rc<App>, view: &gtk::ListView, shared: &Rc<Shared>, nam
         .actions(gdk::DragAction::MOVE)
         .build();
     // The row being dragged, for the drag icon.
-    let dragged: Rc<RefCell<Option<gtk::Box>>> = Rc::default();
+    let dragged: Rc<RefCell<Option<gtk::Grid>>> = Rc::default();
     let (sh, n, d) = (Rc::downgrade(shared), name.clone(), dragged.clone());
     source.connect_prepare(move |s, x, y| {
         let sh = sh.upgrade()?;
@@ -679,7 +692,7 @@ fn connect_reorder(app: &Rc<App>, view: &gtk::ListView, shared: &Rc<Shared>, nam
 
     let target = gtk::DropTarget::new(glib::BoxedAnyObject::static_type(), gdk::DragAction::MOVE);
     // The row marked as where the drop goes.
-    let marked: Rc<RefCell<Option<glib::WeakRef<gtk::Box>>>> = Rc::default();
+    let marked: Rc<RefCell<Option<glib::WeakRef<gtk::Grid>>>> = Rc::default();
     let unmark = {
         let marked = marked.clone();
         move || {
