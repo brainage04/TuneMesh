@@ -15,11 +15,24 @@ pub const RULES: &[&str] = &["(?d).~tunemesh-*"];
 /// ones are appended (exact match after trimming), the user's lines and
 /// their order are kept, and a `// TuneMesh` header is added only when the
 /// file is created. Nothing is written when no rule is missing. A
-/// `.stignore` that is a symlink or not a regular file is refused. Returns
-/// whether the file was written.
+/// `.stignore` that is a symlink or not a regular file is refused; one over
+/// `MAX_STIGNORE_BYTES` is left unchanged, with an error saying so and
+/// which rules to add by hand (callers log it). Returns whether the file
+/// was written.
 pub fn ensure(root: &Path) -> io::Result<bool> {
     let dir = Dir::open(root)?;
-    let existing = match dir.read(FILE_NAME, crate::limits::MAX_STIGNORE_BYTES) {
+    let max = crate::limits::MAX_STIGNORE_BYTES;
+    if dir.file_len(FILE_NAME).is_ok_and(|len| len > max) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "{FILE_NAME} is larger than {max} bytes, so it is left unchanged; add these \
+                 lines to it by hand if they are missing: {}",
+                RULES.join(" ")
+            ),
+        ));
+    }
+    let existing = match dir.read(FILE_NAME, max) {
         Ok(bytes) => Some(bytes),
         Err(e) if e.kind() == io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
@@ -98,6 +111,25 @@ mod tests {
         std::os::unix::fs::symlink(&target, d.path().join(FILE_NAME)).unwrap();
         assert!(ensure(d.path()).is_err());
         assert_eq!(fs::read_to_string(&target).unwrap(), "keep");
+    }
+
+    /// Round 3 (trivial): an oversize `.stignore` was left alone with only
+    /// a bare read error; the error now says it is left unchanged and what
+    /// to add.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn oversize_files_are_left_alone_and_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(FILE_NAME);
+        let big = vec![b'x'; crate::limits::MAX_STIGNORE_BYTES as usize + 1];
+        fs::write(&path, &big).unwrap();
+        let e = ensure(dir.path()).unwrap_err();
+        let msg = e.to_string();
+        assert!(
+            msg.contains("left unchanged") && msg.contains(RULES[0]),
+            "{msg}"
+        );
+        assert_eq!(fs::read(&path).unwrap(), big);
     }
 
     /// Found by `fuzz/fuzz_targets/stignore.rs`: a `.stignore` with invalid

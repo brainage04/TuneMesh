@@ -192,6 +192,106 @@ const OPTIONS: &[(&str, bool)] = &[
 /// Options whose value is a file the program opens.
 const FILE_OPTIONS: &[&str] = &["i", "attach"];
 
+/// Filters a `-vf` graph may name: those yt-dlp's postprocessing and the
+/// worker's thumbnail crop use. Others, such as `movie`, `amovie`,
+/// `subtitles` or `ass`, open files of their own.
+const FILTERS: &[&str] = &["crop", "scale", "pad", "format", "setsar"];
+
+const WHITESPACE: &[u8] = b" \n\t\r";
+
+/// ffmpeg's `av_get_token`: from `b[i..]`, skips white space, reads up to a
+/// byte in `term` (outside quotes), unescaping `\x` and `'...'`, and trims
+/// trailing white space that was not escaped or quoted. Returns the token
+/// and where reading stopped.
+fn get_token(b: &[u8], mut i: usize, term: &[u8]) -> (Vec<u8>, usize) {
+    while b.get(i).is_some_and(|c| WHITESPACE.contains(c)) {
+        i += 1;
+    }
+    let (mut out, mut end) = (Vec::new(), 0);
+    while let Some(&c) = b.get(i).filter(|c| !term.contains(c)) {
+        i += 1;
+        if c == b'\\' && i < b.len() {
+            out.push(b[i]);
+            i += 1;
+            end = out.len();
+        } else if c == b'\'' {
+            while let Some(&q) = b.get(i).filter(|q| **q != b'\'') {
+                out.push(q);
+                i += 1;
+            }
+            if i < b.len() {
+                i += 1;
+                end = out.len();
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    while out.len() > end && out.last().is_some_and(|c| WHITESPACE.contains(c)) {
+        out.pop();
+    }
+    (out, i)
+}
+
+/// Skips link labels (`[in]`) and white space, as ffmpeg's graph parser
+/// does.
+fn skip_labels(b: &[u8], mut i: usize) -> Result<usize, String> {
+    loop {
+        while b.get(i).is_some_and(|c| WHITESPACE.contains(c)) {
+            i += 1;
+        }
+        if b.get(i) != Some(&b'[') {
+            return Ok(i);
+        }
+        let (_, next) = get_token(b, i + 1, b"]");
+        if b.get(next) != Some(&b']') {
+            return Err("refusing -vf: unterminated link label".to_owned());
+        }
+        i = next + 1;
+    }
+}
+
+/// Checks a `-vf` filter graph the way ffmpeg splits it
+/// (`avfilter_graph_parse2`): every filter must be one of `FILTERS`, and no
+/// filter option may be read from a file (`/option=path`, ffmpeg 7).
+fn check_filters(graph: &OsStr) -> Result<(), String> {
+    let b = graph.as_bytes();
+    let refuse = |what: String| Err(format!("refusing -vf {}: {what}", graph.to_string_lossy()));
+    let mut i = 0;
+    loop {
+        i = skip_labels(b, i)?;
+        let (name, next) = get_token(b, i, b"=,;[");
+        i = next;
+        let name = name.split(|c| *c == b'@').next().unwrap_or_default();
+        if !FILTERS.iter().any(|f| f.as_bytes() == name) {
+            return refuse(format!(
+                "filter {:?} is not allowed",
+                String::from_utf8_lossy(name)
+            ));
+        }
+        if b.get(i) == Some(&b'=') {
+            let (args, next) = get_token(b, i + 1, b"[],;");
+            i = next;
+            // Options are `key=value` pairs (or bare values) split by `:`.
+            let mut j = 0;
+            while j < args.len() {
+                let (pair, next) = get_token(&args, j, b":");
+                let (key, _) = get_token(&pair, 0, b"=");
+                if key.first() == Some(&b'/') {
+                    return refuse("filter options cannot be read from files".to_owned());
+                }
+                j = next + 1;
+            }
+        }
+        i = skip_labels(b, i)?;
+        match b.get(i) {
+            None => return Ok(()),
+            Some(b',' | b';') => i += 1,
+            Some(c) => return refuse(format!("unexpected {:?}", char::from(*c))),
+        }
+    }
+}
+
 /// The option name of `arg` (`-c:v` -> `c`), if it is an option.
 fn option_name(arg: &OsStr) -> Option<&[u8]> {
     let b = arg.as_bytes().strip_prefix(b"-")?;
@@ -254,6 +354,9 @@ fn check_args<'a>(args: &'a [OsString], root: &Path) -> Result<Vec<Arg<'a>>, Str
                         .ok_or_else(|| format!("-{name} without a value"))?;
                     if FILE_OPTIONS.contains(&name) {
                         check_input(value, root)?;
+                    }
+                    if name == "vf" {
+                        check_filters(value)?;
                     }
                     Some(value)
                 } else {
@@ -505,6 +608,46 @@ mod tests {
         }
         assert!(rewrite("ffprobe", &os(&["-format_whitelist", "hls", &a]), &r).is_err());
         assert!(rewrite("ffprobe", &os(&["-show_streams", "-i", &a]), &r).is_err());
+    }
+
+    /// R3Deepseek-4: a `-vf` value naming `movie=` or `subtitles=` opened a
+    /// file outside the job directory.
+    #[test]
+    fn filter_graphs_name_only_known_filters() {
+        let root = tempfile::tempdir().unwrap();
+        let r = root.path().canonicalize().unwrap();
+        let a = format!("file:{}/a.jpg", r.display());
+        let out = format!("file:{}/b.jpg", r.display());
+        let vf = |graph: &str| rewrite("ffmpeg", &os(&["-i", &a, "-vf", graph, &out]), &r);
+        // The worker's square thumbnail crop (as the shell hands it over).
+        let crop = "crop='if(gt(ih,iw),iw,ih)':'if(gt(iw,ih),ih,iw)'";
+        for ok in [
+            crop,
+            "scale=iw/2:-1,format=yuvj420p",
+            "[in] crop@c=1:1 [out]",
+            " setsar = 1 ; pad=w=10:h=10",
+        ] {
+            assert!(vf(ok).is_ok(), "{ok}: {:?}", vf(ok));
+        }
+        for bad in [
+            "movie=/etc/passwd",
+            "subtitles=/tmp/x.srt",
+            "crop=1:1,movie=/etc/passwd",
+            "crop=1:1;amovie=/etc/passwd",
+            "[in]ass=/tmp/x[out]",
+            "mo\\vie=/etc/passwd",
+            "'movie'=/etc/passwd",
+            "crop='1,movie=/x':1,subtitles=/x",
+            "sws_flags=bicubic;crop=1:1",
+            "crop=/w=/etc/passwd:h=1",
+            "crop=w=1:/h=/etc/passwd",
+            "[in",
+            "",
+        ] {
+            assert!(vf(bad).is_err(), "{bad}");
+        }
+        // Quoted commas stay inside the option, as ffmpeg reads them.
+        assert!(vf("crop='1,2':1").is_ok());
     }
 
     /// Found by `fuzz/fuzz_targets/ffshim_args.rs`: ffmpeg reads `-i:x` as

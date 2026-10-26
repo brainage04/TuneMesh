@@ -2,17 +2,11 @@
   description = "TuneMesh: a Syncthing-backed personal music player and its download worker";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/c5c4a43b0e8056328ec4529f735cabdb8f1942bb";
-  # Only for the `nightly` dev shell (fuzzing, Miri, sanitizers).
-  inputs.rust-overlay = {
-    url = "github:oxalica/rust-overlay";
-    inputs.nixpkgs.follows = "nixpkgs";
-  };
 
   outputs =
     {
       self,
       nixpkgs,
-      rust-overlay,
     }:
     let
       system = "x86_64-linux";
@@ -117,6 +111,14 @@
           platforms = [ system ];
         };
       };
+
+      # Only for the `nightly` dev shell (fuzzing, Miri, sanitizers).
+      rustOverlay = import (
+        builtins.fetchTarball {
+          url = "https://github.com/oxalica/rust-overlay/archive/fad80eb74614f7dc37c1c83df8caae64361eda22.tar.gz";
+          sha256 = "sha256-wjoZGhxH/Yr+OsFRpNyV9DpMGQIdNEjjAOinfzQvadk=";
+        }
+      );
     in
     {
       packages.${system} = {
@@ -228,9 +230,12 @@
 
         # Nightly Rust for the checks that need it: cargo-fuzz (linux/fuzz),
         # Miri and AddressSanitizer runs. Pinned to one dated nightly.
+        # rust-overlay is fetched here, pinned by hash, instead of being a
+        # flake input, so flakes that use only the packages or the module
+        # never lock or fetch it.
         nightly = pkgs.mkShell {
           packages = [
-            ((rust-overlay.lib.mkRustBin { } pkgs).nightly."2026-10-20".default.override {
+            ((pkgs.extend rustOverlay).rust-bin.nightly."2026-10-20".default.override {
               extensions = [
                 "miri"
                 "rust-src"
