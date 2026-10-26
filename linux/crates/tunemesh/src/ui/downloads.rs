@@ -1083,6 +1083,10 @@ pub fn page(app: &Rc<App>) -> Page {
                 None => break,
             }
         }
+        // The rows removed are freed now, not all at once with the page.
+        if let Some(st) = weak_state.upgrade() {
+            st.shown.borrow_mut().retain(|(_, w)| w.parent().is_some());
+        }
         c.first_child().is_none()
     }));
     page
