@@ -56,7 +56,7 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
   `docs/library-format.md` "Limits" (together about 2.4 GB under
   `/var/tmp`), walks every page and action three times on each and prints
   the longest main-loop stall each caused, with the GTK thread's CPU time in
-  it. It fails when an action exceeds `TUNEMESH_STALL_BUDGET_MS` (16 ms, one
+  it. It fails when an action exceeds `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one
   frame at 60 Hz) in more than one round (a single late round is the
   machine, not the app). Start-up until the first frame (loading the GPU
   driver, compiling the first shaders) is listed as platform time and not

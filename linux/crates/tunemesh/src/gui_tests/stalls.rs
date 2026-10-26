@@ -2,7 +2,7 @@
 //! library (`typical`) and on one at the contract's limits
 //! (`tunemesh_core::hostile::Options::full`), recording the longest
 //! main-loop stall each causes. A release build must stay under the budget
-//! (`TUNEMESH_STALL_BUDGET_MS`, 16 ms by default: one frame at 60 Hz) in
+//! (`TUNEMESH_STALL_BUDGET_MS`, 16.6 ms by default: one frame at 60 Hz) in
 //! all but one round of each action.
 //!
 //! A timeout at high priority ticks every 2 ms; a stall is the longest gap
@@ -464,7 +464,7 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
 }
 
 fn table(w: &Walk, budget: Duration) -> String {
-    let ms = |d: Duration| format!("{:.0}", d.as_secs_f64() * 1000.0);
+    let ms = |d: Duration| format!("{:.1}", d.as_secs_f64() * 1000.0);
     let cell = |s: &Stall| format!("{} ({})", ms(s.wall), ms(s.cpu));
     let mut out = String::from("| Action | Worst stall per round, ms (on CPU) |\n| --- | --- |\n");
     for (name, kind, stalls) in &w.rows {
@@ -496,11 +496,12 @@ fn run(name: &'static str, library: PathBuf, shape: impl FnOnce(&Path) -> Shape 
         panic!("stall budgets apply to release builds: cargo test --release");
     }
     let _walk = WALK.lock().unwrap_or_else(|e| e.into_inner());
-    let budget = Duration::from_millis(
+    let budget = Duration::from_secs_f64(
         std::env::var("TUNEMESH_STALL_BUDGET_MS")
             .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(16),
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(16.6)
+            / 1000.0,
     );
     let w = on_gtk(move || {
         let shape = shape(&library);
