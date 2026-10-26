@@ -317,6 +317,13 @@ How it works:
   stopped within about a second and the status becomes `cancelled`. Status
   files left unfinished by a request deleted while no worker ran become
   `cancelled` too.
+- Every minute the worker looks at the status files whose request file is
+  gone, one file at a time and reading only their `state`; finished ones
+  that are not among the newest 200 status files are deleted, since no
+  client lists them. It then merges playlist conflict copies that are 10
+  minutes old (it does not know its Syncthing device ID).
+- Playlist edits (downloads added to a playlist) take the same `Playlists/`
+  lock as the desktop app, so neither loses the other's edit.
 - Logs go to stderr (the journal when run as a service).
 
 ### NixOS service
@@ -367,7 +374,7 @@ nix develop .#nightly -c bash -c 'cd linux &&
   RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address \
   cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
     -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
-    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded --skip bulk_edits_are_linear'
+    --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
 
 # Every fuzz target for 60 s (CI), or one target for longer
 nix develop .#nightly -c linux/fuzz/smoke.sh 60
@@ -379,12 +386,13 @@ nix develop -c bash -c 'cd linux && cargo mutants -p tunemesh-core -f src/limits
 
 Tests that use the file system or child processes are marked
 `#[cfg_attr(miri, ignore = "...")]`; every other new core test runs under
-Miri as well. The three tests skipped under AddressSanitizer check time and
+Miri as well. The two tests skipped under AddressSanitizer check time and
 memory bounds, which the sanitizer's overhead breaks.
 
 The fuzz targets (`linux/fuzz/fuzz_targets/`, a separate Cargo workspace)
 cover everything the core and the worker parse from the synced folder or
-the network:
+the network. The worker's parsers are public only with its `fuzzing`
+feature, which `linux/fuzz` turns on:
 
 | Target | Input |
 | --- | --- |
