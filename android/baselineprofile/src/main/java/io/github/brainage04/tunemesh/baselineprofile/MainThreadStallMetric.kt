@@ -14,7 +14,7 @@ import androidx.benchmark.traceprocessor.TraceProcessor
  * - `mainThreadWorkMaxMs`: the longest stall less the time the main thread waits for its render thread: in `postAndWait`, or asleep while
  *   the render thread draws a frame (the first frames wait there without a `postAndWait` slice). On an emulator without a GPU the software
  *   renderer alone can take 250 ms for a frame; it is not the app's work,
- * - `mainThreadStallsOver50Ms`: how many stalls took more than 50 ms,
+ * - `mainThreadStallsOverBudget`: how many stalls took longer than the budget, [STALL_BUDGET_NS] (one 60 Hz frame, 16.6 ms),
  * - `frameMaxMs`: the longest `Choreographer#doFrame`.
  *
  * With [afterFirstFrame], work that starts before the end of the process's first frame (process start, `bindApplication`, the first
@@ -39,7 +39,7 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
         return listOf(
             Measurement("mainThreadStallMaxMs", (stalls.maxOfOrNull { it.length } ?: 0L).toDouble() / NS_PER_MS),
             Measurement("mainThreadWorkMaxMs", (stalls.maxOfOrNull(::work) ?: 0L).toDouble() / NS_PER_MS),
-            Measurement("mainThreadStallsOver50Ms", stalls.count { it.length > STALL_REPORTED_NS }.toDouble()),
+            Measurement("mainThreadStallsOverBudget", stalls.count { it.length > STALL_BUDGET_NS }.toDouble()),
             Measurement("frameMaxMs", (slices.filter { it.frame && counted(it) }.maxOfOrNull { it.length } ?: 0L).toDouble() / NS_PER_MS),
         )
     }
@@ -142,6 +142,7 @@ class MainThreadStallMetric(private val afterFirstFrame: Boolean = false) : Trac
         const val FRAME = "Choreographer#doFrame"
         const val LAUNCH = "clientTransactionExecuted"
         const val NS_PER_MS = 1_000_000L
-        const val STALL_REPORTED_NS = 50 * NS_PER_MS
+        /** One frame at 60 Hz: a stall longer than this is over budget. */
+        const val STALL_BUDGET_NS = 16_600_000L
     }
 }

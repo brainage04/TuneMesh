@@ -34,7 +34,17 @@ it exists, apply as well.
 - Limits on everything read from the synced folder live in one object, `library/Limits.kt`, row for row with
   `docs/library-format.md` "Limits". A new synced input gets a row there and a constant here. Each synced format
   has one `bounded()` projection (`DownloadStore.bounded`, the `M3u8` reader, `Stignore.withRules`), and readers
-  keep only what the UI shows (the Downloads list keeps a `DownloadItem` per request, never the files).
+  keep only what the UI shows (the Downloads list keeps a `DownloadItem` per request, never the files). Request and
+  status files are read by a streaming reader (`JsonReader`) that decodes each text only up to its limit and checks
+  and skips the rest (track paths, failures and warnings past their limits) without decoding it. The Downloads list
+  is read, and polled every 3 s, only while the Downloads screen is shown, and `DownloadStore` reads a request's
+  files again only when their identity, modification time or size changed.
+- The library index (`LibraryIndex`) is stored compactly, like `PlaylistEntries`: texts once as UTF-8 in one buffer,
+  numbers in int and long arrays, albums as ranges of the track order, open-addressing tables for the lookups.
+  `Track`, `Album` and `Artist` objects are made when a screen reads them, and a playlist's entries keep track
+  ordinals, not paths. The scanner keeps no other copy of the tags: it copies unchanged tracks from the index it is
+  given, and saves the index as its arrays in `filesDir/library-index.bin` (`LibraryIndexFile`; bump its `VERSION`
+  when what a track derives from its tags changes). The JSON `tag-cache.json` of earlier versions is converted once.
   `BoundedModelsTest` lists every property of every parsed model and of what the app keeps of it with its limit,
   and fails on a property (or a new `@Serializable` model in `library/`) without one; `MemoryBudgetTest` asserts
   what each format retains at its limits, and `DownloadsHeapTest` lists the maximal downloads twice in a 192 MB JVM.
@@ -44,10 +54,12 @@ it exists, apply as well.
 - Stress test: `HostileLibraryTest` (`@Stress`) builds the hostile library of the "Limits" section in app
   storage (100,000 audio files with a 40,000-track album, 50 playlists at the entry limit, a playlist over each
   limit and one whose every label is over its limit, requests and status files of just under 1 MiB with every
-  field past its limit, 1 MiB tags, a 20 MB cover), lets the app scan it and opens Home, Your
-  Library, the big album, a big playlist and Downloads. It fails on an OutOfMemoryError, on a main-thread stall
-  over 1 s, or when the state does not follow the limits. The normal instrumented run leaves it out; run it
-  alone (emulator only; needs about 3 GB free in the emulator's data partition):
+  field past its limit, 1 MiB tags, a 20 MB cover) and waits until it is written to disk (`generateLibrary`); then,
+  in a new process (`-Pstress` runs the tests through the test orchestrator), it lets the app scan it and opens
+  Home, Your Library, the big album, a big playlist and Downloads (`hostileLibraryStaysUsable`). It fails on an
+  OutOfMemoryError, on a main-thread stall over 1 s, or when the state does not follow the limits. The normal
+  instrumented run leaves it out; run it alone (emulator only; needs about 3 GB free in the emulator's data
+  partition):
 
   ```sh
   ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pstress
@@ -107,8 +119,11 @@ Run these from this directory before committing (they also run in CI):
 
   Results (JSON) and a Perfetto trace per iteration land in
   `baselineprofile/build/outputs/connected_android_test_additional_output/`; open a trace at ui.perfetto.dev.
-  `MainThreadStallMetric` reports the longest main-thread stall (`mainThreadStallMaxMs`), the same without the time
-  the main thread waits for its render thread (`mainThreadWorkMaxMs`: on the emulator's software renderer a frame
-  can wait 250 ms there, which no app change removes) and the longest frame. Budget: no stall of the app's own
-  work over 100 ms; profile anything over 50 ms. `./gradlew --no-daemon :app:generateBaselineProfile` regenerates
+  `MainThreadStallMetric` reports the longest main-thread stall (`mainThreadStallMaxMs`: a top-level main-thread
+  slice, or one continuous stretch without sleeping outside them), the same without the time the main thread waits
+  for its render thread (`mainThreadWorkMaxMs`: on the emulator's software renderer a frame can wait 250 ms there,
+  which no app change removes) and the longest frame. Measure with the emulator's host GPU (`-gpu host`, which needs
+  an X display: a private headless sway with Xwayland). Budget: one 60 Hz frame, 16.6 ms; anything of the app's own
+  longer than that (`mainThreadStallsOverBudget` counts them) is fixed or explained (platform: GL context creation,
+  first-frame shader and buffer work, compositor back-pressure). `./gradlew --no-daemon :app:generateBaselineProfile` regenerates
   `app/src/main/generated/baselineProfiles/` after UI changes; commit the result.

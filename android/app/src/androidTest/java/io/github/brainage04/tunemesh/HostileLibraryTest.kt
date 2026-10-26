@@ -45,7 +45,8 @@ import org.junit.runners.MethodSorters
  * 40,000-track album, a 250,000-entry playlist and Downloads through the UI. `-Pstress` runs each test in a process of its own (the test
  * orchestrator), so the second one measures the app, not the generator's garbage and writes. It fails on an OutOfMemoryError (the app and
  * this test share a process, so it ends the run), on a main-thread stall over [MAX_STALL_MS] (an ANR needs 5 s, so it is caught as a
- * stall), and when what the app shows does not follow the limits.
+ * stall), and when what the app shows does not follow the limits. It reports how many stalls it saw over the budget of one 60 Hz frame
+ * ([BUDGET_MS]); the macrobenchmarks (`HostileLibraryBenchmark`) measure those on the minified build, this test runs a debug one too.
  *
  * Instrumentation argument `hostileScale`: `full` (default; the core generator's full profile) or `small`.
  */
@@ -187,7 +188,7 @@ class HostileLibraryTest {
             // Nothing changed, so the screens keep the index they show.
             assertTrue(app.repository.state.value.index === before)
         }
-        report("worst main-thread stall ${watchdog.worst} ms; ${heap()}")
+        report("worst main-thread stall ${watchdog.worst} ms, ${watchdog.overBudget} over $BUDGET_MS ms; ${heap()}")
         assertTrue("main thread stalled ${watchdog.worst} ms (${watchdog.worstAt})", watchdog.worst < MAX_STALL_MS)
     }
 
@@ -324,6 +325,8 @@ class HostileLibraryTest {
         private val worstMs = AtomicLong(0)
         @Volatile var label = "start"
         @Volatile var worstAt = ""
+        /** How many posted messages ran later than [BUDGET_MS]. */
+        @Volatile var overBudget = 0
         val worst: Long
             get() = worstMs.get()
 
@@ -337,6 +340,7 @@ class HostileLibraryTest {
                             main.post { ran.countDown() }
                             ran.await()
                             val late = SystemClock.uptimeMillis() - posted
+                            if (late > BUDGET_MS) overBudget++
                             if (late > worstMs.get()) {
                                 worstMs.set(late)
                                 worstAt = label
@@ -357,6 +361,8 @@ class HostileLibraryTest {
     companion object {
         private const val TAG = "HostileLibrary"
         private const val MAX_STALL_MS = 1_000L
+        /** One frame at 60 Hz. */
+        private const val BUDGET_MS = 16.6
         private const val PERIOD_MS = 50L
         private const val SCAN_TIMEOUT_MS = 60 * 60 * 1000L
         private const val WRITEBACK_TIMEOUT_MS = 10 * 60 * 1000L
