@@ -13,6 +13,8 @@ mod syncthing;
 mod ui;
 
 #[cfg(test)]
+mod alloc_count;
+#[cfg(test)]
 mod gui_tests;
 
 use std::cell::RefCell;
@@ -102,8 +104,10 @@ fn main() -> glib::ExitCode {
 
     let inst = instance.clone();
     application.connect_shutdown(move |_| {
-        // Whatever ended the main loop, never leave the worker behind.
+        // Whatever ended the main loop, write queued playlist edits and
+        // never leave the worker behind.
         if let Some(app) = inst.borrow().as_ref() {
+            app.store.flush(store::FLUSH_WAIT);
             app.downloader.stop_blocking();
         }
     });

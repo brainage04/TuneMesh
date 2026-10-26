@@ -7,13 +7,14 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use gtk::glib;
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use tunemesh_core::fsx::Dir;
+use tunemesh_core::merge::{self, Bases};
 use tunemesh_core::playlist::{self, LIKED_SONGS, Summary, TrackInfo};
 use tunemesh_core::{Library, PLAYLISTS_DIR, Playlist, TUNEMESH_DIR, Track, library};
 
@@ -63,6 +64,10 @@ type Listener = Rc<dyn Fn(StoreChange)>;
 /// A playlist edit for the writer thread.
 type WriteJob = Box<dyn FnOnce() + Send>;
 
+/// What a merge of conflict copies reports: each playlist merged into with
+/// its result, and whether copies are left (not due yet, or failed).
+type Merged = (Vec<(String, io::Result<()>)>, bool);
+
 /// The thread that reads, edits and writes playlist files, one job at a time.
 fn writer_thread() -> std::sync::mpsc::Sender<WriteJob> {
     let (tx, rx) = std::sync::mpsc::channel::<WriteJob>();
@@ -76,6 +81,9 @@ fn writer_thread() -> std::sync::mpsc::Sender<WriteJob> {
         .expect("spawn playlist writer");
     tx
 }
+
+/// How long quitting waits for queued playlist edits to reach the disk.
+pub const FLUSH_WAIT: Duration = Duration::from_secs(5);
 
 pub struct Store {
     me: Weak<Store>,
@@ -94,18 +102,35 @@ pub struct Store {
     playlist_stamps: RefCell<HashMap<String, Stamp>>,
     playlists_loading: Cell<bool>,
     playlists_again: Cell<bool>,
+    /// Counts playlist writes whose result was applied here: a reload that
+    /// started before the latest one may hold older files, so it is
+    /// dropped and done again.
+    writes: Cell<u64>,
+    /// Tests: makes the next reload's thread report that it has read the
+    /// files, then wait to be released before it hands them over.
+    #[cfg(test)]
+    reload_pause: RefCell<Option<ReloadPause>>,
     listeners: RefCell<Vec<Listener>>,
     watcher: RefCell<Option<RecommendedWatcher>>,
     scanning: Cell<bool>,
     rescan_again: Cell<bool>,
     generation: Cell<u64>,
     writer: std::sync::mpsc::Sender<WriteJob>,
+    /// This device's copies of the playlists as last seen, for merging
+    /// Syncthing's conflict copies (outside the library, never synced).
+    bases: RefCell<Bases>,
+    /// This device's Syncthing device ID, once Syncthing told it: the
+    /// conflict copies that name it are this device's to merge at once.
+    device_id: Arc<Mutex<Option<String>>>,
+    /// The next try at conflict copies that were not due yet.
+    merge_retry: RefCell<Option<glib::SourceId>>,
 }
 
 impl Store {
     pub fn new(root: PathBuf) -> Rc<Self> {
         let store = Rc::new_cyclic(|me| Self {
             me: me.clone(),
+            bases: RefCell::new(Bases::in_dir(&config::state_dir(), &root)),
             root: RefCell::new(root),
             lib: RefCell::new(Arc::new(Library::default())),
             playlists: RefCell::new(Vec::new()),
@@ -115,15 +140,51 @@ impl Store {
             playlist_stamps: RefCell::new(HashMap::new()),
             playlists_loading: Cell::new(false),
             playlists_again: Cell::new(false),
+            writes: Cell::new(0),
+            #[cfg(test)]
+            reload_pause: RefCell::new(None),
             listeners: RefCell::new(Vec::new()),
             watcher: RefCell::new(None),
             scanning: Cell::new(false),
             rescan_again: Cell::new(false),
             generation: Cell::new(0),
             writer: writer_thread(),
+            device_id: Arc::new(Mutex::new(None)),
+            merge_retry: RefCell::new(None),
         });
+        store.find_device_id();
         store.open();
         store
+    }
+
+    /// Asks Syncthing for this device's ID on a thread, then merges the
+    /// conflict copies that name it. Tests never ask the developer's own
+    /// Syncthing (`set_device_id`).
+    fn find_device_id(&self) {
+        #[cfg(not(test))]
+        {
+            let (tx, rx) = async_channel::bounded(1);
+            std::thread::Builder::new()
+                .name("syncthing-id".into())
+                .spawn(move || {
+                    let _ = tx.send_blocking(crate::syncthing::local_device_id());
+                })
+                .expect("spawn syncthing-id thread");
+            let weak = self.me.clone();
+            glib::spawn_future_local(async move {
+                let Ok(Some(id)) = rx.recv().await else {
+                    return;
+                };
+                let Some(store) = weak.upgrade() else { return };
+                store.set_device_id(id);
+            });
+        }
+    }
+
+    /// Records this device's Syncthing ID and merges what it names.
+    pub fn set_device_id(&self, id: String) {
+        *self.device_id.lock().expect("device id") = Some(id);
+        self.merge_conflicts();
     }
 
     /// Loads the cache and playlists for the current root, then watches and rescans.
@@ -141,6 +202,7 @@ impl Store {
         // The scan thread shows the cached library first, then the scanned one.
         *self.lib.borrow_mut() = Arc::new(Library::default());
         self.load_playlists();
+        self.merge_conflicts();
         self.watch();
         self.rescan();
     }
@@ -149,7 +211,11 @@ impl Store {
         self.generation.set(self.generation.get() + 1);
         self.scanning.set(false);
         self.rescan_again.set(false);
+        *self.bases.borrow_mut() = Bases::in_dir(&config::state_dir(), &root);
         *self.root.borrow_mut() = root;
+        if let Some(id) = self.merge_retry.borrow_mut().take() {
+            id.remove();
+        }
         self.watcher.borrow_mut().take();
         self.playlists.borrow_mut().clear();
         self.too_large.borrow_mut().clear();
@@ -200,6 +266,31 @@ impl Store {
         while (self.scanning.get() || self.playlists_loading.get()) && start.elapsed() < max {
             ctx.iteration(true);
         }
+    }
+
+    /// Tests: starts a reload whose thread, once it has read the files,
+    /// waits to hand them over. Returns a receiver that gets a message
+    /// when the files are read and a sender that releases the reload.
+    #[cfg(test)]
+    pub fn start_paused_reload(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (read_tx, read_rx) = std::sync::mpsc::channel();
+        let (go_tx, go_rx) = std::sync::mpsc::channel();
+        *self.reload_pause.borrow_mut() = Some((read_tx, go_rx));
+        self.reload_playlists();
+        (read_rx, go_tx)
+    }
+
+    /// Tests: stops watching the folder, so only the test starts reloads.
+    #[cfg(test)]
+    pub fn stop_watching(&self) {
+        let ctx = glib::MainContext::ref_thread_default();
+        let start = std::time::Instant::now();
+        while self.watcher.borrow().is_none() && start.elapsed() < Duration::from_secs(10) {
+            ctx.iteration(true);
+        }
+        self.watcher.borrow_mut().take();
     }
 
     // ---- scanning and watching ----------------------------------------
@@ -349,6 +440,7 @@ impl Store {
             }
         }
         if playlists {
+            self.merge_conflicts();
             self.reload_playlists();
         }
         if downloads {
@@ -385,21 +477,30 @@ impl Store {
             too_large: self.too_large.borrow().clone(),
             stamps: self.playlist_stamps.borrow().clone(),
         };
+        #[cfg(test)]
+        let pause = self.reload_pause.borrow_mut().take();
         let (tx, rx) = async_channel::bounded::<PlaylistsRead>(1);
         std::thread::Builder::new()
             .name("playlists".into())
             .spawn(move || {
-                let _ = tx.send_blocking(read_playlists(&root, known));
+                let read = read_playlists(&root, known);
+                #[cfg(test)]
+                if let Some((read_done, release)) = pause {
+                    let _ = read_done.send(());
+                    let _ = release.recv();
+                }
+                let _ = tx.send_blocking(read);
             })
             .expect("spawn playlist thread");
         let weak = self.me.clone();
-        let generation = self.generation.get();
+        let (generation, writes) = (self.generation.get(), self.writes.get());
         glib::spawn_future_local(async move {
             let read = rx.recv().await;
             let Some(store) = weak.upgrade() else { return };
             store.playlists_loading.set(false);
-            if store.generation.get() != generation {
-                // The library folder changed meanwhile: read the new one.
+            if store.generation.get() != generation || store.writes.get() != writes {
+                // The library folder changed, or an edit was applied
+                // meanwhile: what was read may be older than what is shown.
                 store.reload_playlists();
                 return;
             }
@@ -420,6 +521,87 @@ impl Store {
                 store.reload_playlists();
             }
         });
+    }
+
+    /// Records that a write to these playlist files was applied: running
+    /// reloads are redone, and the files' stamps are forgotten so the next
+    /// reload reads them again rather than trust a summary of an older
+    /// version.
+    fn wrote(&self, names: &[&str]) {
+        self.writes.set(self.writes.get() + 1);
+        let mut stamps = self.playlist_stamps.borrow_mut();
+        for name in names {
+            stamps.remove(*name);
+        }
+    }
+
+    /// Merges Syncthing's conflict copies of playlists into the playlists
+    /// (contract: "Playlist conflict copies") on the writer thread, then
+    /// shows the result. While copies are left that were not due yet, it
+    /// tries again a minute later.
+    fn merge_conflicts(&self) {
+        let (root, bases) = (self.root(), self.bases.borrow().clone());
+        let device_id = self.device_id.clone();
+        let (weak, generation) = (self.me.clone(), self.generation.get());
+        self.write_job(
+            move || {
+                let id = device_id.lock().expect("device id").clone();
+                let merged =
+                    merge::merge_conflicts(&root, &bases, id.as_deref(), SystemTime::now());
+                Ok((merged, has_conflict_copies(&root)))
+            },
+            move |result: io::Result<Merged>| {
+                let Some(store) = weak.upgrade() else { return };
+                let Ok((merged, left)) = result else { return };
+                if store.generation.get() != generation {
+                    return;
+                }
+                let mut names = Vec::new();
+                for (name, r) in &merged {
+                    match r {
+                        Ok(()) => names.push(name.as_str()),
+                        Err(e) => eprintln!(
+                            "tunemesh: cannot merge the conflict copies of playlist {name:?}: {e}"
+                        ),
+                    }
+                }
+                if !names.is_empty() {
+                    store.wrote(&names);
+                    store.reload_playlists();
+                }
+                if let Some(id) = store.merge_retry.borrow_mut().take() {
+                    id.remove();
+                }
+                if left {
+                    let weak = store.me.clone();
+                    let id = glib::timeout_add_seconds_local_once(60, move || {
+                        if let Some(store) = weak.upgrade() {
+                            store.merge_retry.borrow_mut().take();
+                            store.merge_conflicts();
+                        }
+                    });
+                    *store.merge_retry.borrow_mut() = Some(id);
+                }
+            },
+        );
+    }
+
+    /// Waits up to `max` until every playlist edit queued so far is on
+    /// disk; false when that took longer. Called before quitting: the
+    /// writer thread does not outlive the process.
+    pub fn flush(&self, max: Duration) -> bool {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let job: WriteJob = Box::new(move || {
+            let _ = tx.send(());
+        });
+        if self.writer.send(job).is_err() {
+            return true;
+        }
+        let flushed = rx.recv_timeout(max).is_ok();
+        if !flushed {
+            eprintln!("tunemesh: playlist edits were still being written after {max:?}");
+        }
+        flushed
     }
 
     /// All playlists except Liked Songs, sorted by name.
@@ -551,14 +733,13 @@ impl Store {
         done: impl FnOnce(io::Result<()>) + 'static,
     ) {
         let (root, n, info) = (self.root(), name.to_owned(), self.track_info());
+        let bases = self.bases.borrow().clone();
         let (weak, generation, name) = (self.me.clone(), self.generation.get(), name.to_owned());
         self.write_job(
             move || {
-                // Re-read first so changes made on other devices are kept.
-                let mut p = Playlist::read(&root, &n)?;
-                f(&mut p)?;
-                p.write(&root, &info)?;
-                Ok(p)
+                // Re-read under the `Playlists/` lock so changes made on
+                // other devices, and by a worker on this machine, are kept.
+                Playlist::edit(&root, &bases, &n, &info, f)
             },
             move |result| {
                 let p = match result {
@@ -568,6 +749,7 @@ impl Store {
                 if let Some(store) = weak.upgrade()
                     && store.generation.get() == generation
                 {
+                    store.wrote(&[&name]);
                     if name == LIKED_SONGS {
                         store.set_liked(p);
                         store.emit(StoreChange::Liked);
@@ -601,6 +783,7 @@ impl Store {
                 if let Some(store) = weak.upgrade()
                     && store.generation.get() == generation
                 {
+                    store.wrote(&[&p.name]);
                     let mut lists = store.playlists.borrow_mut();
                     lists.push(summarize(&p));
                     lists.sort_by_cached_key(|p| tunemesh_core::search::fold(&p.name));
@@ -625,9 +808,10 @@ impl Store {
             )));
         }
         let (root, o, n) = (self.root(), old.to_owned(), new.to_owned());
+        let bases = self.bases.borrow().clone();
         let (weak, generation, old) = (self.me.clone(), self.generation.get(), old.to_owned());
         self.write_job(
-            move || Playlist::rename(&root, &o, &n),
+            move || Playlist::rename(&root, &bases, &o, &n),
             move |result| {
                 let new = match result {
                     Ok(new) => new,
@@ -636,6 +820,7 @@ impl Store {
                 if let Some(store) = weak.upgrade()
                     && store.generation.get() == generation
                 {
+                    store.wrote(&[&old, &new]);
                     let mut lists = store.playlists.borrow_mut();
                     if let Some(p) = lists.iter_mut().find(|p| p.name == old) {
                         p.name = new.clone();
@@ -652,14 +837,16 @@ impl Store {
     /// Deletes a playlist file on the writer thread.
     pub fn delete_playlist(&self, name: &str, done: impl FnOnce(io::Result<()>) + 'static) {
         let (root, n) = (self.root(), name.to_owned());
+        let bases = self.bases.borrow().clone();
         let (weak, generation, name) = (self.me.clone(), self.generation.get(), name.to_owned());
         self.write_job(
-            move || Playlist::delete(&root, &n),
+            move || Playlist::delete(&root, &bases, &n),
             move |result| {
                 if result.is_ok()
                     && let Some(store) = weak.upgrade()
                     && store.generation.get() == generation
                 {
+                    store.wrote(&[&name]);
                     store.playlists.borrow_mut().retain(|p| p.name != name);
                     store.emit(StoreChange::Playlists);
                 }
@@ -769,6 +956,15 @@ impl Store {
     }
 }
 
+/// Whether `Playlists/` holds a Syncthing conflict copy of a playlist.
+/// Reads names only, never through a symlinked folder.
+fn has_conflict_copies(root: &Path) -> bool {
+    Dir::open(root)
+        .and_then(|d| d.sub(PLAYLISTS_DIR, false))
+        .and_then(|d| d.entries())
+        .is_ok_and(|names| names.iter().any(|(n, _)| merge::conflict_copy(n).is_some()))
+}
+
 /// Deletes library files and their emptied parent directories. Paths are
 /// opened below `root` without following symlinks, so a synced symlinked
 /// folder cannot redirect a delete outside the library.
@@ -815,6 +1011,11 @@ fn delete_files(root: &Path, paths: &[String]) -> (Vec<String>, io::Result<()>) 
 
 /// What identifies a version of a playlist file without reading it.
 type Stamp = (u64, std::time::SystemTime);
+
+/// Tests: the reload thread sends on the first when it has read the files
+/// and waits on the second before it hands them over.
+#[cfg(test)]
+type ReloadPause = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
 
 fn stamp(root: &Path, name: &str) -> Option<Stamp> {
     let meta = fs::symlink_metadata(playlist::playlist_path(root, name)).ok()?;
@@ -1364,5 +1565,159 @@ mod tests {
         );
         assert_eq!(found[0], 1);
         assert_eq!(found[n - 1], n);
+    }
+
+    /// R3-Opus-5: edits still queued on the writer thread when the app
+    /// quits are written, and no temporary file is left in `Playlists/`.
+    #[test]
+    fn flushing_writes_queued_edits_before_quitting() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("flush", &["A"]);
+            let liked: String = (0..200_000).map(|i| format!("../L/{i}.opus\n")).collect();
+            fs::write(
+                base.join(PLAYLISTS_DIR).join(format!("{LIKED_SONGS}.m3u8")),
+                format!("#EXTM3U\n{liked}"),
+            )
+            .unwrap();
+            store.reload_playlists();
+            store.settle();
+            assert_eq!(store.liked_count(), 200_000);
+
+            store.add_to_playlist("P", &["B.opus".into()], |r| r.unwrap());
+            store.toggle_like("New.opus", |r| r.unwrap());
+            // As when quitting: the main loop does not run again.
+            assert!(store.flush(FLUSH_WAIT));
+            assert_eq!(names(&base), ["A", "B"]);
+            let liked = Playlist::read(&base, LIKED_SONGS).unwrap();
+            assert!(liked.entries.iter().any(|e| e.track() == Some("New.opus")));
+            let temps: Vec<_> = fs::read_dir(base.join(PLAYLISTS_DIR))
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(".~tunemesh-"))
+                .collect();
+            assert!(temps.is_empty(), "left behind: {temps:?}");
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    /// R3-Opus-6: a reload that read the files before an edit was applied
+    /// never replaces the edit's result; it is done again.
+    #[test]
+    fn a_reload_older_than_an_edit_is_redone() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("stale", &["A"]);
+            // Only this test's reloads run.
+            store.stop_watching();
+            let (read, go) = store.start_paused_reload();
+            read.recv().unwrap();
+            // The reload holds P with one entry and no playlist "New".
+            wait_for(|done| store.add_to_playlist("P", &["B.opus".into()], done)).unwrap();
+            let new = wait_for(|done| store.create_playlist("New", done)).unwrap();
+            go.send(()).unwrap();
+            store.settle();
+
+            let count = store
+                .playlists()
+                .iter()
+                .find(|p| p.name == "P")
+                .map(|p| p.count);
+            assert_eq!(count, Some(2), "the edit is still shown");
+            assert!(store.has_playlist(&new), "the new playlist is still shown");
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    /// A renamed playlist keeps no stamp under either name: a playlist that
+    /// appears under the old name again is read, not taken for the
+    /// renamed one.
+    #[test]
+    fn renaming_forgets_both_stamps() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("rename", &["A"]);
+            assert!(store.playlist_stamps.borrow().contains_key("P"));
+            let new = wait_for(|done| store.rename_playlist("P", "Q", done)).unwrap();
+            let stamps = store.playlist_stamps.borrow();
+            assert!(!stamps.contains_key("P") && !stamps.contains_key(&new));
+            drop(stamps);
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    /// Runs the main loop until `done` holds, at most 10 s.
+    fn until(done: impl Fn() -> bool) {
+        let ctx = glib::MainContext::ref_thread_default();
+        let start = std::time::Instant::now();
+        while !done() && start.elapsed() < Duration::from_secs(10) {
+            ctx.iteration(true);
+        }
+    }
+
+    const COPY: &str = "Liked Songs.sync-conflict-20261026-120000-ABCDEFG.m3u8";
+
+    /// Unliked here, another song liked on a device whose edit became a
+    /// conflict copy: the copy naming this device is merged as soon as
+    /// Syncthing tells the device ID, the unlike stays and the like is kept.
+    #[test]
+    fn a_conflict_copy_naming_this_device_is_merged_without_undoing_an_unlike() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("merge", &["A"]);
+            let lists = base.join(PLAYLISTS_DIR);
+            fs::write(
+                lists.join(format!("{LIKED_SONGS}.m3u8")),
+                "#EXTM3U\n../A.opus\n../B.opus\n",
+            )
+            .unwrap();
+            store.reload_playlists();
+            store.settle();
+            wait_for(|done| store.toggle_like("A.opus", done)).unwrap();
+            assert!(!store.is_liked("A.opus"));
+            // The other device liked C in the version both started from.
+            fs::write(
+                lists.join(COPY),
+                "#EXTM3U\n../A.opus\n../B.opus\n../C.opus\n",
+            )
+            .unwrap();
+
+            store.set_device_id(
+                "ABCDEFG-HIJKLMN-OPQRSTU-VWXYZ23-4567ABC-DEFGHIJ-KLMNOPQ-RSTUVWX".into(),
+            );
+            until(|| !lists.join(COPY).exists() && store.is_liked("C.opus"));
+            store.settle();
+            assert!(!lists.join(COPY).exists(), "the copy is gone once merged");
+            let liked = Playlist::read(&base, LIKED_SONGS).unwrap();
+            let mut tracks: Vec<&str> = liked.entries.iter().filter_map(|e| e.track()).collect();
+            tracks.sort_unstable();
+            assert_eq!(tracks, ["B.opus", "C.opus"], "the unlike stays");
+            assert!(store.is_liked("C.opus") && !store.is_liked("A.opus"));
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    /// A fresh copy naming another device is left to that device (until it
+    /// is `MERGE_AFTER` old), and nothing is merged before the ID is known.
+    #[test]
+    fn a_fresh_conflict_copy_of_another_device_is_left_alone() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("merge-other", &["A"]);
+            let copy = base.join(PLAYLISTS_DIR).join(COPY);
+            fs::write(&copy, "#EXTM3U\n../C.opus\n").unwrap();
+            store.reload_playlists();
+            store.settle();
+            store.set_device_id(
+                "ZZZZZZZ-HIJKLMN-OPQRSTU-VWXYZ23-4567ABC-DEFGHIJ-KLMNOPQ-RSTUVWX".into(),
+            );
+            assert!(store.flush(FLUSH_WAIT));
+            until(|| store.merge_retry.borrow().is_some());
+            assert!(copy.exists());
+            assert!(!store.is_liked("C.opus"));
+            assert!(store.merge_retry.borrow().is_some(), "tried again later");
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
     }
 }

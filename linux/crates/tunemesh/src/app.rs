@@ -111,6 +111,16 @@ pub struct Page {
     pub scroller: Option<gtk::ScrolledWindow>,
 }
 
+/// Closing the window while the downloader is on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CloseCheck {
+    Idle,
+    /// The pending requests are being counted.
+    Counting,
+    /// None are left: the window closes.
+    Closing,
+}
+
 pub struct App {
     pub me: Weak<App>,
     pub gtk_app: adw::Application,
@@ -123,6 +133,11 @@ pub struct App {
     /// Held while the window is closed but downloads are still running.
     background: RefCell<Option<gio::ApplicationHoldGuard>>,
     background_timer: RefCell<Option<glib::SourceId>>,
+    /// Where closing the window stands: the pending downloads are counted
+    /// on a thread before it closes.
+    close_check: Cell<CloseCheck>,
+    /// Set while the background mode's pending count runs.
+    background_check: Cell<bool>,
     pub toasts: adw::ToastOverlay,
     content: gtk::Box,
     pub search_entry: gtk::SearchEntry,
@@ -200,6 +215,8 @@ impl App {
             downloader,
             background: RefCell::new(None),
             background_timer: RefCell::new(None),
+            close_check: Cell::new(CloseCheck::Idle),
+            background_check: Cell::new(false),
             toasts: adw::ToastOverlay::new(),
             content: gtk::Box::new(gtk::Orientation::Vertical, 0),
             search_entry,
@@ -390,11 +407,29 @@ impl App {
             if app.background.borrow().is_some() {
                 return glib::Propagation::Stop;
             }
-            if app.downloader.has_pending_work() {
-                app.ask_background();
-                return glib::Propagation::Stop;
+            match app.close_check.get() {
+                CloseCheck::Counting => return glib::Propagation::Stop,
+                CloseCheck::Idle if app.downloader.is_on() => {
+                    // Counting the requests reads a folder another device
+                    // fills: never on the main loop.
+                    app.close_check.set(CloseCheck::Counting);
+                    let weak = app.me.clone();
+                    app.downloader.pending_work(move |n| {
+                        let Some(app) = weak.upgrade() else { return };
+                        if n > 0 {
+                            app.close_check.set(CloseCheck::Idle);
+                            app.ask_background(n);
+                        } else {
+                            app.close_check.set(CloseCheck::Closing);
+                            app.window.close();
+                        }
+                    });
+                    return glib::Propagation::Stop;
+                }
+                CloseCheck::Idle | CloseCheck::Closing => {}
             }
             app.player.shutdown();
+            app.store.flush(crate::store::FLUSH_WAIT);
             glib::Propagation::Proceed
         });
 
@@ -756,10 +791,12 @@ impl App {
         self.window.present();
     }
 
-    /// Saves playback state, stops the downloader and quits.
+    /// Saves playback state and queued playlist edits, stops the downloader
+    /// and quits.
     pub fn quit(&self) {
         self.leave_background();
         self.player.shutdown();
+        self.store.flush(crate::store::FLUSH_WAIT);
         self.downloader.stop_blocking();
         self.gtk_app.quit();
     }
@@ -780,10 +817,9 @@ impl App {
 
     // ---- running in the background --------------------------------------
 
-    /// The window is being closed while this device still has downloads to
-    /// finish: offer to keep downloading in the background.
-    fn ask_background(&self) {
-        let n = self.downloader.pending_count();
+    /// The window is being closed while this device still has `n` downloads
+    /// to finish: offer to keep downloading in the background.
+    fn ask_background(&self, n: usize) {
         let dialog = adw::AlertDialog::new(
             Some("Downloads are still running"),
             Some(&format!(
@@ -802,7 +838,7 @@ impl App {
         dialog.connect_response(None, move |_, response| {
             let Some(app) = weak.upgrade() else { return };
             match response {
-                "background" => app.enter_background(),
+                "background" => app.enter_background(n),
                 "quit" => app.quit(),
                 _ => {}
             }
@@ -810,7 +846,7 @@ impl App {
         dialog.present(Some(&self.window));
     }
 
-    fn enter_background(&self) {
+    fn enter_background(&self, n: usize) {
         if self.background.borrow().is_some() {
             return;
         }
@@ -818,7 +854,6 @@ impl App {
         self.player.save();
         *self.background.borrow_mut() = Some(self.gtk_app.hold());
         self.window.set_visible(false);
-        let n = self.downloader.pending_count();
         let note = gio::Notification::new("TuneMesh is downloading in the background");
         note.set_body(Some(&format!(
             "It quits when the {} finished. Open TuneMesh to see progress.",
@@ -831,12 +866,18 @@ impl App {
             let Some(app) = weak.upgrade() else {
                 return glib::ControlFlow::Break;
             };
-            if app.downloader.has_pending_work() {
-                return glib::ControlFlow::Continue;
+            // The count runs on a thread; one at a time.
+            if !app.background_check.replace(true) {
+                let weak = app.me.clone();
+                app.downloader.pending_work(move |n| {
+                    let Some(app) = weak.upgrade() else { return };
+                    app.background_check.set(false);
+                    if n == 0 && app.background.borrow().is_some() {
+                        app.quit();
+                    }
+                });
             }
-            app.background_timer.borrow_mut().take();
-            app.quit();
-            glib::ControlFlow::Break
+            glib::ControlFlow::Continue
         });
         *self.background_timer.borrow_mut() = Some(id);
     }

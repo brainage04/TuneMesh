@@ -2,13 +2,17 @@
 //! from inside the process.
 //!
 //! - `leaks`: every page, panel and dialog is freed once it is closed.
+//! - `checks`: user-visible fixes (queued edits written on quit, pending
+//!   downloads counted off the main loop, stale reloads, Downloads page
+//!   memory).
 //! - `stalls`: the longest main-loop stall per action on the hostile library
 //!   (release build).
 //!
-//! Both need a display and are `#[ignore]`d; `scripts/gui-checks.sh` starts a
+//! All need a display and are `#[ignore]`d; `scripts/gui-checks.sh` starts a
 //! headless compositor and runs them. GTK may only be used from one thread,
 //! so every test hands its body to [`on_gtk`].
 
+mod checks;
 mod leaks;
 mod stalls;
 
@@ -100,8 +104,14 @@ impl Drop for Scratch {
 
 /// The app's window on `library`, presented; the library still loads.
 fn open(library: &Path) -> Rc<App> {
+    // Each window of this process registers under an id of its own: an
+    // application object stays exported on the bus after its window.
+    thread_local! {
+        static OPENED: Cell<u32> = const { Cell::new(0) };
+    }
+    let n = OPENED.with(|o| o.replace(o.get() + 1));
     let gtk_app = adw::Application::builder()
-        .application_id("io.github.brainage04.TuneMesh.Test")
+        .application_id(format!("io.github.brainage04.TuneMesh.Test{n}"))
         .flags(gio::ApplicationFlags::NON_UNIQUE)
         .build();
     gtk_app

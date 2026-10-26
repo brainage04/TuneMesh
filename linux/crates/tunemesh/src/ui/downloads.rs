@@ -7,7 +7,7 @@ use std::rc::{Rc, Weak};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use tunemesh_core::limits;
-use tunemesh_core::request::{self, Request, RequestState, Status};
+use tunemesh_core::request::{self, Request, RequestState, StatusRow};
 
 use crate::app::{App, Page, Route};
 use crate::config;
@@ -210,15 +210,18 @@ fn fmt_time(rfc3339: &str) -> String {
         .unwrap_or_default()
 }
 
+/// One download as listed: core's cut projection of its request and
+/// status, which keeps counts rather than the status's lists. Opening a
+/// list (warnings, failures) or playing the songs reads that one status.
 #[derive(Clone, PartialEq)]
 struct Row {
     id: String,
     request: Option<Request>,
-    status: Option<Status>,
+    status: Option<StatusRow>,
 }
 
 /// The newest requests with their status (at most `MAX_LISTED_REQUESTS`,
-/// contents already cut by core), and how many there are in all.
+/// cut by core to what a list shows), and how many there are in all.
 fn load_rows(root: &std::path::Path) -> (Vec<Row>, usize) {
     let (recent, total) = request::recent(root);
     let rows = recent
@@ -379,7 +382,7 @@ struct Fill {
 }
 
 /// "3 of 12 songs" once the worker knows how many items a request has.
-fn count_text(s: &Status) -> Option<String> {
+fn count_text(s: &StatusRow) -> Option<String> {
     let total = s.items_total.filter(|t| *t > 1)?;
     Some(format!(
         "{} of {total} songs",
@@ -388,7 +391,7 @@ fn count_text(s: &Status) -> Option<String> {
 }
 
 /// Overall progress: finished items plus the current item's progress.
-fn fraction(s: &Status) -> Option<f64> {
+fn fraction(s: &StatusRow) -> Option<f64> {
     match (s.items_total.filter(|t| *t > 1), s.progress) {
         (Some(total), p) => Some(
             ((s.items_done.unwrap_or(0) as f64 + p.unwrap_or(0.0)) / total as f64).clamp(0.0, 1.0),
@@ -405,7 +408,7 @@ fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
     if !s.state.is_final() && !pending {
         return ("Cancelling…".to_owned(), "waiting");
     }
-    let failed = s.failures.len();
+    let failed = s.failure_count.get();
     match s.state {
         RequestState::Queued => ("Queued".to_owned(), "queued"),
         RequestState::Downloading => {
@@ -420,7 +423,7 @@ fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
             (t, "downloading")
         }
         RequestState::Done => {
-            let mut t = format!("Done • {}", plural(s.tracks.len(), "song", "songs"));
+            let mut t = format!("Done • {}", plural(s.track_count.get(), "song", "songs"));
             if failed > 0 {
                 t.push_str(&format!(" • {failed} failed"));
             }
@@ -431,19 +434,43 @@ fn state_text(row: &Row, pending: bool) -> (String, &'static str) {
     }
 }
 
+/// Lines read from one status file when the user opens its list: the
+/// list keeps only counts.
+fn status_lines(
+    root: &std::path::Path,
+    id: &str,
+    lines: impl FnOnce(&request::Status) -> Vec<String>,
+) -> Vec<String> {
+    match request::read_status(root, id) {
+        Some(s) => lines(&s),
+        None => vec!["This download's status is no longer available.".to_owned()],
+    }
+}
+
+/// Up to `MAX_SHOWN_ROWS` lines, then "…and N more".
+fn shown_lines(items: impl ExactSizeIterator<Item = String>) -> Vec<String> {
+    let n = items.len();
+    let mut lines: Vec<String> = items.take(limits::MAX_SHOWN_ROWS).collect();
+    if n > limits::MAX_SHOWN_ROWS {
+        lines.push(format!("…and {} more", n - limits::MAX_SHOWN_ROWS));
+    }
+    lines
+}
+
 fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     let pending = row.request.is_some();
-    let input = row
+    let input: String = row
         .request
         .as_ref()
-        .map(|r| r.input.clone())
-        .or_else(|| row.status.as_ref().map(|s| s.input.clone()))
-        .unwrap_or_default();
-    let title = row
+        .map(|r| r.input.as_str())
+        .or_else(|| row.status.as_ref().map(|s| s.input.as_str()))
+        .unwrap_or_default()
+        .to_owned();
+    let title: String = row
         .status
         .as_ref()
-        .and_then(|s| s.title.clone())
-        .unwrap_or_else(|| input.clone());
+        .and_then(|s| s.title.as_deref())
+        .map_or_else(|| input.clone(), str::to_owned);
     let (state_text, state_class) = state_text(&row, pending);
 
     let b = gtk::Box::builder()
@@ -477,9 +504,9 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     let when = row
         .request
         .as_ref()
-        .map(|r| r.requested_at.clone())
-        .or_else(|| row.status.as_ref().map(|s| s.updated_at.clone()))
-        .map(|t| fmt_time(&t))
+        .map(|r| r.requested_at.as_str())
+        .or_else(|| row.status.as_ref().map(|s| s.updated_at.as_str()))
+        .map(fmt_time)
         .unwrap_or_default();
     if !when.is_empty() {
         sub.push(when);
@@ -495,27 +522,32 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
 
     let final_state = row.status.as_ref().is_some_and(|s| s.state.is_final());
     if final_state {
-        let tracks: Vec<String> = row
-            .status
-            .as_ref()
-            .map(|s| s.tracks.clone())
-            .unwrap_or_default();
-        let lib = app.store.library();
-        let available: Vec<String> = tracks
-            .into_iter()
-            .filter(|t| lib.track_index(t).is_some())
-            .collect();
-        if !available.is_empty() {
+        // The list keeps only the number of songs: they are read when
+        // the user plays them.
+        if row.status.as_ref().is_some_and(|s| s.track_count.get() > 0) {
             let play = gtk::Button::builder()
                 .icon_name("media-playback-start-symbolic")
                 .tooltip_text("Play")
                 .css_classes(["tm-icon-btn"])
                 .valign(gtk::Align::Center)
                 .build();
-            let (a, name) = (app.clone(), title.clone());
+            let (a, name, id) = (app.clone(), title.clone(), row.id.clone());
             play.connect_clicked(move |_| {
-                a.player
-                    .play_tracks(&name, available.clone(), 0, Some(false))
+                let lib = a.store.library();
+                let available: Vec<String> = request::read_status(&a.store.root(), &id)
+                    .map(|s| {
+                        s.tracks
+                            .iter()
+                            .filter(|t| lib.track_index(t).is_some())
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if available.is_empty() {
+                    a.toast("These songs are not in the library on this device yet");
+                } else {
+                    a.player.play_tracks(&name, available, 0, Some(false));
+                }
             });
             top.append(&play);
         }
@@ -560,7 +592,11 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
             b.append(&bar);
         }
         // The final message repeats the warnings, which are listed below.
-        if let Some(m) = s.message.as_ref().filter(|m| !s.warnings.contains(m)) {
+        if let Some(m) = s
+            .message
+            .as_ref()
+            .filter(|m| !s.warnings.iter().any(|w| w.as_str() == m.as_str()))
+        {
             let class = if s.state == RequestState::Failed {
                 "tm-error"
             } else {
@@ -568,7 +604,7 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
             };
             b.append(&detail_text(m, class));
             if is_long(m) {
-                let full = m.clone();
+                let full = m.to_string();
                 b.append(&lazy_expander(
                     "Full message",
                     move || vec![full.clone()],
@@ -576,47 +612,44 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
                 ));
             }
         }
-        // Warnings and failures can run to hundreds per request: the first
-        // warnings show at once, the rest and the failures are built only
-        // when their expander is opened, so the page stays quick.
-        for w in s.warnings.iter().take(INLINE_WARNINGS) {
+        // Warnings and failures can run to hundreds per request: the list
+        // keeps the first warnings, shown at once, and counts the rest and
+        // the failures, which are read from the status file when their
+        // expander is opened.
+        for w in s.warnings.iter() {
             b.append(&detail_text(w, "tm-warning"));
         }
-        if s.warnings.len() > INLINE_WARNINGS {
-            let more: Vec<String> = s.warnings[INLINE_WARNINGS..].to_vec();
+        let root = app.store.root();
+        let more = s.warning_count().saturating_sub(s.warnings.len());
+        if more > 0 {
+            let (root, id) = (root.clone(), row.id.clone());
             b.append(&lazy_expander(
-                &format!("{} more", plural(more.len(), "warning", "warnings")),
+                &format!("{} more", plural(more, "warning", "warnings")),
                 move || {
-                    let mut lines: Vec<String> =
-                        more.iter().take(limits::MAX_SHOWN_ROWS).cloned().collect();
-                    if more.len() > limits::MAX_SHOWN_ROWS {
-                        lines.push(format!("…and {} more", more.len() - limits::MAX_SHOWN_ROWS));
-                    }
-                    lines
+                    status_lines(&root, &id, |st| {
+                        let rest = st.warnings.iter().skip(limits::MAX_LISTED_WARNINGS);
+                        shown_lines(rest.map(|w| w.to_string()))
+                    })
                 },
                 "tm-warning",
             ));
         }
-        if !s.failures.is_empty() {
-            let failures = s.failures.clone();
+        let failed = s.failure_count.get();
+        if failed > 0 {
+            let id = row.id.clone();
             b.append(&lazy_expander(
                 &format!(
                     "{} could not be downloaded",
-                    plural(failures.len(), "song", "songs")
+                    plural(failed, "song", "songs")
                 ),
                 move || {
-                    let mut lines: Vec<String> = failures
-                        .iter()
-                        .take(limits::MAX_SHOWN_ROWS)
-                        .map(|f| format!("{}: {}", limits::clip_line(&f.item), f.error))
-                        .collect();
-                    if failures.len() > limits::MAX_SHOWN_ROWS {
-                        lines.push(format!(
-                            "…and {} more",
-                            failures.len() - limits::MAX_SHOWN_ROWS
-                        ));
-                    }
-                    lines
+                    status_lines(&root, &id, |st| {
+                        shown_lines(
+                            st.failures
+                                .iter()
+                                .map(|f| format!("{}: {}", limits::clip_line(&f.item), f.error)),
+                        )
+                    })
                 },
                 "dim",
             ));
@@ -624,9 +657,6 @@ fn request_row(app: &Rc<App>, row: Row) -> gtk::Widget {
     }
     b.upcast()
 }
-
-/// Warnings shown under a request before the rest fold into an expander.
-const INLINE_WARNINGS: usize = 3;
 
 /// A wrapped, selectable line of request detail.
 fn small_text(text: &str, class: &str) -> gtk::Label {
@@ -853,13 +883,13 @@ pub fn page(app: &Rc<App>) -> Page {
             let device = config::device_name();
             let root = a.store.root();
             let mut ids = OrderedIds::new();
-            let requests: Vec<Request> = lines
-                .iter()
+            let requests: Vec<(String, Request)> = lines
+                .into_iter()
                 .map(|line| {
-                    let from_source = as_playlists && classify(line) != Kind::Single;
-                    let mut req = Request::new(line, playlist.clone(), from_source, &device);
-                    req.id = ids.next();
-                    req
+                    let from_source = as_playlists && classify(&line) != Kind::Single;
+                    let mut req = Request::new(&line, playlist.clone(), from_source, &device);
+                    req.id = ids.next().into();
+                    (line, req)
                 })
                 .collect();
             // Each write is synced to disk: a long paste takes a while, so it
@@ -868,31 +898,40 @@ pub fn page(app: &Rc<App>) -> Page {
             let (a, view) = (a.clone(), view.clone());
             glib::spawn_future_local(async move {
                 let failed = gio::spawn_blocking(move || {
+                    // The lines as typed (a request holds its input cut to
+                    // the limit), and the first error.
                     let mut failed: Vec<String> = Vec::new();
-                    for req in &requests {
+                    let mut first_error = None;
+                    let total = requests.len();
+                    for (line, req) in requests {
                         if let Err(e) = req.write(&root) {
-                            eprintln!("tunemesh: writing the request for {:?}: {e}", req.input);
-                            failed.push(req.input.clone());
+                            eprintln!(
+                                "tunemesh: writing the request for {:?}: {e}",
+                                limits::clip_line(&line)
+                            );
+                            first_error.get_or_insert(e);
+                            failed.push(line);
                         }
                     }
-                    (requests.len(), failed)
+                    (total, failed, first_error)
                 })
                 .await;
                 view.set_sensitive(true);
                 let buf = view.buffer();
                 match failed {
-                    Ok((total, failed)) if failed.is_empty() => {
+                    Ok((total, failed, _)) if failed.is_empty() => {
                         buf.set_text("");
                         a.toast(&format!(
                             "Requested {}",
                             plural(total, "download", "downloads")
                         ));
                     }
-                    Ok((_, failed)) => {
+                    Ok((_, failed, e)) => {
                         // Keep what failed in the box so it can be retried.
                         buf.set_text(&failed.join("\n"));
+                        let why = e.map(|e| e.to_string()).unwrap_or_default();
                         a.toast(&format!(
-                            "Could not write {} (see the log)",
+                            "Could not write {}: {why}",
                             plural(failed.len(), "request", "requests")
                         ));
                     }
@@ -972,6 +1011,58 @@ pub fn page(app: &Rc<App>) -> Page {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R3-Opus-3: what the Downloads page keeps of 200 requests and 200
+    /// statuses with every field at its limit (or far over it) and each
+    /// file at the 1 MiB cap stays within what the contract's limits allow
+    /// a listed row, however large the files are.
+    #[test]
+    fn listed_downloads_keep_only_a_bounded_projection() {
+        use tunemesh_core::limits::*;
+        let root = std::path::Path::new("/var/tmp")
+            .join(format!("tunemesh-downloads-mem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        tunemesh_core::hostile::max_requests(&root, MAX_LISTED_REQUESTS).unwrap();
+        tunemesh_core::hostile::max_statuses(&root, MAX_LISTED_REQUESTS).unwrap();
+        let file_bytes: u64 = [request::requests_dir(&root), request::status_dir(&root)]
+            .iter()
+            .flat_map(|d| std::fs::read_dir(d).unwrap())
+            .map(|e| e.unwrap().metadata().unwrap().len())
+            .sum();
+
+        let ((rows, total), kept) = crate::alloc_count::retained(|| load_rows(&root));
+        assert_eq!(rows.len(), MAX_LISTED_REQUESTS);
+        assert!(total >= MAX_LISTED_REQUESTS);
+        assert!(
+            rows.iter()
+                .all(|r| r.request.is_some() && r.status.is_some())
+        );
+        // The id three times, both inputs, the request's playlist, device
+        // and time, the status's title, message, listed warnings and time,
+        // and 1 KiB a row for the structures holding them.
+        let per_row = 3 * MAX_ID_BYTES
+            + 2 * MAX_INPUT_BYTES
+            + MAX_REQUEST_PLAYLIST_BYTES
+            + MAX_DEVICE_BYTES
+            + 2 * MAX_TIMESTAMP_BYTES
+            + (1 + MAX_LISTED_WARNINGS) * MAX_TEXT_BYTES
+            + MAX_MESSAGE_BYTES
+            + 1024;
+        eprintln!(
+            "Downloads list: {} rows keep {kept} B from {file_bytes} B of files ({:.4} of the file size; cap {} B)",
+            rows.len(),
+            kept as f64 / file_bytes as f64,
+            MAX_LISTED_REQUESTS * per_row
+        );
+        assert!(kept <= MAX_LISTED_REQUESTS * per_row, "kept {kept} B");
+        assert!(
+            (kept as u64) * 20 <= file_bytes,
+            "kept {kept} B of {file_bytes} B"
+        );
+        drop(rows);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 
     #[test]
     fn pasted_ids_keep_their_order_without_waiting() {

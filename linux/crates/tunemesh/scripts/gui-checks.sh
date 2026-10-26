@@ -2,7 +2,8 @@
 # The desktop app's GUI checks, in a private headless sway with its own
 # session bus (never the desktop you are using):
 #
-#   leaks   every page, panel and dialog is freed once closed (debug build)
+#   leaks   every page, panel and dialog is freed once closed, and the
+#           user-visible checks in gui_tests::checks (debug build)
 #   stalls  the hostile-library walk stays under the main-loop stall budget
 #           (release build; generates a 1.5 GB library under /var/tmp)
 #   all     both (the default)
@@ -92,6 +93,7 @@ cd "$linux"
 if [ "$what" != stalls ]; then
 	cargo test -p tunemesh "$@" -- --ignored --exact \
 		gui_tests::leaks::closed_pages_are_freed
+	cargo test -p tunemesh "$@" -- --ignored gui_tests::checks::
 fi
 if [ "$what" != leaks ]; then
 	cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \

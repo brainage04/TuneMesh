@@ -453,6 +453,23 @@ pub fn probe(manual: Option<Endpoint>) -> Probe {
     }
 }
 
+/// This device's Syncthing device ID, from the first Syncthing that answers
+/// at an address and key in a readable `config.xml`; `None` when none does.
+/// Blocks (each try is limited to the client's timeout): call it off the
+/// main loop.
+#[cfg(not(test))]
+pub fn local_device_id() -> Option<String> {
+    device_id_from(config_candidates())
+}
+
+fn device_id_from(configs: impl IntoIterator<Item = PathBuf>) -> Option<String> {
+    configs
+        .into_iter()
+        .filter_map(|path| std::fs::read_to_string(path).ok())
+        .filter_map(|xml| endpoint_from_config(&xml))
+        .find_map(|ep| Client::new(ep).my_id().ok())
+}
+
 /// Install hints, the user's distribution first (from `/etc/os-release`).
 pub fn install_hints() -> Vec<(&'static str, &'static str)> {
     let hints = [
@@ -713,5 +730,41 @@ mod tests {
         );
         c.create_folder(Path::new("/x"), "LOCAL").unwrap();
         assert_eq!(c.share_with("REMOTE", "phone").unwrap(), "REMOTE");
+    }
+
+    /// The device ID comes from the first configured Syncthing that
+    /// answers; a missing or dead one is skipped.
+    #[test]
+    fn device_id_from_the_first_syncthing_that_answers() {
+        let live = fake(|_| ok(r#"{"myID":"ABCDEFG-HIJKLMN"}"#));
+        let dead = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let dead_addr = dead.local_addr().unwrap();
+        drop(dead);
+        let dir = std::env::temp_dir().join(format!("tunemesh-stid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = |name: &str, address: &str| {
+            let path = dir.join(name);
+            std::fs::write(
+                &path,
+                format!(
+                    "<configuration><gui tls=\"false\"><address>{address}</address><apikey>k</apikey></gui></configuration>"
+                ),
+            )
+            .unwrap();
+            path
+        };
+        let live_addr = live
+            .endpoint()
+            .base
+            .trim_start_matches("http://")
+            .to_owned();
+        let found = device_id_from([
+            dir.join("missing.xml"),
+            config("dead.xml", &dead_addr.to_string()),
+            config("live.xml", &live_addr),
+        ]);
+        assert_eq!(found.as_deref(), Some("ABCDEFG-HIJKLMN"));
+        assert_eq!(device_id_from([dir.join("dead.xml")]), None);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

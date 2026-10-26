@@ -333,27 +333,57 @@ impl Downloader {
         }
     }
 
-    /// Whether this device's worker has requests to finish: it is on (running
-    /// or about to restart), requests are waiting and no other device is the
-    /// active downloader.
-    pub fn has_pending_work(&self) -> bool {
-        if !self.enabled.get()
-            || !matches!(
+    /// Whether this device's worker is on (running or about to restart),
+    /// so it may have requests to finish.
+    pub fn is_on(&self) -> bool {
+        self.enabled.get()
+            && matches!(
                 *self.state.borrow(),
                 State::Running | State::Restarting { .. }
             )
-        {
-            return false;
-        }
-        let root = self.root.borrow().clone();
-        let (requests, _) = tunemesh_core::request::list_requests(&root);
-        !requests.is_empty() && active_worker(&root).is_none_or(|w| is_this_device(&w))
     }
 
-    pub fn pending_count(&self) -> usize {
-        tunemesh_core::request::list_requests(&self.root.borrow())
-            .0
-            .len()
+    /// Counts the requests this device's worker still has to finish, on a
+    /// thread, and passes the count to `done` later on the main loop (never
+    /// from inside this call): 0 when the worker is off, no request waits,
+    /// or another device is the active downloader. Only file names are
+    /// read: a sharing device can fill `requests/` with thousands of large
+    /// files.
+    pub fn pending_work(&self, done: impl FnOnce(usize) + 'static) {
+        if !self.is_on() {
+            glib::spawn_future_local(async move { done(0) });
+            return;
+        }
+        let (root, device) = (self.root.borrow().clone(), config::device_name());
+        let (tx, rx) = async_channel::bounded(1);
+        std::thread::Builder::new()
+            .name("pending-requests".into())
+            .spawn(move || {
+                let _ = tx.send_blocking(pending_requests(&root, &device));
+            })
+            .expect("spawn pending-requests thread");
+        glib::spawn_future_local(async move {
+            done(rx.recv().await.unwrap_or(0));
+        });
+    }
+
+    /// Tests: as if the worker were running.
+    #[cfg(test)]
+    pub fn pretend_running(&self) {
+        self.enabled.set(true);
+        *self.state.borrow_mut() = State::Running;
+    }
+}
+
+/// Request files below `root` that the worker on `device` has to finish:
+/// none while another device is the active downloader. Reads file names
+/// only (and `worker.json`).
+fn pending_requests(root: &Path, device: &str) -> usize {
+    let n = tunemesh_core::request::request_ids(root).len();
+    if n > 0 && active_worker(root).is_none_or(|w| w.device.as_str() == device) {
+        n
+    } else {
+        0
     }
 }
 
@@ -379,7 +409,7 @@ fn exited(pid: i32) -> bool {
 pub use tunemesh_core::worker::active as active_worker;
 
 fn is_this_device(w: &WorkerInfo) -> bool {
-    w.device == config::device_name()
+    w.device.as_str() == config::device_name()
 }
 
 /// What the Downloads page, Settings and the setup assistant say about who
@@ -438,5 +468,21 @@ mod tests {
             0o700
         );
         std::fs::remove_dir_all(dir.parent().unwrap()).unwrap();
+    }
+
+    /// Pending requests are counted by file name: one this device cannot
+    /// read (or parse) still waits for the worker, and nothing is read.
+    #[test]
+    fn pending_requests_are_counted_by_name() {
+        let root = std::env::temp_dir().join(format!("tunemesh-pending-{}", std::process::id()));
+        let dir = tunemesh_core::request::requests_dir(&root);
+        std::fs::create_dir_all(&dir).unwrap();
+        for i in 0..3 {
+            let path = dir.join(format!("{}-0000000{i}.json", 1_700_000_000_000u64 + i));
+            std::fs::write(&path, b"{not json").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        }
+        assert_eq!(pending_requests(&root, "this"), 3);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

@@ -126,6 +126,18 @@ downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
 - Per-device state (queue, position, shuffle/repeat, volume):
   `~/.local/state/tunemesh/state.json`. The queue comes back paused at the
   saved position on the next launch.
+- Playlist bases: `~/.local/state/tunemesh/playlist-base/`, this device's
+  copy of each playlist as it was before its own latest edits, shared with a
+  worker of the same user and never synced. When two devices change a
+  playlist before Syncthing syncs either change, Syncthing keeps one version
+  and a `*.sync-conflict-*` copy of the other; the app merges the copy back
+  against the base and deletes it, so both edits are kept and an unlike or a
+  removal is not undone. A copy that names this device's Syncthing ID is
+  merged at once (the app asks its Syncthing for the ID); any other copy
+  once it is 10 minutes old, by whichever device sees it then (phones and
+  the worker do not know their ID and always wait).
+- Playlist edits are written on a background thread; quitting or closing
+  the window waits up to 5 seconds for the ones still queued.
 - Cache (library scan, MPRIS cover art): `~/.cache/tunemesh/`. The scan cache
   makes startup instant; a background rescan follows, and file changes (for
   example songs arriving through Syncthing) are picked up within a second.
@@ -156,7 +168,7 @@ and playlists from YouTube, YouTube Music and Spotify, and other sites
 yt-dlp supports. Each line becomes one request. When a line is a playlist
 link, "Save playlists and albums as TuneMesh playlists" turns on by default.
 Each request shows its progress (songs done of the total), failed songs and
-warnings.
+warnings. A line longer than 8 KiB is refused and stays in the box.
 
 One device per library downloads. The page and Settings show which device
 that is (from `.tunemesh/worker.json`). With "This device downloads songs"
