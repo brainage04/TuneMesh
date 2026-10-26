@@ -95,7 +95,7 @@ class DeviceTest {
         val cache = File(cacheDirectory, LibraryScanner.CACHE_FILE)
 
         val result = LibraryScanner(cacheDirectory).scan(root, LibraryIndex.EMPTY)
-        assertTrue(result.directories.none { '\n' in it.path })
+        assertTrue(result.directories.files.none { '\n' in it.path })
         val first = result.index.tracks
         assertEquals(1, first.size)
         val track = first.single()

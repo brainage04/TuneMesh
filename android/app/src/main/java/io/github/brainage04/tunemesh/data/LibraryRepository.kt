@@ -3,6 +3,7 @@ package io.github.brainage04.tunemesh.data
 import android.os.Environment
 import android.os.FileObserver
 import android.util.Log
+import io.github.brainage04.tunemesh.library.DirectoryStamps
 import io.github.brainage04.tunemesh.library.DownloadList
 import io.github.brainage04.tunemesh.library.DownloadStore
 import io.github.brainage04.tunemesh.library.Downloader
@@ -115,6 +116,9 @@ class LibraryRepository(
             }
         }
 
+    /** The library folder the last full scan walked, and its folders' stamps then; null until one worked. */
+    @Volatile private var scanned: Pair<File, DirectoryStamps>? = null
+
     private var downloadStoreFor: DownloadStore? = null
 
     /** One store per root, so it can keep what it read of unchanged request and status files. */
@@ -167,7 +171,7 @@ class LibraryRepository(
             while (isActive) {
                 delay(DOWNLOAD_POLL_MS)
                 ticks++
-                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) refresh() else if (downloadsShown.get() > 0) refreshDownloads()
+                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) checkLibrary() else if (downloadsShown.get() > 0) refreshDownloads()
             }
         }
     }
@@ -183,6 +187,16 @@ class LibraryRepository(
         } else {
             downloadsShown.decrementAndGet()
         }
+    }
+
+    /**
+     * The periodic safety net: a full rescan only when a folder of the library changed since the last one ([DirectoryStamps]: one `stat`
+     * per folder, nothing allocated), else just `worker.json` and the shown downloads. Walking 100,000 unchanged files allocated 60-160 MB
+     * a minute.
+     */
+    private suspend fun checkLibrary() {
+        val last = scanned
+        if (last == null || last.first != root || last.second.changed()) refresh() else refreshDownloads()
     }
 
     fun refreshAsync() {
@@ -217,13 +231,18 @@ class LibraryRepository(
             // The library folder changed during the scan: the old folder's tracks are not shown under the new one (the change starts a
             // scan of its own, which also must not take them as its previous index).
             if (!updateIfRoot(root) { it.copy(index = result.index, loaded = true, error = null) }) return
+            // Playlists/ is not walked; its stamp is taken before the playlists are read, so a change while they are read is seen.
+            val playlistsDirectory = File(root, LibraryFormat.PLAYLISTS_DIR).toPath()
+            result.directories.add(playlistsDirectory, DirectoryStamps.modifiedMs(playlistsDirectory))
             // A new index: playlist entries hold track ordinals of the index they were read with, so the open one is read again.
             reloadPlaylists(changed = if (result.index === previous) emptySet() else null)
             // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
             if (playlistStore.hasConflictCopies()) mutate { playlistStore.mergeConflicts() }
             reloadDownloads()
-            observe(result.directories)
+            observe(result.directories.files)
+            scanned = root to result.directories
         } catch (error: IOException) {
+            scanned = null
             updateIfRoot(root) { it.copy(loaded = true, error = error.message ?: "Cannot read $root") }
         } finally {
             updateIfRoot(root) { it.copy(scanning = false) }

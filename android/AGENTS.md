@@ -45,6 +45,9 @@ it exists, apply as well.
   ordinals, not paths. The scanner keeps no other copy of the tags: it copies unchanged tracks from the index it is
   given, and saves the index as its arrays in `filesDir/library-index.bin` (`LibraryIndexFile`; bump its `VERSION`
   when what a track derives from its tags changes). The JSON `tag-cache.json` of earlier versions is converted once.
+  A full scan runs at start, when the app comes to the foreground and on file-observer events; the 60 s safety-net
+  poll only `stat`s the folders the last scan walked (`DirectoryStamps`) and scans again when one of them changed,
+  so an unchanged library costs no walk (a walk of 100,000 files allocated 60-160 MB).
   `BoundedModelsTest` lists every property of every parsed model and of what the app keeps of it with its limit,
   and fails on a property (or a new `@Serializable` model in `library/`) without one; `MemoryBudgetTest` asserts
   what each format retains at its limits, and `DownloadsHeapTest` lists the maximal downloads twice in a 192 MB JVM.

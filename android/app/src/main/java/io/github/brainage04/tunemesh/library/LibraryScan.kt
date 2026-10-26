@@ -1,5 +1,10 @@
 package io.github.brainage04.tunemesh.library
 
+import java.io.File
+import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -30,6 +35,47 @@ class FoundFiles {
 
     private companion object {
         const val INITIAL = 1024
+    }
+}
+
+/**
+ * The library's folders as a scan saw them, each with its modification time then. A folder's modification time changes when a file in it is
+ * created, deleted or renamed, which is how Syncthing (and this app) writes every file: a temporary file renamed over the old one. So
+ * [changed] tells, with one `stat` per folder, whether a file came, went or was replaced since the scan. A file rewritten in place does not
+ * change its folder: the file observers see that (`CLOSE_WRITE`), and a full scan runs whenever the app comes to the foreground. Times are
+ * compared to the millisecond through NIO: `File.lastModified` has whole seconds on Android.
+ */
+class DirectoryStamps {
+    private val directories = ArrayList<Path>()
+    private var modified = LongArray(INITIAL)
+
+    val size: Int
+        get() = directories.size
+
+    /** Adds [directory] as it was when its entries were listed: [modifiedMs] is its modification time from before the listing. */
+    fun add(directory: Path, modifiedMs: Long) {
+        if (directories.size == modified.size) modified = modified.copyOf(modified.size * 2)
+        modified[directories.size] = modifiedMs
+        directories.add(directory)
+    }
+
+    /** The folders, in the order they were added. */
+    val files: List<File>
+        get() = directories.map(Path::toFile)
+
+    /** Whether a folder was modified, or is gone, since it was added. */
+    fun changed(): Boolean = directories.indices.any { modifiedMs(directories[it]) != modified[it] }
+
+    companion object {
+        private const val INITIAL = 256
+
+        /** [directory]'s modification time in milliseconds, or -1 when it cannot be read (gone). */
+        fun modifiedMs(directory: Path): Long =
+            try {
+                Files.getLastModifiedTime(directory, LinkOption.NOFOLLOW_LINKS).toMillis()
+            } catch (_: IOException) {
+                -1
+            }
     }
 }
 

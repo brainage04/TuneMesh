@@ -2,6 +2,7 @@ package io.github.brainage04.tunemesh.data
 
 import android.media.MediaMetadataRetriever
 import io.github.brainage04.tunemesh.library.AtomicFiles
+import io.github.brainage04.tunemesh.library.DirectoryStamps
 import io.github.brainage04.tunemesh.library.FoundFiles
 import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
@@ -17,7 +18,8 @@ import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
 
-class ScanResult(val index: LibraryIndex, val directories: List<File>)
+/** A scan's [index], and the [directories] it walked with their modification times (what the periodic check compares). */
+class ScanResult(val index: LibraryIndex, val directories: DirectoryStamps)
 
 /**
  * Walks the library and reads tags for new or changed files only: a file whose path, size and modification time are those of a track of the
@@ -71,7 +73,7 @@ class LibraryScanner(private val directory: File) {
     fun scan(root: File, previous: LibraryIndex): ScanResult {
         val rootPath = root.toPath()
         val found = FoundFiles()
-        val directories = mutableListOf<File>()
+        val directories = DirectoryStamps()
         if (root.isDirectory) {
             // Entries seen so far in each open directory, innermost last (Limits.MAX_FOLDER_ENTRIES).
             val seen = ArrayDeque<IntArray>()
@@ -91,7 +93,7 @@ class LibraryScanner(private val directory: File) {
                         val relative = relativePath.toString()
                         if (relative.isNotEmpty() && LibraryFormat.isExcludedDirectory(relative)) return FileVisitResult.SKIP_SUBTREE
                         if (relative.isNotEmpty() && relativePath.nameCount > Limits.MAX_DEPTH) return FileVisitResult.SKIP_SUBTREE
-                        directories += dir.toFile()
+                        directories.add(dir, attrs.lastModifiedTime().toMillis())
                         seen.addLast(IntArray(1))
                         return FileVisitResult.CONTINUE
                     }
