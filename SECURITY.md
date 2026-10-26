@@ -35,7 +35,16 @@ try to stop such a device from reaching anything outside the library:
   (behind another router or a VPN).
 - **Resource use.** Requests are limited in items, file size, duration, run
   time, number of pending requests and free disk space (see
-  `tunemesh-worker --help`).
+  `tunemesh-worker --help`). Every synced file has a size limit, and readers
+  keep only a bounded, cut copy of each field and list
+  (`docs/library-format.md`, "Limits"), so what an app or the worker holds
+  in memory does not grow with what a sharing device writes: the worker's
+  status sweep reads one file at a time, and lists of downloads keep counts
+  instead of track lists.
+- **ffmpeg.** yt-dlp's ffmpeg and ffprobe run through a shim that allows
+  only the options, input formats and protocols its postprocessing uses,
+  inputs inside the request's scratch directory, and `-vf` filter graphs
+  of a few filters that open no files.
 - **Playback.** The desktop player only opens local files: mpv's playlist,
   EDL, CUE and archive handling and every network protocol are disabled.
 

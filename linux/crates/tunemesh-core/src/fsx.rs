@@ -219,7 +219,9 @@ impl Dir {
     /// Reads the regular file `rel`, refusing files larger than `max` bytes.
     pub fn read(&self, rel: &str, max: u64) -> io::Result<Vec<u8>> {
         let file = self.open_file(rel)?;
-        let mut bytes = Vec::new();
+        // Sized from the file, so reading does not double the buffer.
+        let len = file.metadata().map_or(0, |m| m.len()).min(max + 1);
+        let mut bytes = Vec::with_capacity(len as usize + 1);
         file.take(max + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > max {
             return Err(io::Error::new(

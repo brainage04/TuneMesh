@@ -8,6 +8,8 @@ pub mod fsx;
 pub mod hostile;
 pub mod library;
 pub mod limits;
+#[cfg(test)]
+mod memory_tests;
 pub mod merge;
 pub mod playlist;
 pub mod request;

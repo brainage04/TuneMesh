@@ -59,11 +59,13 @@ pub fn with_rules(existing: Option<&[u8]>) -> Option<Vec<u8>> {
     }
     let mut text = match existing {
         Some(t) => {
-            let mut t = t.to_vec();
-            if !t.is_empty() && !t.ends_with(b"\n") {
-                t.push(b'\n');
+            let extra: usize = missing.iter().map(|r| r.len() + 1).sum();
+            let mut out = Vec::with_capacity(t.len() + 1 + extra);
+            out.extend_from_slice(t);
+            if !out.is_empty() && !out.ends_with(b"\n") {
+                out.push(b'\n');
             }
-            t
+            out
         }
         None => format!("{HEADER}\n").into_bytes(),
     };

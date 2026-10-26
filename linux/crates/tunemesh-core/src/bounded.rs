@@ -32,7 +32,19 @@ impl<T: Limited> Limited for Option<T> {}
 pub const fn assert_limited<T: Limited>() {}
 
 /// Declares a struct read from a synced file. Every field's type must be
-/// `Limited`, checked at compile time.
+/// `Limited`, checked at compile time:
+///
+/// ```
+/// tunemesh_core::bounded_struct! {
+///     struct Ok { name: tunemesh_core::bounded::Bounded<64>, n: u32 }
+/// }
+/// ```
+///
+/// ```compile_fail
+/// tunemesh_core::bounded_struct! {
+///     struct Unbounded { name: String }
+/// }
+/// ```
 #[macro_export]
 macro_rules! bounded_struct {
     (

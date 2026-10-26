@@ -182,7 +182,7 @@ fn fill(
 
 /// A request file of about `len` bytes with every field longer than its
 /// limit (the input most).
-fn request_json(id: &str, len: usize) -> String {
+pub(crate) fn request_json(id: &str, len: usize) -> String {
     let v = serde_json::json!({
         "version": 1, "id": "i".repeat(1_000), "input": "",
         "playlist": "p".repeat(20_000), "playlistFromSource": true,
@@ -198,7 +198,7 @@ fn request_json(id: &str, len: usize) -> String {
 /// than its limit and every list past its count, filled up with long track
 /// paths. Odd `i`: as many tiny entries as fit (the shape that costs a
 /// reader the most per byte), filled up with one-character tracks.
-fn status_json(i: usize, len: usize) -> String {
+pub(crate) fn status_json(i: usize, len: usize) -> String {
     let long = |c: &str, n: usize| c.repeat(n);
     if i % 2 == 0 {
         let v = serde_json::json!({
@@ -225,7 +225,7 @@ fn status_json(i: usize, len: usize) -> String {
 
 /// A `worker.json` of about `len` bytes with every field longer than its
 /// limit (a heartbeat that is not fresh).
-fn worker_json(len: usize) -> String {
+pub(crate) fn worker_json(len: usize) -> String {
     let v = serde_json::json!({
         "version": 1, "device": "", "machine": "m".repeat(10_000),
         "instance": "i".repeat(10_000), "pid": u32::MAX,
@@ -239,7 +239,7 @@ fn worker_json(len: usize) -> String {
 
 /// Size of the files `max_requests` and `max_statuses` write: just under
 /// the read limit.
-const MAX_FILE: usize = MAX_JSON_BYTES as usize - 1024;
+pub(crate) const MAX_FILE: usize = MAX_JSON_BYTES as usize - 1024;
 
 /// Writes `n` request files (ids `id(0)`..`id(n)`), each just under the
 /// 1 MiB read limit with every field longer than its limit.
