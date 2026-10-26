@@ -149,6 +149,8 @@ class LibraryRepository(
     /** Shows cached tags immediately, then rescans. */
     fun start() {
         scope.launch {
+            // The folder this start is for: the property reads the state's, which a later folder change replaces.
+            val root = root
             val cached = scanner.cached(root)
             if (cached != null && cached.size > 0 && !_state.value.loaded) {
                 _state.update { state -> if (state.root == root) state.copy(index = cached, loaded = true) else state }
