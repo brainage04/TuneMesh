@@ -18,6 +18,8 @@ import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import io.github.brainage04.tunemesh.data.LibraryState
+import io.github.brainage04.tunemesh.library.Limits
+import io.github.brainage04.tunemesh.library.ShownDownload
 import java.io.File
 import java.util.concurrent.atomic.AtomicLong
 import leakcanary.DetectLeaksAfterTestSuccess
@@ -117,7 +119,15 @@ class HostileLibraryTest {
         val downloads = waitFor(30_000, "downloads read") { it.downloads.items.isNotEmpty() }.downloads
         assertTrue("${downloads.items.size} downloads listed", downloads.items.size in 197..200)
         assertTrue(downloads.older > 0)
-        assertTrue(downloads.items.all { (it.status?.message?.length ?: 0) <= 4 * 1024 && (it.status?.warnings?.size ?: 0) <= 50 })
+        assertTrue(
+            downloads.items.all {
+                (it.shown.message?.length ?: 0) <= ShownDownload.PREVIEW_CHARS &&
+                    it.shown.lines.size <= Limits.SHOWN_LIST_ROWS &&
+                    it.shown.lines.all { line -> line.length <= ShownDownload.LINE_PREVIEW_CHARS } &&
+                    it.trackCount <= Limits.MAX_STATUS_TRACKS &&
+                    (it.playlist?.length ?: 0) <= Limits.SHOWN_LINE_CHARS
+            }
+        )
         assertNull(app.repository.state.value.downloader.let { it as? io.github.brainage04.tunemesh.library.Downloader.Active })
         assertEquals(stignoreBytes, File(root, ".stignore").length())
 

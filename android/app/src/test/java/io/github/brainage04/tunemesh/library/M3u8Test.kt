@@ -252,6 +252,18 @@ class M3u8Test {
         assertEquals("🎵".repeat(256), written)
     }
 
+    /**
+     * R3 trivial: a long label with leading white space was cut before it was trimmed, so it came out 6 bytes shorter than core reads it.
+     */
+    @Test
+    fun longLabelsAreTrimmedBeforeTheyAreCut() {
+        val read = M3u8.parse("#EXTINF: 7 ,\u3000\u3000  ${"x".repeat(1100)}\n../Gone/a.mp3\n", root)
+        assertEquals("#EXTINF:7,${"x".repeat(Limits.MAX_LABEL_BYTES)}", read[0].extinf)
+        assertEquals("#EXTINF:7,${"x".repeat(Limits.MAX_LABEL_BYTES)}", M3u8.write(read) { null }.lines()[1])
+        val garbage = M3u8.parse("#EXTINF:${"9".repeat(20_000)}x,a\n../Gone/a.mp3\n", root)
+        assertEquals("#EXTINF:-1,a", garbage[0].extinf)
+    }
+
     /** Jazzer: a label from a file name ending in white space was written untrimmed, read back trimmed, so each rewrite changed it. */
     @Test
     fun rewritingKeepsLabels() {

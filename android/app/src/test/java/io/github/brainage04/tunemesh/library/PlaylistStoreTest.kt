@@ -301,7 +301,7 @@ class PlaylistStoreTest {
             reads++
             null
         }
-        val store = PlaylistStore(temp.root, summaries, lookup)
+        val store = PlaylistStore(temp.root, summaries, lookup = lookup)
         fun readsFor(block: () -> Unit): Int {
             val before = reads
             block()
@@ -324,6 +324,25 @@ class PlaylistStoreTest {
         )
         summaries.clear()
         assertTrue(readsFor { store.list() } > 0)
+    }
+
+    /** Round 3 trivial: a like re-read every listed playlist; now only the playlists the app changed are read again. */
+    @Test
+    fun forgettingOnePlaylistReadsOnlyThatOneAgain() {
+        val dir = File(temp.root, "Playlists").apply { mkdirs() }
+        for (n in 0 until 10) File(dir, "p$n.m3u8").writeText("../p$n.wav\n")
+        val summaries = PlaylistSummaries()
+        val read = ArrayList<String>()
+        val store =
+            PlaylistStore(temp.root, summaries) {
+                read += it
+                null
+            }
+        store.list()
+        read.clear()
+        summaries.forget(listOf("p3.m3u8"))
+        assertEquals(10, store.list().size)
+        assertEquals(setOf("p3.wav"), read.toSet())
     }
 
     private fun entries(vararg entries: PlaylistEntry): PlaylistEntries {

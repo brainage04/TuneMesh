@@ -109,6 +109,9 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
                 }
             }
         }
+        library.downloadsError?.let { error ->
+            item { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
+        }
         if (library.downloads.items.isEmpty()) {
             item {
                 Text(
@@ -248,27 +251,25 @@ fun RequestForm(
 
 @Composable
 private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
-    val status = item.status
     val shown = item.shown
-    val count = status?.itemsTotal?.takeIf { it > 1 }?.let { total -> "${(status.itemsDone ?: 0).coerceIn(0, total)} of $total" }
+    val count = item.itemsTotal?.takeIf { it > 1 }?.let { total -> "${(item.itemsDone ?: 0).coerceIn(0, total)} of $total" }
     val (label, color) =
-        when (status?.state) {
+        when (val state = item.state) {
             null -> "Waiting for the downloader" to TextSecondary
             "queued" -> "Queued" to TextSecondary
             "downloading" ->
                 listOfNotNull(
                         "Downloading",
                         count,
-                        status.progress?.let { "${(it * 100).toInt()}%" },
+                        item.progress?.let { "${(it * 100).toInt()}%" },
                     )
                     .joinToString(" • ") to Accent
             "done" ->
-                "Done" +
-                    (if (status.tracks.isNotEmpty()) " • ${status.tracks.size} ${if (status.tracks.size == 1) "song" else "songs"}"
-                    else "") to Accent
+                "Done" + (if (item.trackCount > 0) " • ${item.trackCount} ${if (item.trackCount == 1) "song" else "songs"}" else "") to
+                    Accent
             "failed" -> "Failed" + count?.let { " • $it done" }.orEmpty() to MaterialTheme.colorScheme.error
             "cancelled" -> "Cancelled" + count?.let { " • $it done" }.orEmpty() to TextSecondary
-            else -> Limits.shownLine(status.state) to TextSecondary
+            else -> Limits.shownLine(state) to TextSecondary
         }
     var problemsOpen by remember { mutableStateOf(false) }
     Column(
@@ -292,16 +293,16 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 }
                 Spacer(Modifier.height(4.dp))
                 Text(label, color = color, style = MaterialTheme.typography.bodyMedium)
-                val target = item.request?.playlist
+                val target = item.playlist
                 if (target != null)
                     Text(
-                        "→ ${Limits.shownLine(target)}",
+                        "→ $target",
                         color = TextSecondary,
                         style = MaterialTheme.typography.bodySmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
-                if (target == null && item.request?.playlistFromSource == true) {
+                if (target == null && item.playlistFromSource) {
                     Text("→ playlist named after the source", color = TextSecondary, style = MaterialTheme.typography.bodySmall)
                 }
             }
@@ -310,9 +311,9 @@ private fun DownloadCard(item: DownloadItem, onCancel: () -> Unit) {
                 OutlinedButton(onClick = onCancel) { Text("Cancel") }
             }
         }
-        if (status?.state == "downloading") {
+        if (item.state == "downloading") {
             Spacer(Modifier.height(10.dp))
-            val progress = status.progress
+            val progress = item.progress
             if (progress != null) {
                 LinearProgressIndicator(
                     progress = { progress.toFloat() },

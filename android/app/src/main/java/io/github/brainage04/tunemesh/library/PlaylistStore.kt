@@ -5,6 +5,8 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.security.DigestInputStream
+import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.Locale
 
@@ -46,6 +48,8 @@ class PlaylistException(message: String, cause: Throwable? = null) : Exception(m
 class PlaylistStore(
     private val root: File,
     private val summaries: PlaylistSummaries? = null,
+    /** This device's bases for merging conflict copies ([mergeConflicts]); null: none kept and copies left alone (tests). */
+    private val bases: PlaylistBases? = null,
     private val lookup: (String) -> Track?,
 ) {
     private val directory
@@ -56,10 +60,15 @@ class PlaylistStore(
     /** The library's own string for [path], so entries do not each hold a copy. */
     private fun canonical(path: String): String? = lookup(path)?.path
 
-    private fun stream(file: File, keepExtinf: Boolean, onEntry: (PlaylistEntry) -> Unit) {
+    /** Streams [file]'s entries to [onEntry]; [digest], when given, gets every byte read. */
+    private fun stream(file: File, keepExtinf: Boolean, digest: MessageDigest? = null, onEntry: (PlaylistEntry) -> Unit) {
         if (file.length() > Limits.MAX_PLAYLIST_BYTES)
             throw PlaylistTooLargeException("larger than ${Limits.MAX_PLAYLIST_BYTES / (1024 * 1024)} MiB")
-        file.inputStream().use { M3u8.read(it, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry) }
+        file.inputStream().use { stream ->
+            @Suppress("MissingUseCall") // only wraps the stream that `use` closes
+            val input = if (digest == null) stream else DigestInputStream(stream, digest)
+            M3u8.read(input, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry)
+        }
     }
 
     /**
@@ -108,15 +117,21 @@ class PlaylistStore(
     /** The playlist as a writer needs it, `#EXTINF` lines included; null when the file does not exist. */
     fun read(name: String): PlaylistContents? = read(name, keepExtinf = true)
 
-    private fun read(name: String, keepExtinf: Boolean): PlaylistContents? {
+    private fun read(name: String, keepExtinf: Boolean, digest: MessageDigest? = null): PlaylistContents? {
         val file = file(name)
+        val entries = readFile(file, keepExtinf, digest) ?: return null
+        return PlaylistContents(name, entries, file.lastModified())
+    }
+
+    /** [file]'s entries, or null when it does not exist. */
+    private fun readFile(file: File, keepExtinf: Boolean = true, digest: MessageDigest? = null): PlaylistEntries? {
         val entries = PlaylistEntries.Builder(root.absolutePath, keepExtinf)
         try {
-            stream(file, keepExtinf) { entries.add(it) }
+            stream(file, keepExtinf, digest) { entries.add(it) }
         } catch (_: java.io.FileNotFoundException) {
             return null
         }
-        return PlaylistContents(name, entries.build(), file.lastModified())
+        return entries.build()
     }
 
     /** Library paths in Liked Songs, without keeping its entries; empty when it does not exist. */
@@ -130,16 +145,23 @@ class PlaylistStore(
 
     /**
      * Entries to change. A missing file is empty; a file that cannot be read or is too large is never rewritten from a partial read, so the
-     * change is refused.
+     * change is refused. The version read becomes the playlist's base ([PlaylistBases.beforeEdit]).
      */
-    private fun entries(name: String): PlaylistEntries =
-        try {
-            read(name)?.entries ?: PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
-        } catch (error: PlaylistTooLargeException) {
-            throw PlaylistException("\"$name\" is too large to change on this device", error)
-        } catch (error: IOException) {
-            throw PlaylistException("Cannot read \"$name\": ${error.message ?: error.javaClass.simpleName}", error)
-        }
+    private fun entries(name: String): PlaylistEntries {
+        val digest = MessageDigest.getInstance("SHA-256")
+        val entries =
+            try {
+                read(name, keepExtinf = true, digest)?.entries
+            } catch (error: PlaylistTooLargeException) {
+                throw PlaylistException("\"$name\" is too large to change on this device", error)
+            } catch (error: IOException) {
+                throw PlaylistException("Cannot read \"$name\": ${error.message ?: error.javaClass.simpleName}", error)
+            } ?: return PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
+        bases?.beforeEdit(fileName(name), entries, digest.digest())
+        return entries
+    }
+
+    private fun fileName(name: String) = name + LibraryFormat.PLAYLIST_EXTENSION
 
     /** Writes [entries]; a playlist that would be over the size limits is refused and the file left as it is. */
     private fun write(name: String, entries: List<PlaylistEntry>) {
@@ -149,7 +171,9 @@ class PlaylistStore(
             } catch (error: PlaylistTooLargeException) {
                 throw PlaylistException("\"$name\" would be too large (${error.reason})", error)
             }
-        AtomicFiles.write(file(name), text)
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        AtomicFiles.write(file(name), bytes)
+        bases?.written(fileName(name), bytes)
     }
 
     /**
@@ -186,13 +210,77 @@ class PlaylistStore(
         if (finalName == from) return from
         existingName(finalName)?.takeIf { it != from }?.let { throw PlaylistException("A playlist called \"$it\" already exists") }
         Files.move(file(from).toPath(), file(finalName).toPath(), StandardCopyOption.ATOMIC_MOVE)
+        bases?.rename(fileName(from), fileName(finalName))
         return finalName
     }
 
     fun delete(name: String) {
         if (name == LibraryFormat.LIKED_SONGS) throw PlaylistException("Liked Songs cannot be deleted")
         if (!file(name).delete() && file(name).exists()) throw PlaylistException("Could not delete \"$name\"")
+        bases?.delete(fileName(name))
     }
+
+    /** Whether `Playlists/` holds any Syncthing conflict copy of a playlist (names only; nothing is read). */
+    fun hasConflictCopies(): Boolean = directory.list()?.any { PlaylistMerge.conflictOf(it) != null } == true
+
+    /**
+     * Merges the conflict copies of playlists into them (contract: "Playlist conflict copies") and deletes them; returns the names of the
+     * playlists written. This device does not know its Syncthing device ID, so it merges only copies modified at least [CONFLICT_AGE_MS]
+     * before [now]. A copy is merged only when its playlist exists; a too-large or unreadable playlist or copy, or a result over the
+     * limits, leaves both files alone. Copies of one playlist go one at a time in byte order of their names, each against the playlist's
+     * base as it was before the first of them; then the merged playlist becomes the base. The result is written without library lookups, so
+     * every device writes the same bytes.
+     */
+    fun mergeConflicts(now: Long = System.currentTimeMillis()): Set<String> {
+        val bases = bases ?: return emptySet()
+        val copies = HashMap<String, MutableList<String>>()
+        for (fileName in directory.list().orEmpty()) {
+            val name = PlaylistMerge.conflictOf(fileName)
+            if (name != null && isDue(File(directory, fileName), name, now)) copies.getOrPut(name) { ArrayList() } += fileName
+        }
+        return copies.mapNotNullTo(HashSet()) { (name, names) -> name.takeIf { mergeCopies(bases, name, names) } }
+    }
+
+    /** Whether [copy] of playlist [name] is old enough to merge and its playlist exists. */
+    private fun isDue(copy: File, name: String, now: Long): Boolean =
+        copy.isFile && now - copy.lastModified() >= CONFLICT_AGE_MS && file(name).isFile
+
+    /** Merges the copies [names] of playlist [name] one at a time; returns whether the playlist was written. */
+    private fun mergeCopies(bases: PlaylistBases, name: String, names: List<String>): Boolean {
+        var current = readOrNull(file(name)) ?: return false
+        val base = bases.read(fileName(name), root.absolutePath)
+        var written: ByteArray? = null
+        for (copyName in names.sortedWith { a, b -> compareBytes(a.toByteArray(), b.toByteArray()) }) {
+            // A copy gone meanwhile (merged by another device and the deletion synced) reads as null.
+            val copy = File(directory, copyName)
+            val result = readOrNull(copy)?.let { PlaylistMerge.merge(base, current, it) }
+            val bytes = result?.let(::serialised)
+            if (result != null && bytes != null) {
+                AtomicFiles.write(file(name), bytes)
+                copy.delete()
+                current = result
+                written = bytes
+            }
+        }
+        written?.let { bases.merged(fileName(name), it) }
+        return written != null
+    }
+
+    /** [file]'s entries for a writer, or null when it is gone, too large or unreadable. */
+    private fun readOrNull(file: File): PlaylistEntries? =
+        try {
+            readFile(file)
+        } catch (_: IOException) {
+            null
+        }
+
+    /** A merge result as every device writes it (no library lookups), or null when it would be over the limits. */
+    private fun serialised(entries: PlaylistEntries): ByteArray? =
+        try {
+            M3u8.write(entries) { null }.toByteArray(Charsets.UTF_8)
+        } catch (_: PlaylistTooLargeException) {
+            null
+        }
 
     /** Appends [tracks]; a track whose path contains a line break is skipped (see [LibraryFormat.hasLineBreak]). */
     fun add(name: String, tracks: List<Track>) {
@@ -243,6 +331,18 @@ class PlaylistStore(
     companion object {
         /** Candidate tracks kept per listed playlist for its cover art (the first one that is available). */
         const val ART_PATHS = 8
+
+        /** How old a conflict copy must be before this device merges it (contract: "Who merges"). */
+        const val CONFLICT_AGE_MS = 10 * 60 * 1000L
+
+        /** Unsigned byte order, as the contract orders conflict copies. */
+        private fun compareBytes(a: ByteArray, b: ByteArray): Int {
+            for (i in 0 until minOf(a.size, b.size)) {
+                val order = (a[i].toInt() and 0xFF) - (b[i].toInt() and 0xFF)
+                if (order != 0) return order
+            }
+            return a.size - b.size
+        }
 
         /**
          * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then). [libraryPath] is the library

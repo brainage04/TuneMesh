@@ -20,6 +20,7 @@ android {
 
     // The hostile-library generator, shared with the app's instrumented tests.
     sourceSets.getByName("main").kotlin.srcDir("../hostile-library/java")
+    sourceSets.getByName("main").kotlin.srcDir("../hostile-library/common")
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

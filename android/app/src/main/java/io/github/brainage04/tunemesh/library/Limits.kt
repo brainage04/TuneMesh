@@ -32,10 +32,19 @@ object Limits {
     /** A request's `playlist`, cut when read. */
     const val MAX_REQUEST_PLAYLIST_BYTES = 1024
 
+    /** A request's or status file's `id` field, cut when read (clients identify a request by its file name). */
+    const val MAX_DOWNLOAD_ID_BYTES = 64
+
+    /** A timestamp: a request's `requestedAt`, a status `updatedAt`, `worker.json`'s `heartbeatAt`. */
+    const val MAX_TIMESTAMP_BYTES = 64
+
+    /** A device name: a request's `requestedBy`, `worker.json`'s `device`. */
+    const val MAX_DEVICE_NAME_BYTES = 1024
+
     /** Request and status files read: the newest ids (a request with its status counts once); older are counted. */
     const val MAX_DOWNLOADS_READ = 200
 
-    /** A status `title`, each warning, each failure's `item` and `error`. */
+    /** A status `state` and `title`, each warning, each failure's `item` and `error`. */
     const val MAX_STATUS_TEXT_BYTES = 1024
 
     /** A status `message`. */
@@ -47,7 +56,7 @@ object Limits {
     /** Status `failures` kept. */
     const val MAX_STATUS_FAILURES = 200
 
-    /** Status `tracks` kept. */
+    /** Status `tracks` counted; clients keep only the count, never the paths. */
     const val MAX_STATUS_TRACKS = 10_000
 
     // ---- playlists ---------------------------------------------------------------------------------------------

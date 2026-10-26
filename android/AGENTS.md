@@ -32,13 +32,22 @@ it exists, apply as well.
   package (`app/src/main/java/io/github/brainage04/tunemesh/library/`) free of Android imports so they stay
   JVM tests.
 - Limits on everything read from the synced folder live in one object, `library/Limits.kt`, row for row with
-  `docs/library-format.md` "Limits". A new synced input gets a row there and a constant here.
+  `docs/library-format.md` "Limits". A new synced input gets a row there and a constant here. Each synced format
+  has one `bounded()` projection (`DownloadStore.bounded`, the `M3u8` reader, `Stignore.withRules`), and readers
+  keep only what the UI shows (the Downloads list keeps a `DownloadItem` per request, never the files).
+  `BoundedModelsTest` lists every property of every parsed model and of what the app keeps of it with its limit,
+  and fails on a property (or a new `@Serializable` model in `library/`) without one; `MemoryBudgetTest` asserts
+  what each format retains at its limits, and `DownloadsHeapTest` lists the maximal downloads twice in a 192 MB JVM.
+- Playlist conflict copies (contract: "Playlist conflict copies") are merged by `PlaylistStore.mergeConflicts`
+  against this device's bases in `filesDir/playlist-base/<library>/`; `PlaylistMergeTest` runs the shared cases in
+  `docs/test-vectors/playlist-merge/`.
 - Stress test: `HostileLibraryTest` (`@Stress`) builds the hostile library of the "Limits" section in app
   storage (100,000 audio files with a 40,000-track album, 50 playlists at the entry limit, a playlist over each
-  limit, 500 status files of 1 MiB, 1 MiB tags, a 20 MB cover), lets the app scan it and opens Home, Your
+  limit and one whose every label is over its limit, requests and status files of just under 1 MiB with every
+  field past its limit, 1 MiB tags, a 20 MB cover), lets the app scan it and opens Home, Your
   Library, the big album, a big playlist and Downloads. It fails on an OutOfMemoryError, on a main-thread stall
   over 1 s, or when the state does not follow the limits. The normal instrumented run leaves it out; run it
-  alone (emulator only; needs about 2 GB free in the emulator's data partition):
+  alone (emulator only; needs about 3 GB free in the emulator's data partition):
 
   ```sh
   ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :app:connectedDebugAndroidTest -Pstress
@@ -48,7 +57,8 @@ it exists, apply as well.
   ```
 
   Measurements go to logcat (tag `HostileLibrary`) and the test output. The generator, `hostile-library/`, is shared
-  with the macrobenchmarks (see "Development checks").
+  with the macrobenchmarks (see "Development checks"); its plain-Kotlin part (`hostile-library/common/`,
+  `HostileFiles`: synced files with every field at its limit) also serves the JVM unit tests.
 - Signing: `android/.signing/` (git-ignored) holds the app's key, described in `app/build.gradle.kts`. Never
   delete, regenerate or replace it. Without it builds use the machine's debug key and cannot update an install
   signed with the app's key.

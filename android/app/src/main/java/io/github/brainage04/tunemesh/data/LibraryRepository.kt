@@ -11,6 +11,7 @@ import io.github.brainage04.tunemesh.library.LibraryFormat
 import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.LibraryUris
 import io.github.brainage04.tunemesh.library.Playlist
+import io.github.brainage04.tunemesh.library.PlaylistBases
 import io.github.brainage04.tunemesh.library.PlaylistContents
 import io.github.brainage04.tunemesh.library.PlaylistStore
 import io.github.brainage04.tunemesh.library.PlaylistSummaries
@@ -19,6 +20,7 @@ import io.github.brainage04.tunemesh.library.Stignore
 import io.github.brainage04.tunemesh.library.Track
 import java.io.File
 import java.io.IOException
+import java.util.Locale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,6 +50,8 @@ data class LibraryState(
     val downloads: DownloadList = DownloadList.EMPTY,
     /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
+    /** Why the last downloads refresh failed, shown on the Downloads tab; null after one that worked. */
+    val downloadsError: String? = null,
     val error: String? = null,
 ) {
     /** Liked Songs always exists for the UI, even before its file is first written. */
@@ -61,6 +65,8 @@ data class LibraryState(
 class LibraryRepository(
     private val settings: AppSettings,
     private val scanner: LibraryScanner,
+    /** App-private directory of the playlist bases (contract: "Playlist conflict copies"), one subdirectory per library. */
+    private val playlistBases: File,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val scanMutex = Mutex()
@@ -75,7 +81,7 @@ class LibraryRepository(
     @Volatile private var foreground = false
     private var pendingRefresh: Job? = null
     private val refreshGate = RefreshGate(scanMutex)
-    @Volatile private var openedPlaylist: String? = null
+    private val openSlot = OpenPlaylistSlot()
     /** `lastModified` and length of the files behind [LibraryState.liked] and [LibraryState.openPlaylist]. */
     private var likedStamp: Pair<Long, Long>? = null
     private var openStamp: Pair<Long, Long>? = null
@@ -99,7 +105,7 @@ class LibraryRepository(
                     return it
                 }
             val index = state.index
-            return PlaylistStore(state.root, summaries) { index.byPath[it] }
+            return PlaylistStore(state.root, summaries, PlaylistBases(File(playlistBases, libraryKey(state.root)))) { index.byPath[it] }
                 .also {
                     store = it
                     storeFor = key
@@ -185,6 +191,8 @@ class LibraryRepository(
             val index = if (result.tracks == current.tracks) current else LibraryIndex(result.tracks)
             _state.update { it.copy(index = index, loaded = true, error = null) }
             reloadPlaylists()
+            // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
+            if (playlistStore.hasConflictCopies()) mutate { playlistStore.mergeConflicts() }
             reloadDownloads()
             observe(result.directories)
         } catch (error: IOException) {
@@ -206,18 +214,20 @@ class LibraryRepository(
     }
 
     /**
-     * Re-reads the playlist summaries, and Liked Songs and the open playlist when their files changed ([force] after this app changed one).
-     * Unchanged files are not read again, so a large one is never held twice.
+     * Re-reads the playlist summaries, and Liked Songs and the open playlist when their files changed. [changed] are the playlists this app
+     * just changed: they are read again even when their modification time and length look the same (a change within the clock's
+     * resolution); null means any playlist may have changed. Unchanged files are not read again, so a like reads Liked Songs only and a
+     * large playlist is never held twice.
      */
-    private fun reloadPlaylists(force: Boolean = false) {
-        if (force) summaries.clear()
+    private fun reloadPlaylists(changed: Set<String>? = emptySet()) {
+        if (changed == null) summaries.clear() else summaries.forget(changed.map { it + LibraryFormat.PLAYLIST_EXTENSION })
         val store = playlistStore
         val playlists = store.list()
         _state.update { it.copy(playlists = playlists) }
 
         val likedFile = store.file(LibraryFormat.LIKED_SONGS)
         val liked = stamp(likedFile)
-        if (force || liked != likedStamp) {
+        if (changed == null || LibraryFormat.LIKED_SONGS in changed || liked != likedStamp) {
             likedStamp = liked
             val paths =
                 try {
@@ -228,22 +238,24 @@ class LibraryRepository(
                 }
             _state.update { it.copy(liked = paths) }
         }
-        reloadOpenPlaylist(force)
+        reloadOpenPlaylist(force = changed == null || openSlot.current.name in changed)
     }
 
     private fun stamp(file: File): Pair<Long, Long> = file.lastModified() to file.length()
 
     private fun reloadOpenPlaylist(force: Boolean) {
-        val name = openedPlaylist
+        val ticket = openSlot.current
+        val name = ticket.name
         if (name == null) {
-            openStamp = null
-            _state.update { it.copy(openPlaylist = null) }
+            openSlot.ifCurrent(ticket) {
+                openStamp = null
+                _state.update { it.copy(openPlaylist = null) }
+            }
             return
         }
         val store = playlistStore
         val stamp = stamp(store.file(name))
         if (!force && stamp == openStamp && _state.value.openPlaylist?.name == name) return
-        openStamp = stamp
         // The old entries stay on screen while the new ones load (both are bounded by Limits.MAX_PLAYLIST_ENTRIES).
         val contents =
             try {
@@ -252,28 +264,45 @@ class LibraryRepository(
                 Log.w(TAG, "Cannot read playlist $name", error)
                 null
             }
-        if (openedPlaylist == name) _state.update { it.copy(openPlaylist = contents) }
+        // Dropped when the screen closed or another playlist opened meanwhile.
+        openSlot.ifCurrent(ticket) {
+            openStamp = stamp
+            _state.update { it.copy(openPlaylist = contents) }
+        }
     }
 
     /** Loads the entries of playlist [name] for its screen; one playlist is open at a time. */
     fun openPlaylist(name: String) {
-        if (openedPlaylist == name && _state.value.openPlaylist?.name == name) return
-        openedPlaylist = name
+        if (!openSlot.open(name) && _state.value.openPlaylist?.name == name) return
         scope.launch { scanMutex.withLock { reloadOpenPlaylist(force = true) } }
     }
 
     /** Releases the entries of [name] when its screen goes away. */
     fun closePlaylist(name: String) {
-        if (openedPlaylist != name) return
-        openedPlaylist = null
-        _state.update { state -> if (state.openPlaylist?.name == name) state.copy(openPlaylist = null) else state }
+        openSlot.close(name) {
+            openStamp = null
+            _state.update { state -> if (state.openPlaylist?.name == name) state.copy(openPlaylist = null) else state }
+        }
     }
 
+    /**
+     * Reads the Downloads list and `worker.json`. A failure is shown on the Downloads tab instead of ending the app; running out of memory
+     * also drops the list held so far (the reads are bounded, so that takes a much smaller heap than the limits plan for).
+     */
+    @Suppress("TooGenericExceptionCaught") // anything a synced file makes the reader throw is reported, never fatal
     private fun reloadDownloads() {
-        val store = downloadStore
-        val downloads = store.list()
-        val downloader = Downloader.of(store.worker())
-        _state.update { it.copy(downloads = downloads, downloader = downloader) }
+        try {
+            val store = downloadStore
+            val downloads = store.list()
+            val downloader = Downloader.of(store.worker())
+            _state.update { it.copy(downloads = downloads, downloader = downloader, downloadsError = null) }
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Cannot read the downloads", error)
+            _state.update { it.copy(downloadsError = "Cannot read the downloads: ${error.message ?: error.javaClass.simpleName}") }
+        } catch (error: OutOfMemoryError) {
+            _state.update { it.copy(downloads = DownloadList.EMPTY, downloadsError = "Not enough memory to read the downloads") }
+            Log.w(TAG, "Out of memory reading the downloads", error)
+        }
     }
 
     private suspend fun refreshDownloads() =
@@ -338,41 +367,61 @@ class LibraryRepository(
      */
     private val mutations = Dispatchers.IO.limitedParallelism(1)
 
+    /**
+     * Runs [action], which returns the playlists it changed; then only those are read again. A failed change reloads everything (the
+     * optimistic like is undone that way).
+     */
     @Suppress("TooGenericExceptionCaught") // any failed change is reported instead of ending the app; action does not suspend
-    private fun mutate(action: () -> Unit) {
+    private fun mutate(action: () -> Set<String>) {
         scope.launch(mutations) {
-            try {
-                action()
-            } catch (error: Exception) {
-                _messages.tryEmit(error.message ?: error.toString())
-            }
-            scanMutex.withLock { reloadPlaylists(force = true) }
+            val changed =
+                try {
+                    action()
+                } catch (error: Exception) {
+                    _messages.tryEmit(error.message ?: error.toString())
+                    null
+                }
+            scanMutex.withLock { reloadPlaylists(changed) }
         }
     }
 
     fun setLiked(track: Track, liked: Boolean) {
         _state.update { state -> state.copy(liked = if (liked) state.liked + track.path else state.liked - track.path) }
-        mutate { playlistStore.setLiked(track, liked) }
+        mutate {
+            playlistStore.setLiked(track, liked)
+            setOf(LibraryFormat.LIKED_SONGS)
+        }
     }
 
     fun createPlaylist(name: String, tracks: List<Track> = emptyList()) = mutate {
         val created = playlistStore.create(name)
         if (tracks.isNotEmpty()) playlistStore.add(created, tracks)
         _messages.tryEmit(if (tracks.isEmpty()) "Created \"$created\"" else "Added to \"$created\"")
+        setOf(created)
     }
 
-    fun renamePlaylist(from: String, to: String) = mutate { playlistStore.rename(from, to) }
+    fun renamePlaylist(from: String, to: String) = mutate { setOf(from, playlistStore.rename(from, to)) }
 
-    fun deletePlaylist(name: String) = mutate { playlistStore.delete(name) }
+    fun deletePlaylist(name: String) = mutate {
+        playlistStore.delete(name)
+        setOf(name)
+    }
 
     fun addToPlaylist(name: String, tracks: List<Track>) = mutate {
         playlistStore.add(name, tracks)
         _messages.tryEmit("Added to \"$name\"")
+        setOf(name)
     }
 
-    fun removeFromPlaylist(name: String, entry: EntryRef) = mutate { playlistStore.remove(name, entry) }
+    fun removeFromPlaylist(name: String, entry: EntryRef) = mutate {
+        playlistStore.remove(name, entry)
+        setOf(name)
+    }
 
-    fun movePlaylistEntry(name: String, from: EntryRef, to: EntryRef) = mutate { playlistStore.move(name, from, to) }
+    fun movePlaylistEntry(name: String, from: EntryRef, to: EntryRef) = mutate {
+        playlistStore.move(name, from, to)
+        setOf(name)
+    }
 
     fun deleteTrack(track: Track, onDeleted: () -> Unit) {
         scope.launch {
@@ -412,6 +461,15 @@ class LibraryRepository(
 
     companion object {
         private const val TAG = "TuneMesh"
+
+        private const val LIBRARY_KEY_BYTES = 8
+
+        /** The bases subdirectory of the library at [root]: the start of the SHA-256 of its path. */
+        fun libraryKey(root: File): String =
+            PlaylistBases.sha256(root.absolutePath.toByteArray(Charsets.UTF_8)).take(LIBRARY_KEY_BYTES).joinToString("") {
+                "%02x".format(Locale.ROOT, it)
+            }
+
         private const val DOWNLOAD_POLL_MS = 3_000L
         private const val LIBRARY_POLL_MS = 60_000L
     }

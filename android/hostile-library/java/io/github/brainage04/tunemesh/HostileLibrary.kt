@@ -127,20 +127,25 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
             repeat(32 * 1024 * 1024 / comment.size + 2) { out.write(comment) }
         }
         write("Playlists/Long Entry.m3u8") { out -> out.write(("../" + "x".repeat(32765) + "\n").toByteArray()) }
+        // Every entry with an #EXTINF label over the 1 KiB limit, the file just under 32 MiB.
+        writeBytes("Playlists/Long Labels.m3u8", HostileFiles.labelPlaylist().toByteArray())
     }
 
+    /**
+     * Requests with every field long, the newest 210 just under 1 MiB and older ones of about 61 KB; statuses alternating between every
+     * text field long and many small entries ([HostileFiles]); a request and a status over 1 MiB, one with an over-long input; a
+     * `worker.json` with every field long.
+     */
     private fun downloads() {
         for (i in 0 until scale.requests) {
             val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
-            writeBytes(
-                ".tunemesh/requests/$id.json",
-                """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile/$i","playlist":null,"playlistFromSource":false,"requestedBy":"hostile","requestedAt":"2026-10-20T00:00:00Z"}"""
-                    .toByteArray(),
-            )
+            val bytes = if (i >= scale.requests - 210) HostileFiles.FILE_BYTES else 61 * 1024
+            writeBytes(".tunemesh/requests/$id.json", HostileFiles.request(id, bytes).toByteArray())
         }
         for (i in 10_000 until 10_000 + scale.statuses) {
             val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
-            write(".tunemesh/status/$id.json") { out -> status(out, id, 1024 * 1024 - 4096) }
+            val text = if (i % 2 == 0) HostileFiles.longStatus(id) else HostileFiles.manyStatus(id)
+            writeBytes(".tunemesh/status/$id.json", text.toByteArray())
         }
         write(".tunemesh/requests/${1_700_000_900_000L}-hostile0.json") { out -> padded(out, 2 * 1024 * 1024) }
         val longInput = "y".repeat(9 * 1024)
@@ -149,24 +154,8 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
             """{"version":1,"id":"x","input":"$longInput","playlist":null,"playlistFromSource":false,"requestedBy":"h","requestedAt":"x"}"""
                 .toByteArray(),
         )
-        write(".tunemesh/status/${1_700_000_900_002L}-hostile2.json") { out -> status(out, "x", 2 * 1024 * 1024) }
-        write(".tunemesh/worker.json") { out -> padded(out, 2 * 1024 * 1024) }
-    }
-
-    /** A status of about [bytes]: a 64 KiB message and short warnings filling the rest. */
-    private fun status(out: OutputStream, id: String, bytes: Int) {
-        val head =
-            """{"version":1,"id":"$id","input":"https://127.0.0.1/hostile","state":"done","title":"${"T".repeat(4096)}","message":"${"m".repeat(64 * 1024)}","itemsDone":3,"itemsTotal":9,"failures":[{"item":"${"i".repeat(4096)}","error":"e"}],"warnings":["""
-        out.write(head.toByteArray())
-        var written = head.length
-        var n = 0
-        while (written < bytes - 64) {
-            val warning = (if (n == 0) "" else ",") + "\"warning number $n of many\""
-            out.write(warning.toByteArray())
-            written += warning.length
-            n++
-        }
-        out.write("]}".toByteArray())
+        write(".tunemesh/status/${1_700_000_900_002L}-hostile2.json") { out -> padded(out, 2 * 1024 * 1024) }
+        writeBytes(".tunemesh/worker.json", HostileFiles.worker().toByteArray())
     }
 
     private fun padded(out: OutputStream, bytes: Int) {

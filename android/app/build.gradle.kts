@@ -114,8 +114,11 @@ android {
     testOptions {
         unitTests.all { it.useJUnitPlatform() }
     }
-    // The hostile-library generator, shared with the macrobenchmarks in :baselineprofile.
+    // The hostile-library generator, shared with the macrobenchmarks in :baselineprofile; its plain-Kotlin files (common/)
+    // also serve the JVM unit tests.
     sourceSets.getByName("androidTest").kotlin.srcDir("../hostile-library/java")
+    sourceSets.getByName("androidTest").kotlin.srcDir("../hostile-library/common")
+    sourceSets.getByName("test").kotlin.srcDir("../hostile-library/common")
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

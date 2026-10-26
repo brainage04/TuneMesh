@@ -176,13 +176,15 @@ object M3u8 {
             Limits.cutUtf8(LibraryFormat.trimWhiteSpace(label.replace('\n', ' ').replace('\r', ' ')), Limits.MAX_LABEL_BYTES)
         )
 
-    /** An `#EXTINF` line as kept when read: its label cut to [Limits.MAX_LABEL_BYTES] when longer. */
+    /**
+     * An `#EXTINF` line as kept when read. A long one is kept as what a writer uses of it ([parseExtinf]): its duration, and its label
+     * trimmed, then cut to [Limits.MAX_LABEL_BYTES] (tunemesh-core's `parse_extinf`; cutting first would lose the bytes the leading white
+     * space took). So an entry keeps at most about 1 KiB of `#EXTINF`, whatever its line holds.
+     */
     private fun boundedExtinf(line: String): String {
         if (line.length <= Limits.MAX_LABEL_BYTES / 3 + EXTINF.length) return line
-        val info = line.removePrefix(EXTINF)
-        val label = info.substringAfter(',', "")
-        if (Limits.utf8Length(label) <= Limits.MAX_LABEL_BYTES) return line
-        return EXTINF + info.substringBefore(',') + "," + Limits.cutUtf8(label, Limits.MAX_LABEL_BYTES)
+        val (duration, label) = parseExtinf(line)
+        return "$EXTINF${duration ?: -1}," + Limits.cutUtf8(label.orEmpty(), Limits.MAX_LABEL_BYTES)
     }
 
     private val durationPattern = Regex("[+-]?[0-9]+")

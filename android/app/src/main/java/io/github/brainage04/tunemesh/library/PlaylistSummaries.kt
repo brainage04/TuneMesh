@@ -20,8 +20,14 @@ class PlaylistSummaries {
         return playlist
     }
 
-    /** Forgets everything; after this app changed a playlist (a change within the clock's resolution keeps both). */
+    /** Forgets everything; when any playlist may have changed (a change within the clock's resolution keeps both). */
     @Synchronized fun clear() = entries.clear()
+
+    /** Forgets the playlists this app just changed ([names]: file names), so only those are read again. */
+    @Synchronized
+    fun forget(names: Collection<String>) {
+        entries.keys.removeAll(names.toSet())
+    }
 
     /** Forgets every playlist not in [names] (file names). */
     @Synchronized
