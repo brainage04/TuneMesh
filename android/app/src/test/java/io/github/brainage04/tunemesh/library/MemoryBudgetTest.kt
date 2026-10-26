@@ -74,7 +74,7 @@ class MemoryBudgetTest {
     fun playlists() {
         val root = temp.newFolder("lib")
         val dir = File(root, LibraryFormat.PLAYLISTS_DIR).apply { mkdirs() }
-        val store = PlaylistStore(root) { null }
+        val store = PlaylistStore(root)
         for ((name, text) in listOf("Entries" to HostileFiles.entryPlaylist(), "Labels" to HostileFiles.labelPlaylist())) {
             val file = File(dir, "$name.m3u8").apply { writeText(text) }
             val bytes = file.length()

@@ -12,7 +12,7 @@ import java.io.File
 class TuneMeshApp : Application() {
     val settings by lazy { AppSettings(this) }
     val repository by lazy {
-        LibraryRepository(settings, LibraryScanner(File(filesDir, LibraryScanner.CACHE_FILE)), File(filesDir, "playlist-base"))
+        LibraryRepository(settings, LibraryScanner(filesDir), File(filesDir, "playlist-base"))
     }
     val covers by lazy { CoverLoader(File(cacheDir, "covers")) }
     val playbackState by lazy { PlaybackState(this) }

@@ -109,11 +109,10 @@ class LibraryRepository(
                     return it
                 }
             val index = state.index
-            return PlaylistStore(state.root, summaries, PlaylistBases(File(playlistBases, libraryKey(state.root)))) { index.byPath[it] }
-                .also {
-                    store = it
-                    storeFor = key
-                }
+            return PlaylistStore(state.root, summaries, PlaylistBases(File(playlistBases, libraryKey(state.root))), index).also {
+                store = it
+                storeFor = key
+            }
         }
 
     private var downloadStoreFor: DownloadStore? = null
@@ -135,7 +134,7 @@ class LibraryRepository(
     fun track(path: String): Track? {
         val root = root
         val resolved = LibraryUris.resolvePath(path, root) ?: return null
-        _state.value.index.byPath[resolved]?.let {
+        _state.value.index.track(resolved)?.let {
             return it
         }
         val file = File(root, resolved)
@@ -146,9 +145,9 @@ class LibraryRepository(
     /** Shows cached tags immediately, then rescans. */
     fun start() {
         scope.launch {
-            val cached = scanner.cachedTracks(root)
-            if (cached.isNotEmpty() && !_state.value.loaded) {
-                _state.update { it.copy(index = LibraryIndex(cached), loaded = true) }
+            val cached = scanner.cached(root)
+            if (cached != null && cached.size > 0 && !_state.value.loaded) {
+                _state.update { state -> if (state.root == root) state.copy(index = cached, loaded = true) else state }
             }
             refresh()
         }
@@ -205,16 +204,16 @@ class LibraryRepository(
             _state.update { it.copy(root = root, hasAccess = false) }
             return
         }
+        // An unchanged library keeps its index (the scan returns the one it was given): a new one would make every screen showing it
+        // recompose (and an open playlist look its entries up again) after each periodic rescan.
+        val previous = _state.value.let { if (it.root == root) it.index else LibraryIndex.EMPTY }
         _state.update { it.copy(root = root, hasAccess = true, scanning = true) }
         try {
             ensureRoot(root)
-            val result = scanner.scan(root)
-            // An unchanged library keeps its index: a new one would make every screen showing it recompose (and an open
-            // playlist look its entries up again) after each periodic rescan.
-            val current = _state.value.index
-            val index = if (result.tracks == current.tracks) current else LibraryIndex(result.tracks)
-            _state.update { it.copy(index = index, loaded = true, error = null) }
-            reloadPlaylists()
+            val result = scanner.scan(root, previous)
+            _state.update { it.copy(index = result.index, loaded = true, error = null) }
+            // A new index: playlist entries hold track ordinals of the index they were read with, so the open one is read again.
+            reloadPlaylists(changed = if (result.index === previous) emptySet() else null)
             // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
             if (playlistStore.hasConflictCopies()) mutate { playlistStore.mergeConflicts() }
             reloadDownloads()

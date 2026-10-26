@@ -172,6 +172,6 @@ fun PlaylistArt(
         return
     }
     val library = LocalLibrary.current
-    val first = playlist.artPaths.firstNotNullOfOrNull { library.index.byPath[it] }
+    val first = playlist.artPaths.firstNotNullOfOrNull { library.index.track(it) }
     CoverArt(first, playlist.name, modifier, shape = shape, sizeHint = sizeHint, placeholderIcon = AppIcons.Queue)
 }

@@ -119,14 +119,21 @@ class BoundedModelsTest {
             PlaylistEntries::class.java to
                 mapOf(
                     "root" to Elsewhere("this app's setting"),
-                    "shared" to Elsewhere("the library index's strings, at most 250,000"),
+                    "library" to Elsewhere("the library index, held by the app state anyway"),
+                    "tracks" to Elsewhere("one int per entry, at most 250,000"),
                     "ends" to Elsewhere("one per entry, at most 250,000"),
                     "bytes" to Elsewhere("the lines, within the 32 MiB file"),
                     "extinfs" to Elsewhere("one bounded #EXTINF line per entry (see PlaylistEntry.extinf)"),
                     "size" to Scalar,
                 ),
             PlaylistEntry::class.java to
-                mapOf("path" to path, "line" to path, "extinf" to Bytes(Limits.MAX_LABEL_BYTES + 32), "isShared" to Scalar),
+                mapOf(
+                    "path" to path,
+                    "line" to path,
+                    "extinf" to Bytes(Limits.MAX_LABEL_BYTES + 32),
+                    "library" to Elsewhere("the library index, held by the app state anyway"),
+                    "ordinal" to Scalar,
+                ),
             // Audio tags.
             RawTags::class.java to
                 mapOf(
@@ -138,6 +145,11 @@ class BoundedModelsTest {
                     "discNumber" to Scalar,
                     "durationMs" to Scalar,
                 ),
+            // The JSON tag cache of earlier versions, converted once (LibraryScan.fromJsonTagCache) and deleted.
+            LibraryScan.JsonTagCache::class.java to
+                mapOf("root" to Elsewhere("compared, not kept"), "entries" to Elsewhere("converted into the library index")),
+            LibraryScan.JsonTagCacheEntry::class.java to
+                mapOf("size" to Scalar, "modifiedMs" to Scalar, "tags" to Elsewhere("bounded in Track.fromTags")),
             Track::class.java to
                 mapOf(
                     "path" to Elsewhere("a path within the folder depth limit"),

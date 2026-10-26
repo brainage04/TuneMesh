@@ -152,7 +152,7 @@ class LibraryFormatTest {
                 Track.fromTags("Björk/Début/Human Behaviour.opus", RawTags(), 1, 1),
                 Track.fromTags("Sigur Rós/Takk/Hoppípolla.opus", RawTags(), 1, 2),
             )
-        val index = LibraryIndex(tracks)
+        val index = LibraryIndex.of(tracks)
         assertEquals(listOf("Human Behaviour"), index.searchTracks("bjork debut").map { it.title })
         assertEquals(listOf("Hoppípolla"), index.searchTracks("HOPPIPOLLA").map { it.title })
         assertEquals(listOf("Sigur Rós"), index.searchArtists("ros").map { it.name })
@@ -178,7 +178,7 @@ class LibraryFormatTest {
                 ),
                 Track.fromTags("y/Hits/3.opus", RawTags(title = "Three", artist = "C", album = "Hits"), 1, 20),
             )
-        val index = LibraryIndex(tracks)
+        val index = LibraryIndex.of(tracks)
         assertEquals(2, index.albums.size)
         val va = index.albums.first { it.artist == "VA" }
         assertEquals(listOf("Two", "One"), va.tracks.map { it.title })

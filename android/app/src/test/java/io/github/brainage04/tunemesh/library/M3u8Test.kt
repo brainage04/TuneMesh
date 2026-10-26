@@ -2,7 +2,6 @@ package io.github.brainage04.tunemesh.library
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -148,17 +147,20 @@ class M3u8Test {
     @Test
     fun canonicalEntriesKeepNoSecondCopyOfTheirLine() {
         val shared = "A/B/x.mp3"
+        val library = LibraryIndex.of(listOf(Track.fromTags(shared, RawTags(), 1, 1)))
         val entries = ArrayList<PlaylistEntry>()
         M3u8.read(
-            "#EXTM3U\n#EXTINF:3,A - x\n../A/B/x.mp3\n./../A/B/x.mp3\n".byteInputStream(),
+            "#EXTM3U\n#EXTINF:3,A - x\n../A/B/x.mp3\n./../A/B/x.mp3\n../A/B/y.mp3\n".byteInputStream(),
             root,
             keepExtinf = false,
-            canonical = { if (it == shared) shared else null },
+            library = library,
         ) {
             entries += it
         }
-        assertSame(shared, entries[0].path)
-        assertSame(shared, entries[1].path)
+        assertEquals(shared, entries[0].path)
+        assertEquals(shared, entries[1].path)
+        // Library tracks are known by their ordinal, so entries can keep it instead of the path.
+        assertEquals(listOf(0, 0, -1), entries.map { it.ordinal })
         assertEquals("../A/B/x.mp3", entries[0].raw)
         assertEquals("./../A/B/x.mp3", entries[1].raw)
         assertNull(entries[0].extinf)

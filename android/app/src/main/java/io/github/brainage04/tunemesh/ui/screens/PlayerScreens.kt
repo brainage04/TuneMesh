@@ -63,7 +63,7 @@ import io.github.brainage04.tunemesh.ui.theme.TextSecondary
 @Composable
 private fun currentTrack(): Track? {
     val path = LocalPlayerUi.current.currentPath ?: return null
-    return LocalLibrary.current.index.byPath[path]
+    return LocalLibrary.current.index.track(path)
 }
 
 private fun MediaItem.title() = mediaMetadata.title?.toString().orEmpty()
@@ -259,7 +259,7 @@ fun QueueScreen() {
         LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
             ui.current?.let { item ->
                 item { QueueHeader("Now playing") }
-                item { QueueRow(item, library.index.byPath[QueueItems.path(item)], current, isCurrent = true, last = ui.queue.lastIndex) }
+                item { QueueRow(item, library.index.track(QueueItems.path(item)), current, isCurrent = true, last = ui.queue.lastIndex) }
             }
             val upcoming = ui.queue.withIndex().drop(current + 1)
             if (upcoming.isNotEmpty()) {
@@ -268,7 +268,7 @@ fun QueueScreen() {
                 itemsIndexed(upcoming, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
                     QueueRow(
                         entry.value,
-                        library.index.byPath[QueueItems.path(entry.value)],
+                        library.index.track(QueueItems.path(entry.value)),
                         entry.index,
                         isCurrent = false,
                         last = ui.queue.lastIndex,
@@ -281,7 +281,7 @@ fun QueueScreen() {
                 itemsIndexed(played, key = { _, entry -> "${entry.index}|${entry.value.mediaId}" }) { _, entry ->
                     QueueRow(
                         entry.value,
-                        library.index.byPath[QueueItems.path(entry.value)],
+                        library.index.track(QueueItems.path(entry.value)),
                         entry.index,
                         isCurrent = false,
                         last = ui.queue.lastIndex,

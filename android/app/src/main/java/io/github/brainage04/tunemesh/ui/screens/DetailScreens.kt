@@ -82,13 +82,13 @@ private fun Missing(what: String, contentPadding: PaddingValues) {
 @Composable
 fun AlbumScreen(key: String, contentPadding: PaddingValues) {
     val viewModel = LocalAppViewModel.current
-    val album = LocalLibrary.current.index.albumsByKey[key] ?: return Missing("Album", contentPadding)
+    val album = LocalLibrary.current.index.album(key) ?: return Missing("Album", contentPadding)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             DetailHeader(
                 title = album.title,
                 subtitle = album.artist,
-                stats = "Album • ${songCount(album.tracks.size)} • ${totalLength(album.tracks)}",
+                stats = "Album • ${songCount(album.trackCount)} • ${totalLength(album.durationMs)}",
                 seed = album.title,
                 onBack = { viewModel.back() },
                 onPlay = { viewModel.playOrToggle(album.title, album.tracks) },
@@ -121,7 +121,7 @@ fun AlbumScreen(key: String, contentPadding: PaddingValues) {
 @Composable
 fun ArtistScreen(name: String, contentPadding: PaddingValues) {
     val viewModel = LocalAppViewModel.current
-    val artist = LocalLibrary.current.index.artistsByName[name] ?: return Missing("Artist", contentPadding)
+    val artist = LocalLibrary.current.index.artist(name) ?: return Missing("Artist", contentPadding)
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item {
             DetailHeader(
@@ -232,7 +232,7 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues, background: Coro
             }
         }
         itemsIndexed(entries) { index, entry ->
-            val track = resolved?.tracks?.get(index)
+            val track = resolved?.track(index)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.weight(1f)) {
                     if (track != null) {
@@ -280,33 +280,46 @@ fun PlaylistScreen(name: String, contentPadding: PaddingValues, background: Coro
     }
 }
 
-/** The library tracks of a playlist's [contents], looked up once per change of the playlist or the library. */
+/**
+ * The library tracks of a playlist's [contents], looked up once per change of the playlist or the library: an ordinal per entry, so 250,000
+ * entries cost two int arrays; a row makes its track when shown.
+ */
 private class ResolvedEntries(
     val contents: PlaylistContents,
-    /** Per entry, its track, or null when it is unavailable. */
-    val tracks: Array<Track?>,
+    private val index: LibraryIndex,
+    /** Per entry, its track's ordinal in [index], or -1 when it is unavailable. */
+    private val ordinals: IntArray,
     /** Per entry, how many entries before it are available: its position in [playable]. */
     val playableBefore: IntArray,
     val playable: List<Track>,
+    val length: String,
 ) {
     val unavailable: Int
-        get() = tracks.size - playable.size
+        get() = ordinals.size - playable.size
 
-    val length: String = totalLength(playable)
+    /** The track of entry [entry], or null when it is unavailable. */
+    fun track(entry: Int): Track? = ordinals[entry].takeIf { it >= 0 }?.let(index::track)
 
     companion object {
         fun of(contents: PlaylistContents, index: LibraryIndex): ResolvedEntries {
             val entries = contents.entries
-            val tracks = arrayOfNulls<Track>(entries.size)
+            // Entries read with this index know their tracks; others (read before a rescan) are looked up by path.
+            val known = entries.library === index
+            val ordinals = IntArray(entries.size)
             val before = IntArray(entries.size)
-            val playable = ArrayList<Track>(entries.size)
-            for (i in tracks.indices) {
-                before[i] = playable.size
-                val track = entries.path(i)?.let(index.byPath::get) ?: continue
-                tracks[i] = track
-                playable += track
+            val playable = IntArray(entries.size)
+            var count = 0
+            var duration = 0L
+            for (i in ordinals.indices) {
+                before[i] = count
+                val ordinal = if (known) entries.track(i) else entries.path(i)?.let(index::indexOf) ?: -1
+                ordinals[i] = ordinal
+                if (ordinal >= 0) {
+                    playable[count++] = ordinal
+                    duration += index.durationMs(ordinal)
+                }
             }
-            return ResolvedEntries(contents, tracks, before, playable)
+            return ResolvedEntries(contents, index, ordinals, before, index.tracksAt(playable.copyOf(count)), totalLength(duration))
         }
     }
 }

@@ -3,6 +3,7 @@ package io.github.brainage04.tunemesh.library
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.security.DigestInputStream
@@ -14,13 +15,16 @@ object AtomicFiles {
     private val random = SecureRandom()
 
     /** Writes `.~tunemesh-<random>.tmp` next to [target], syncs it, then renames it over [target]. */
-    fun write(target: File, bytes: ByteArray) {
+    fun write(target: File, bytes: ByteArray) = write(target) { it.write(bytes) }
+
+    /** [write] of what [writer] writes to the temporary file. */
+    fun write(target: File, writer: (OutputStream) -> Unit) {
         val directory = target.absoluteFile.parentFile ?: throw IOException("No parent for $target")
         directory.mkdirs()
         val temp = File(directory, ".~tunemesh-${randomHex(8)}.tmp")
         try {
             FileOutputStream(temp).use { stream ->
-                stream.write(bytes)
+                writer(stream)
                 stream.fd.sync()
             }
             Files.move(temp.toPath(), target.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
@@ -50,15 +54,13 @@ class PlaylistStore(
     private val summaries: PlaylistSummaries? = null,
     /** This device's bases for merging conflict copies ([mergeConflicts]); null: none kept and copies left alone (tests). */
     private val bases: PlaylistBases? = null,
-    private val lookup: (String) -> Track?,
+    /** The library's tracks: entries keep their track's ordinal, and writes label library tracks from it. */
+    private val library: LibraryIndex = LibraryIndex.EMPTY,
 ) {
     private val directory
         get() = File(root, LibraryFormat.PLAYLISTS_DIR)
 
     fun file(name: String): File = File(directory, name + LibraryFormat.PLAYLIST_EXTENSION)
-
-    /** The library's own string for [path], so entries do not each hold a copy. */
-    private fun canonical(path: String): String? = lookup(path)?.path
 
     /** Streams [file]'s entries to [onEntry]; [digest], when given, gets every byte read. */
     private fun stream(file: File, keepExtinf: Boolean, digest: MessageDigest? = null, onEntry: (PlaylistEntry) -> Unit) {
@@ -67,7 +69,7 @@ class PlaylistStore(
         file.inputStream().use { stream ->
             @Suppress("MissingUseCall") // only wraps the stream that `use` closes
             val input = if (digest == null) stream else DigestInputStream(stream, digest)
-            M3u8.read(input, root.absolutePath, keepExtinf, canonical = ::canonical, onEntry = onEntry)
+            M3u8.read(input, root.absolutePath, keepExtinf, library = library, onEntry = onEntry)
         }
     }
 
@@ -86,7 +88,7 @@ class PlaylistStore(
         summaries?.retain(listed)
         return listed.mapNotNull { name ->
             val file = File(directory, name)
-            if (!file.isFile) null else summaries?.get(file, lookup) { summary(file) } ?: summary(file)
+            if (!file.isFile) null else summaries?.get(file, library) { summary(file) } ?: summary(file)
         }
     }
 
@@ -98,7 +100,7 @@ class PlaylistStore(
             stream(file, keepExtinf = false) { entry ->
                 size++
                 val path = entry.path
-                if (art.size < ART_PATHS && path != null && lookup(path) != null) art += path
+                if (art.size < ART_PATHS && path != null && entry.ordinal >= 0) art += path
             }
             Playlist(name, size, art, file.lastModified())
         } catch (error: PlaylistTooLargeException) {
@@ -125,7 +127,7 @@ class PlaylistStore(
 
     /** [file]'s entries, or null when it does not exist. */
     private fun readFile(file: File, keepExtinf: Boolean = true, digest: MessageDigest? = null): PlaylistEntries? {
-        val entries = PlaylistEntries.Builder(root.absolutePath, keepExtinf)
+        val entries = PlaylistEntries.Builder(root.absolutePath, keepExtinf, library = library)
         try {
             stream(file, keepExtinf, digest) { entries.add(it) }
         } catch (_: java.io.FileNotFoundException) {
@@ -156,7 +158,7 @@ class PlaylistStore(
                 throw PlaylistException("\"$name\" is too large to change on this device", error)
             } catch (error: IOException) {
                 throw PlaylistException("Cannot read \"$name\": ${error.message ?: error.javaClass.simpleName}", error)
-            } ?: return PlaylistEntries.empty(root.absolutePath, keepExtinf = true)
+            } ?: return PlaylistEntries.empty(root.absolutePath, keepExtinf = true, library)
         bases?.beforeEdit(fileName(name), entries, digest.digest())
         return entries
     }
@@ -167,7 +169,7 @@ class PlaylistStore(
     private fun write(name: String, entries: List<PlaylistEntry>) {
         val text =
             try {
-                M3u8.write(entries, lookup)
+                M3u8.write(entries) { library.track(it) }
             } catch (error: PlaylistTooLargeException) {
                 throw PlaylistException("\"$name\" would be too large (${error.reason})", error)
             }
@@ -286,7 +288,7 @@ class PlaylistStore(
     fun add(name: String, tracks: List<Track>) {
         val current = entries(name)
         val updated = current.builder(current.size + tracks.size).addAll(current)
-        for (track in tracks) if (M3u8.canWrite(track.path)) updated.add(M3u8.entryFor(track), canonical(track.path))
+        for (track in tracks) if (M3u8.canWrite(track.path)) updated.add(M3u8.entryFor(track), library.indexOf(track.path))
         write(name, updated.build())
     }
 
@@ -324,7 +326,7 @@ class PlaylistStore(
 
     fun setLiked(track: Track, liked: Boolean) {
         val current = entries(LibraryFormat.LIKED_SONGS)
-        val updated = if (liked) like(current, track, canonical(track.path)) else unlike(current, track.path)
+        val updated = if (liked) like(current, track, library.indexOf(track.path)) else unlike(current, track.path)
         if (updated !== current || !file(LibraryFormat.LIKED_SONGS).exists()) write(LibraryFormat.LIKED_SONGS, updated)
     }
 
@@ -345,13 +347,13 @@ class PlaylistStore(
         }
 
         /**
-         * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then). [libraryPath] is the library
-         * index's string for the track's path, shared by the new entry.
+         * Liking inserts the track at the top unless it is already liked ([entries] itself is returned then). [ordinal] is the track's in
+         * the entries' library index, or -1.
          */
-        fun like(entries: PlaylistEntries, track: Track, libraryPath: String? = null): PlaylistEntries =
+        fun like(entries: PlaylistEntries, track: Track, ordinal: Int = LibraryIndex.NONE): PlaylistEntries =
             when {
                 !M3u8.canWrite(track.path) || (0 until entries.size).any { entries.path(it) == track.path } -> entries
-                else -> entries.builder().add(M3u8.entryFor(track), libraryPath).addAll(entries).build()
+                else -> entries.builder().add(M3u8.entryFor(track), ordinal).addAll(entries).build()
             }
 
         /** Unliking removes every entry for the track ([entries] itself is returned when there is none). */
