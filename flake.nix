@@ -35,6 +35,12 @@
         cargoLock.lockFile = ./linux/Cargo.lock;
         cargoBuildFlags = [ "-p" "tunemesh" ];
         cargoTestFlags = [ "-p" "tunemesh-core" "-p" "tunemesh" ];
+        # tunemesh-core's merge tests read the shared cases from
+        # docs/test-vectors, which sits outside the ./linux source.
+        preCheck = ''
+          mkdir -p ../docs
+          cp -r ${./docs/test-vectors} ../docs/test-vectors
+        '';
 
         nativeBuildInputs = with pkgs; [
           pkg-config
