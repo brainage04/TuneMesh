@@ -157,6 +157,12 @@ class DeviceTest {
         }
         val small = track("S/A/small.mp3", HostileLibrary.mp3("s", "S", "A", 1, picture = HostileLibrary.smallJpeg()))
         assertNotNull(loader.diskFile(root, small))
+        // A loaded cover is in memory for its track and size; a changed file (another modification time) or another size is not.
+        val bitmap = loader.load(root, small, 160)
+        assertNotNull(bitmap)
+        assertSame(bitmap, loader.cached(small, 160))
+        assertNull(loader.cached(small, 400))
+        assertNull(loader.cached(small.copy(modifiedMs = small.modifiedMs + 1), 160))
         // Within 16 MiB but stated as 20,000 px a side.
         val wide = track("W/A/wide.mp3", HostileLibrary.mp3("w", "W", "A", 1, picture = HostileLibrary.hugeJpeg(64 * 1024)))
         assertNull(loader.diskFile(root, wide))
