@@ -14,7 +14,7 @@
 #     linux/crates/tunemesh/scripts/gui-checks.sh [leaks|stalls|all]
 #
 # Extra arguments go to `cargo test`. Environment: TUNEMESH_STALL_BUDGET_MS
-# (default 16.6), TUNEMESH_STALL_ROUNDS (default 10), TUNEMESH_TYPICAL_LIBRARY
+# (default 16.6), TUNEMESH_STALL_ROUNDS (default 20), TUNEMESH_TYPICAL_LIBRARY
 # and TUNEMESH_HOSTILE_LIBRARY (reuse a generated library),
 # TUNEMESH_STALL_REPORT (also write the stall tables next to this file),
 # GSK_RENDERER (default cairo). To draw on a GPU, give the compositor one:

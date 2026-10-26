@@ -1273,7 +1273,8 @@ fn shrinkable(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
 /// Returns the memory freed by the pages just left to the system, a moment
 /// after a page change. glibc keeps freed heap memory for reuse; with large
 /// pages (a 40,000-track album, 200 download requests) that is hundreds of
-/// megabytes the process would hold until exit.
+/// megabytes the process would hold until exit. The trim runs on a thread
+/// of its own: returning the pages of a large heap took 10-20 ms.
 fn trim_heap_soon() {
     thread_local! {
         static PENDING: Cell<bool> = const { Cell::new(false) };
@@ -1283,8 +1284,16 @@ fn trim_heap_soon() {
     }
     glib::timeout_add_seconds_local_once(2, || {
         PENDING.with(|p| p.set(false));
-        // SAFETY: malloc_trim only returns free pages; no allocation is touched.
-        unsafe { libc::malloc_trim(0) };
+        let trim = std::thread::Builder::new()
+            .name("heap-trim".into())
+            // SAFETY: malloc_trim only returns free pages; no allocation is
+            // touched, and glibc locks each arena while it trims it.
+            .spawn(|| unsafe {
+                libc::malloc_trim(0);
+            });
+        if let Err(e) = trim {
+            eprintln!("tunemesh: cannot start the heap trim: {e}");
+        }
     });
 }
 

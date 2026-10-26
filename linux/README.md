@@ -51,13 +51,13 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
   page for going back, and the check counts those); likewise the queue
   panel's rows, the now-playing bar and the setup assistant. A failure
   lists what is still alive by type and page.
-- `stalls` (release build, about 30 minutes plus the build): generates a
+- `stalls` (release build, about an hour plus the build): generates a
   typical library (5,000 tracks with covers) and the hostile library of
   `docs/library-format.md` "Limits" (together about 2.4 GB under
-  `/var/tmp`), walks every page and action ten times on each and prints
-  the median, 95th percentile and worst of the longest main-loop stall
-  each caused, with the GTK thread's CPU time in the worst. It fails when
-  an action's 95th percentile (interpolated between ranks) exceeds
+  `/var/tmp`), walks every page and action twenty times on each and prints
+  the median, 90th and 95th percentiles and worst of the longest main-loop
+  stall each caused, with the GTK thread's CPU time in the worst. It fails
+  when an action's 95th percentile (interpolated between ranks) exceeds
   `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one frame at 60 Hz): a late round
   now and then is the machine, not the app. Start-up until the first frame
   (loading the GPU driver, compiling the first shaders) is listed as

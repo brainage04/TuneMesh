@@ -1,10 +1,12 @@
-//! The stall walks: every page and action, ten times, on a typical library
+//! The stall walks: every page and action, twenty times, on a typical library
 //! (`typical`) and on one at the contract's limits
 //! (`tunemesh_core::hostile::Options::full`), recording the longest
 //! main-loop stall each causes. In a release build the 95th percentile of
 //! each action's stalls (interpolated between ranks) must stay under the
 //! budget (`TUNEMESH_STALL_BUDGET_MS`, 16.6 ms by default: one frame at
-//! 60 Hz); the table shows the median, the 95th percentile and the worst.
+//! 60 Hz); the table shows the median, the 90th and 95th percentiles and
+//! the worst. With twenty rounds the 95th percentile is the second-worst
+//! round with a twentieth of the worst: one late round does not decide it.
 //!
 //! A timeout at high priority ticks every 2 ms; a stall is the longest gap
 //! between two ticks while an action and everything it scheduled run
@@ -31,8 +33,9 @@
 //! otherwise one is generated under /var/tmp and removed afterwards.
 //! `TUNEMESH_STALL_ROUNDS` changes the number of rounds,
 //! `TUNEMESH_STALL_REPORT=<file>.md` also writes the tables to
-//! `<file>-typical.md` and `<file>-hostile.md`, and `TUNEMESH_STALL_PROFILE`
-//! with `TUNEMESH_PERF_CTL` records chosen actions with perf (see `perf`).
+//! `<file>-typical.md` and `<file>-hostile.md`, `TUNEMESH_STALL_ONLY` runs
+//! only some actions (see `walk`), and `TUNEMESH_STALL_PROFILE` with
+//! `TUNEMESH_PERF_CTL` records chosen actions with perf (see `perf`).
 
 use std::cell::Cell;
 use std::fmt::Write as _;
@@ -53,7 +56,7 @@ use crate::store::wait_for;
 const TICK: Duration = Duration::from_millis(2);
 /// Rounds of the walk: enough that the median and 95th percentile of an
 /// action separate its cost from a late round now and then.
-const ROUNDS: usize = 10;
+const ROUNDS: usize = 20;
 
 /// One walk at a time: each owns the machine while it measures.
 static WALK: Mutex<()> = Mutex::new(());
@@ -445,7 +448,14 @@ fn walk(library: PathBuf, shape: Shape) -> Walk {
         .key();
     drop(lib);
 
-    let actions = actions(&shape, album);
+    let mut actions = actions(&shape, album);
+    // `TUNEMESH_STALL_ONLY`: only the actions whose names contain one of
+    // these comma-separated substrings, in walk order (name the actions a
+    // chosen one needs first, such as the page it acts on).
+    if let Ok(only) = std::env::var("TUNEMESH_STALL_ONLY") {
+        let only: Vec<&str> = only.split(',').collect();
+        actions.retain(|(name, _)| only.iter().any(|o| name.contains(o)));
+    }
     let first = rows.len();
     for (name, _) in &actions {
         rows.push((name.clone(), Kind::App, Vec::new()));
@@ -534,7 +544,7 @@ fn quantiles_interpolate_between_ranks() {
 fn table(w: &Walk, budget: Duration) -> String {
     let ms = |d: Duration| format!("{:.1}", d.as_secs_f64() * 1000.0);
     let mut out = String::from(
-        "| Action | Median, ms | p95, ms | Worst, ms (on CPU) |\n| --- | --- | --- | --- |\n",
+        "| Action | Median, ms | p90, ms | p95, ms | Worst, ms (on CPU) |\n| --- | --- | --- | --- | --- |\n",
     );
     for (name, kind, stalls) in &w.rows {
         let walls: Vec<Duration> = stalls.iter().map(|s| s.wall).collect();
@@ -552,8 +562,9 @@ fn table(w: &Walk, budget: Duration) -> String {
         };
         let _ = writeln!(
             out,
-            "| {name}{mark} | {} | {} | {} ({}) |",
+            "| {name}{mark} | {} | {} | {} | {} ({}) |",
             ms(quantile(&walls, 0.5)),
+            ms(quantile(&walls, 0.9)),
             ms(p95(stalls)),
             ms(worst.wall),
             ms(worst.cpu),
