@@ -21,6 +21,7 @@ import io.github.brainage04.tunemesh.library.Track
 import java.io.File
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,7 +48,8 @@ data class LibraryState(
     val liked: Set<String> = emptySet(),
     /** Entries of the playlist screen that is open (see [LibraryRepository.openPlaylist]); only that one is held. */
     val openPlaylist: PlaylistContents? = null,
-    val downloads: DownloadList = DownloadList.EMPTY,
+    /** Read while the Downloads screen is shown ([LibraryRepository.setDownloadsShown]); null until it first was. */
+    val downloads: DownloadList? = null,
     /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
     /** Why the last downloads refresh failed, shown on the Downloads tab; null after one that worked. */
@@ -79,6 +81,8 @@ class LibraryRepository(
     private var observedDirectories: Set<File> = emptySet()
     private var foregroundJob: Job? = null
     @Volatile private var foreground = false
+    /** How many Downloads screens are shown; the downloads list is read and polled only while one is. */
+    private val downloadsShown = AtomicInteger()
     private var pendingRefresh: Job? = null
     private val refreshGate = RefreshGate(scanMutex)
     private val openSlot = OpenPlaylistSlot()
@@ -112,8 +116,15 @@ class LibraryRepository(
                 }
         }
 
-    private val downloadStore
-        get() = DownloadStore(root)
+    private var downloadStoreFor: DownloadStore? = null
+
+    /** One store per root, so it can keep what it read of unchanged request and status files. */
+    private val downloadStore: DownloadStore
+        @Synchronized
+        get() {
+            val root = root
+            return downloadStoreFor?.takeIf { it.root == root } ?: DownloadStore(root).also { downloadStoreFor = it }
+        }
 
     fun hasAccess(): Boolean = Environment.isExternalStorageManager()
 
@@ -143,7 +154,7 @@ class LibraryRepository(
         }
     }
 
-    /** Called while an activity is visible: observes the tree and polls as a safety net. */
+    /** Called while an activity is visible: observes the tree and polls as a safety net (the downloads only while they are shown). */
     fun setForeground(foreground: Boolean) {
         foregroundJob?.cancel()
         this.foreground = foreground
@@ -157,8 +168,21 @@ class LibraryRepository(
             while (isActive) {
                 delay(DOWNLOAD_POLL_MS)
                 ticks++
-                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) refresh() else refreshDownloads()
+                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) refresh() else if (downloadsShown.get() > 0) refreshDownloads()
             }
+        }
+    }
+
+    /**
+     * Called while the Downloads screen is shown ([shown] true) and when it goes away. Its list is read when it appears and polled while it
+     * is shown; other screens only need `worker.json`, read on every refresh.
+     */
+    fun setDownloadsShown(shown: Boolean) {
+        if (shown) {
+            downloadsShown.incrementAndGet()
+            scope.launch { refreshDownloads() }
+        } else {
+            downloadsShown.decrementAndGet()
         }
     }
 
@@ -286,16 +310,23 @@ class LibraryRepository(
     }
 
     /**
-     * Reads the Downloads list and `worker.json`. A failure is shown on the Downloads tab instead of ending the app; running out of memory
-     * also drops the list held so far (the reads are bounded, so that takes a much smaller heap than the limits plan for).
+     * Reads `worker.json`, and the Downloads list while the Downloads screen is shown ([setDownloadsShown]). A failure is shown on the
+     * Downloads tab instead of ending the app; running out of memory also drops the list held so far (the reads are bounded, so that takes
+     * a much smaller heap than the limits plan for).
      */
     @Suppress("TooGenericExceptionCaught") // anything a synced file makes the reader throw is reported, never fatal
     private fun reloadDownloads() {
         try {
             val store = downloadStore
-            val downloads = store.list()
+            val downloads = if (downloadsShown.get() > 0) store.list() else null
             val downloader = Downloader.of(store.worker())
-            _state.update { it.copy(downloads = downloads, downloader = downloader, downloadsError = null) }
+            _state.update {
+                it.copy(
+                    downloads = downloads ?: it.downloads,
+                    downloader = downloader,
+                    downloadsError = it.downloadsError.takeIf { downloads == null },
+                )
+            }
         } catch (error: RuntimeException) {
             Log.w(TAG, "Cannot read the downloads", error)
             _state.update { it.copy(downloadsError = "Cannot read the downloads: ${error.message ?: error.javaClass.simpleName}") }

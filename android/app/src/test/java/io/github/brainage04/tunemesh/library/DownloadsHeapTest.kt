@@ -57,9 +57,9 @@ object DownloadsHeapCheck {
     @JvmStatic
     @Suppress("ExplicitGarbageCollectionCall") // measures what both lists keep, without garbage
     fun main(args: Array<String>) {
-        val store = DownloadStore(File(args[0]))
-        val first = store.list()
-        val second = store.list()
+        // Two stores, so the files are read twice (one store does not read unchanged files again).
+        val first = DownloadStore(File(args[0])).list()
+        val second = DownloadStore(File(args[0])).list()
         System.gc()
         val runtime = Runtime.getRuntime()
         val used = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)

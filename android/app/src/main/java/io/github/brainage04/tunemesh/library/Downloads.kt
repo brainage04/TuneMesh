@@ -2,23 +2,17 @@ package io.github.brainage04.tunemesh.library
 
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.FileTime
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.SerializationException
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.builtins.serializer
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.encoding.CompositeDecoder
-import kotlinx.serialization.encoding.Decoder
-import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.serializer
 
 /** A request file, as this app writes it and (cut by [DownloadStore.bounded]) as it reads one. */
 @Serializable
@@ -34,11 +28,10 @@ data class DownloadRequest(
 )
 
 /**
- * A status file as read (cut by [DownloadStore.bounded]); only the worker writes them. Of `tracks` only the number is kept: the reader
- * counts the paths without keeping them ([CountSerializer]). `updatedAt` is not read. A [state] other than [STATES] or an integer outside
- * 0..[DownloadStore.MAX_U32] makes the file invalid (contract, "Limits").
+ * A status file as read ([DownloadStore.parseStatus], cut by [DownloadStore.bounded]); only the worker writes them. Of `tracks` only the
+ * number is kept: the reader counts the paths without decoding them. `updatedAt` is not read. A [state] other than [STATES] or an integer
+ * outside 0..[DownloadStore.MAX_U32] makes the file invalid (contract, "Limits").
  */
-@Serializable
 data class DownloadStatus(
     val version: Long = 1,
     val id: String,
@@ -48,18 +41,18 @@ data class DownloadStatus(
     val progress: Double? = null,
     val message: String? = null,
     /** Paths in `tracks`, at most [Limits.MAX_STATUS_TRACKS]. */
-    @SerialName("tracks") @Serializable(with = CountSerializer::class) val trackCount: Int = 0,
+    val trackCount: Int = 0,
     /** Items finished so far (downloaded, already present or failed), once [itemsTotal] is known. */
     val itemsDone: Long? = null,
     /** Items the request covers once the source is listed: 1 for a track, the entry count for a playlist or album. */
     val itemsTotal: Long? = null,
     /** Items that could not be downloaded; the request went on without them. At most [Limits.MAX_STATUS_FAILURES] are read. */
-    @Serializable(with = FailuresSerializer::class) val failures: List<DownloadFailure> = emptyList(),
+    val failures: List<DownloadFailure> = emptyList(),
     /**
      * Things to know although the request went on, for example that a source was cut to the item limit. At most
      * [Limits.MAX_STATUS_WARNINGS].
      */
-    @Serializable(with = WarningsSerializer::class) val warnings: List<String> = emptyList(),
+    val warnings: List<String> = emptyList(),
 ) {
     companion object {
         val STATES = setOf("queued", "downloading", "done", "failed", "cancelled")
@@ -67,63 +60,10 @@ data class DownloadStatus(
     }
 }
 
-@Serializable
 data class DownloadFailure(
     val item: String = "",
     val error: String = "",
 )
-
-/**
- * Reads a JSON list of strings as its length, at most [Limits.MAX_STATUS_TRACKS]: each element is decoded and dropped, so a status with
- * 10,000 paths costs one path at a time. Read only; status files are written by the worker.
- */
-object CountSerializer : KSerializer<Int> {
-    private val list = ListSerializer(String.serializer())
-    override val descriptor: SerialDescriptor = list.descriptor
-
-    override fun deserialize(decoder: Decoder): Int {
-        var count = 0
-        val structure = decoder.beginStructure(descriptor)
-        while (true) {
-            val index = structure.decodeElementIndex(descriptor)
-            if (index == CompositeDecoder.DECODE_DONE) break
-            structure.decodeStringElement(descriptor, index)
-            if (count < Limits.MAX_STATUS_TRACKS) count++
-        }
-        structure.endStructure(descriptor)
-        return count
-    }
-
-    override fun serialize(encoder: Encoder, value: Int): Unit = throw SerializationException("a status track count is read only")
-}
-
-/**
- * Reads a JSON list keeping its first [max] elements; the others are decoded and dropped, so a status file of small entries never holds
- * more than [max] of them. Writes a plain list.
- */
-open class CappedListSerializer<T>(private val element: KSerializer<T>, private val max: Int) : KSerializer<List<T>> {
-    private val list = ListSerializer(element)
-    override val descriptor: SerialDescriptor = list.descriptor
-
-    override fun deserialize(decoder: Decoder): List<T> {
-        val kept = ArrayList<T>()
-        val structure = decoder.beginStructure(descriptor)
-        while (true) {
-            val index = structure.decodeElementIndex(descriptor)
-            if (index == CompositeDecoder.DECODE_DONE) break
-            val value = structure.decodeSerializableElement(descriptor, index, element)
-            if (kept.size < max) kept += value
-        }
-        structure.endStructure(descriptor)
-        return kept
-    }
-
-    override fun serialize(encoder: Encoder, value: List<T>) = list.serialize(encoder, value)
-}
-
-object FailuresSerializer : CappedListSerializer<DownloadFailure>(serializer(), Limits.MAX_STATUS_FAILURES)
-
-object WarningsSerializer : CappedListSerializer<String>(String.serializer(), Limits.MAX_STATUS_WARNINGS)
 
 /**
  * A request as the Downloads list keeps it: the request file, the status file, or both, reduced to what the card shows. Neither file is
@@ -278,7 +218,21 @@ sealed interface Downloader {
     }
 }
 
-class DownloadStore(private val root: File) {
+/**
+ * The request and status files of the library at [root]. One store per library: it keeps the [DownloadItem] it made of each listed request
+ * with the identity, modification time and size of the files it came from, and reads the files again only when one of those changed.
+ */
+class DownloadStore(val root: File) {
+    /** A file's identity, modification time and size: a file replaced (as every writer does, atomically) or rewritten differs. */
+    private data class Stamp(val key: Any?, val modified: FileTime, val size: Long)
+
+    private class Listed(val request: Stamp?, val status: Stamp?, val item: DownloadItem?)
+
+    /** What [list] made of each request it listed last, by id. */
+    private var listed: Map<String, Listed> = emptyMap()
+
+    private var worker: Pair<Stamp, WorkerInfo?>? = null
+
     private val requests
         get() = File(root, "${LibraryFormat.STATE_DIR}/requests")
 
@@ -331,26 +285,55 @@ class DownloadStore(private val root: File) {
     /**
      * The newest [Limits.MAX_DOWNLOADS_READ] requests by id (a request and its status file count once), each file read only when it is at
      * most [Limits.MAX_JSON_BYTES], cut to [Limits] and reduced to a [DownloadItem] before the next one is read. Older ones are only
-     * counted.
+     * counted. A request whose files did not change since the last call is not read again.
      */
+    @Synchronized
     fun list(): DownloadList {
         val requestIds = jsonIds(requests)
         val statusIds = jsonIds(statuses)
         val all = (requestIds + statusIds).sortedWith(compareByDescending<String> { sortKey(it) }.thenByDescending { it })
         val newest = all.take(Limits.MAX_DOWNLOADS_READ)
+        val previous = listed
+        val current = HashMap<String, Listed>(newest.size * 2)
         val items = newest.mapNotNull { id ->
-            val request = if (id in requestIds) read(File(requests, "$id.json"), ::parseRequest) else null
-            val status = if (id in statusIds) read(File(statuses, "$id.json"), ::parseStatus) else null
-            if (request == null && status == null) null else DownloadItem.of(id, request, status)
+            val requestFile = File(requests, "$id.json").takeIf { id in requestIds }
+            val statusFile = File(statuses, "$id.json").takeIf { id in statusIds }
+            val requestStamp = requestFile?.let(::stamp)
+            val statusStamp = statusFile?.let(::stamp)
+            val known = previous[id]?.takeIf { it.request == requestStamp && it.status == statusStamp }
+            val entry =
+                known
+                    ?: run {
+                        val request = requestFile?.let { read(it, requestStamp, ::readRequest) }
+                        val status = statusFile?.let { read(it, statusStamp, ::readStatus) }
+                        val item = if (request == null && status == null) null else DownloadItem.of(id, request, status)
+                        Listed(requestStamp, statusStamp, item)
+                    }
+            current[id] = entry
+            entry.item
         }
+        listed = current
         return DownloadList(items, all.size - newest.size)
     }
 
-    /** The current `worker.json`, or null when it is missing, over [Limits.MAX_JSON_BYTES] or not valid JSON. */
+    /**
+     * The current `worker.json`, or null when it is missing, over [Limits.MAX_JSON_BYTES] or not valid JSON; read again only when the file
+     * changed.
+     */
+    @Synchronized
     fun worker(): WorkerInfo? {
         val file = workerFile
-        if (!file.isFile) return null
-        return read(file, ::parseWorker)
+        val stamp = stamp(file) ?: return null
+        if (worker?.first != stamp) {
+            val info =
+                try {
+                    parseWorker(Limits.readText(file, Limits.MAX_JSON_BYTES))
+                } catch (_: IOException) {
+                    null
+                }
+            worker = stamp to info
+        }
+        return worker?.second
     }
 
     /** Cancels a pending request by deleting its request file. */
@@ -367,7 +350,7 @@ class DownloadStore(private val root: File) {
         for (id in jsonIds(statuses)) {
             if (id in requestIds) continue
             val file = File(statuses, "$id.json")
-            if (read(file, ::parseState) in DownloadStatus.FINAL_STATES) file.delete()
+            if (read(file, stamp(file), ::readState) in DownloadStatus.FINAL_STATES) file.delete()
         }
     }
 
@@ -381,17 +364,34 @@ class DownloadStore(private val root: File) {
             ?.mapTo(HashSet()) { it.removeSuffix(".json") }
             .orEmpty()
 
-    /** [file] parsed by [parse], or null when it is over [Limits.MAX_JSON_BYTES], gone or unreadable. */
-    private fun <T> read(file: File, parse: (String) -> T?): T? =
+    /** [file]'s [Stamp], or null when it is not a regular file (gone, say). */
+    private fun stamp(file: File): Stamp? =
         try {
-            parse(Limits.readText(file, Limits.MAX_JSON_BYTES))
+            val attributes = Files.readAttributes(file.toPath(), BasicFileAttributes::class.java)
+            if (attributes.isRegularFile) Stamp(attributes.fileKey(), attributes.lastModifiedTime(), attributes.size()) else null
         } catch (_: IOException) {
             null
         }
 
+    /**
+     * [file] streamed through [parse], or null when it is not a regular file ([stamp] null), over [Limits.MAX_JSON_BYTES] (also when it
+     * grows while read), gone or unreadable.
+     */
+    private fun <T> read(file: File, stamp: Stamp?, parse: (InputStream, Long) -> T?): T? {
+        if (stamp == null || stamp.size > Limits.MAX_JSON_BYTES) return null
+        return try {
+            file.inputStream().use { parse(it, Limits.MAX_JSON_BYTES.toLong()) }
+        } catch (_: IOException) {
+            null
+        }
+    }
+
     @Suppress("TooManyFunctions") // one parser and one bounded projection per synced format, kept together
     companion object {
         private const val KIB = 1024
+
+        /** More than the longest [DownloadStatus.STATES]: a longer `state` is not one of them. */
+        private const val STATE_BYTES = 16
 
         /** The largest integer a request, status or `worker.json` file may hold (contract, "Limits"). */
         const val MAX_U32 = (1L shl 32) - 1
@@ -408,14 +408,127 @@ class DownloadStore(private val root: File) {
          * A request file's text as [bounded] request, or null when it is not a request: half-synced or foreign JSON, picked up again on the
          * next refresh.
          */
-        fun parseRequest(text: String): DownloadRequest? = decodeOrNull {
-            json.decodeFromString<DownloadRequest>(text).takeIf { it.version in 0..MAX_U32 }?.let(::bounded)
-        }
+        fun parseRequest(text: String): DownloadRequest? = readRequest(text.byteInputStream(), Long.MAX_VALUE)
 
         /** A status file's text as [bounded] status, or null when it is not a valid status. */
-        fun parseStatus(text: String): DownloadStatus? = decodeOrNull {
-            json.decodeFromString<DownloadStatus>(text).takeIf(::isValid)?.let(::bounded)
+        fun parseStatus(text: String): DownloadStatus? = readStatus(text.byteInputStream(), Long.MAX_VALUE)
+
+        /** [parseRequest] of a stream of at most [maxBytes]; each text is decoded only up to its limit. */
+        private fun readRequest(input: InputStream, maxBytes: Long): DownloadRequest? = decodeOrNull {
+            val reader = JsonReader(input, maxBytes)
+            var version = 1L
+            var id: String? = null
+            var text: String? = null
+            var playlist: String? = null
+            var playlistFromSource = false
+            var requestedBy = ""
+            var requestedAt = ""
+            reader.forEachField { name ->
+                when (name) {
+                    "version" -> version = reader.long()
+                    "id" -> id = reader.string(Limits.MAX_DOWNLOAD_ID_BYTES)
+                    "input" -> text = reader.string(Limits.MAX_REQUEST_INPUT_BYTES)
+                    "playlist" -> playlist = if (reader.nextIsNull()) null else reader.string(Limits.MAX_REQUEST_PLAYLIST_BYTES)
+                    "playlistFromSource" -> playlistFromSource = reader.boolean()
+                    "requestedBy" -> requestedBy = reader.string(Limits.MAX_DEVICE_NAME_BYTES)
+                    "requestedAt" -> requestedAt = reader.string(Limits.MAX_TIMESTAMP_BYTES)
+                    else -> reader.skipValue()
+                }
+            }
+            reader.end()
+            DownloadRequest(version, required(id, "id"), required(text, "input"), playlist, playlistFromSource, requestedBy, requestedAt)
+                .takeIf { it.version in 0..MAX_U32 }
+                ?.let(::bounded)
         }
+
+        /**
+         * [parseStatus] of a stream of at most [maxBytes]: each text is decoded only up to its limit, the failures and warnings past their
+         * limits and every track path are checked and skipped, never decoded.
+         */
+        @Suppress("CyclomaticComplexMethod", "LongMethod") // one branch per field of the format
+        private fun readStatus(input: InputStream, maxBytes: Long): DownloadStatus? = decodeOrNull {
+            val reader = JsonReader(input, maxBytes)
+            var version = 1L
+            var id: String? = null
+            var text = ""
+            var state: String? = null
+            var title: String? = null
+            var progress: Double? = null
+            var message: String? = null
+            var trackCount = 0
+            var itemsDone: Long? = null
+            var itemsTotal: Long? = null
+            val failures = ArrayList<DownloadFailure>()
+            val warnings = ArrayList<String>()
+            reader.forEachField { name ->
+                when (name) {
+                    "version" -> version = reader.long()
+                    "id" -> id = reader.string(Limits.MAX_DOWNLOAD_ID_BYTES)
+                    "input" -> text = reader.string(Limits.MAX_REQUEST_INPUT_BYTES)
+                    "state" -> state = reader.string(STATE_BYTES).takeUnless { reader.wasCut } ?: throw JsonReader.Malformed("not a state")
+                    "title" -> title = if (reader.nextIsNull()) null else reader.string(Limits.MAX_STATUS_TEXT_BYTES)
+                    "progress" -> progress = if (reader.nextIsNull()) null else reader.double()
+                    "message" -> message = if (reader.nextIsNull()) null else reader.string(Limits.MAX_STATUS_MESSAGE_BYTES)
+                    "tracks" -> {
+                        trackCount = 0
+                        reader.forEachElement {
+                            reader.skipString()
+                            if (trackCount < Limits.MAX_STATUS_TRACKS) trackCount++
+                        }
+                    }
+                    "itemsDone" -> itemsDone = if (reader.nextIsNull()) null else reader.long()
+                    "itemsTotal" -> itemsTotal = if (reader.nextIsNull()) null else reader.long()
+                    "failures" -> {
+                        failures.clear()
+                        reader.forEachElement {
+                            readFailure(reader, keep = failures.size < Limits.MAX_STATUS_FAILURES)?.let(failures::add)
+                        }
+                    }
+                    "warnings" -> {
+                        warnings.clear()
+                        reader.forEachElement {
+                            if (warnings.size < Limits.MAX_STATUS_WARNINGS) warnings += reader.string(Limits.MAX_STATUS_TEXT_BYTES)
+                            else reader.skipString()
+                        }
+                    }
+                    else -> reader.skipValue()
+                }
+            }
+            reader.end()
+            DownloadStatus(
+                    version = version,
+                    id = required(id, "id"),
+                    input = text,
+                    state = required(state, "state"),
+                    title = title,
+                    progress = progress,
+                    message = message,
+                    trackCount = trackCount,
+                    itemsDone = itemsDone,
+                    itemsTotal = itemsTotal,
+                    failures = failures,
+                    warnings = warnings,
+                )
+                .takeIf(::isValid)
+                ?.let(::bounded)
+        }
+
+        /** One failure object; null (only checked) unless [keep]. */
+        private fun readFailure(reader: JsonReader, keep: Boolean): DownloadFailure? {
+            var item = ""
+            var error = ""
+            reader.forEachField { name ->
+                when {
+                    name == "item" && keep -> item = reader.string(Limits.MAX_STATUS_TEXT_BYTES)
+                    name == "error" && keep -> error = reader.string(Limits.MAX_STATUS_TEXT_BYTES)
+                    name == "item" || name == "error" -> reader.skipString()
+                    else -> reader.skipValue()
+                }
+            }
+            return if (keep) DownloadFailure(item, error) else null
+        }
+
+        private fun <T> required(value: T?, name: String): T = value ?: throw JsonReader.Malformed("no $name")
 
         private fun isValid(status: DownloadStatus): Boolean =
             status.state in DownloadStatus.STATES &&
@@ -423,10 +536,14 @@ class DownloadStore(private val root: File) {
                 (status.itemsDone ?: 0) in 0..MAX_U32 &&
                 (status.itemsTotal ?: 0) in 0..MAX_U32
 
-        /** Only the `state` of a status file (the other fields are skipped, not kept), or null when it is not valid. */
-        private fun parseState(text: String): String? = decodeOrNull { json.decodeFromString<StatusState>(text).state }
-
-        @Serializable private data class StatusState(val state: String)
+        /** Only the `state` of a status file (the other fields are checked and skipped), or null when it is not valid JSON. */
+        private fun readState(input: InputStream, maxBytes: Long): String? = decodeOrNull {
+            val reader = JsonReader(input, maxBytes)
+            var state: String? = null
+            reader.forEachField { name -> if (name == "state") state = reader.string(STATE_BYTES) else reader.skipValue() }
+            reader.end()
+            state
+        }
 
         /** `worker.json`'s text, or null when it is not valid. */
         fun parseWorker(text: String): WorkerInfo? = decodeOrNull {
@@ -446,7 +563,10 @@ class DownloadStore(private val root: File) {
             return trimmed
         }
 
-        /** kotlinx.serialization reports invalid JSON and mismatched fields as IllegalArgumentException (SerializationException). */
+        /**
+         * kotlinx.serialization reports invalid JSON and mismatched fields as IllegalArgumentException (SerializationException), and so
+         * does [JsonReader] ([JsonReader.Malformed]).
+         */
         private inline fun <T> decodeOrNull(decode: () -> T): T? =
             try {
                 decode()

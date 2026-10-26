@@ -52,26 +52,32 @@ class DownloadsMemoryTest {
     fun maximalDownloadsFitTheAppHeap() {
         val bytes = HostileFiles.writeDownloads(root)
         report("wrote $bytes B of request and status files; ${heap()}")
-        val store = DownloadStore(root)
-        val first = store.list()
-        val second = store.list()
+        // Two stores, so the files are read twice (one store does not read unchanged files again).
+        val first = DownloadStore(root).list()
+        val second = DownloadStore(root).list()
         assertEquals(Limits.MAX_DOWNLOADS_READ, first.items.size)
         assertEquals(first, second)
         report("two lists held; ${heap()}")
 
         app.repository.setLibraryRoot(root.absolutePath)
-        val end = SystemClock.uptimeMillis() + 120_000
-        while (app.repository.state.value.downloads.items.size < Limits.MAX_DOWNLOADS_READ) {
-            assertTrue("the app did not list the downloads", SystemClock.uptimeMillis() < end)
-            Thread.sleep(200)
-        }
-        runBlocking {
-            app.repository.refresh()
-            app.repository.refresh()
+        // The app reads the list while the Downloads screen is shown.
+        app.repository.setDownloadsShown(true)
+        try {
+            val end = SystemClock.uptimeMillis() + 120_000
+            while ((app.repository.state.value.downloads?.items?.size ?: 0) < Limits.MAX_DOWNLOADS_READ) {
+                assertTrue("the app did not list the downloads", SystemClock.uptimeMillis() < end)
+                Thread.sleep(200)
+            }
+            runBlocking {
+                app.repository.refresh()
+                app.repository.refresh()
+            }
+        } finally {
+            app.repository.setDownloadsShown(false)
         }
         val state = app.repository.state.value
         assertNull(state.downloadsError)
-        assertEquals(Limits.MAX_DOWNLOADS_READ, state.downloads.items.size)
+        assertEquals(Limits.MAX_DOWNLOADS_READ, state.downloads?.items?.size)
         report("after the app's refreshes, still holding both lists (${first.items.size + second.items.size} items); ${heap()}")
     }
 
