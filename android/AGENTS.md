@@ -130,3 +130,9 @@ Run these from this directory before committing (they also run in CI):
   longer than that (`mainThreadStallsOverBudget` counts them) is fixed or explained (platform: GL context creation,
   first-frame shader and buffer work, compositor back-pressure). `./gradlew --no-daemon :app:generateBaselineProfile` regenerates
   `app/src/main/generated/baselineProfiles/` after UI changes; commit the result.
+  Compare builds interleaved (A, B, B, A, ...) on a host with nothing else running. The emulator's vCPUs run at
+  whatever clock the host's governor gives them, and a build that leaves the guest idler gets a lower clock: on
+  a quiet host the same search frame took 6 ms at about 5 GHz and 20-30 ms when the host core had clocked down.
+  To compare app work, hold the clock with four `SCHED_IDLE` spinners in the guest, which the app always preempts
+  (`adb shell 'chrt -i 0 sh -c "while :; do :; done" </dev/null >/dev/null 2>&1 &'`, four times; stop them with
+  `adb shell pkill -f "while :; do :; done"`), and report the unheld runs as well.
