@@ -133,6 +133,9 @@ class LibraryScanner(private val cacheFile: File) {
     }
 
     companion object {
+        /** The tag cache's file name in the app's files directory. */
+        const val CACHE_FILE = "tag-cache.json"
+
         fun readTags(file: File): RawTags =
             MediaMetadataRetriever().use { retriever ->
                 try {

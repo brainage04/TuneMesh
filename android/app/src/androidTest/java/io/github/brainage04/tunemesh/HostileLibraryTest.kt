@@ -17,6 +17,7 @@ import androidx.test.uiautomator.Direction
 import androidx.test.uiautomator.StaleObjectException
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import io.github.brainage04.tunemesh.data.LibraryScanner
 import io.github.brainage04.tunemesh.data.LibraryState
 import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.ShownDownload
@@ -29,23 +30,28 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.FixMethodOrder
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
+import org.junit.runners.MethodSorters
 
 /** Marks the stress tests: excluded from the normal instrumented run, run alone with `-Pstress`. */
 @Retention(AnnotationRetention.RUNTIME) @Target(AnnotationTarget.CLASS, AnnotationTarget.FUNCTION) annotation class Stress
 
 /**
- * The hostile library ([HostileLibrary], `docs/library-format.md` "Limits") against the real app: generates it in app storage, lets the app
- * scan it, then opens Home, Your Library, the 40,000-track album, a 250,000-entry playlist and Downloads through the UI. Fails on an
- * OutOfMemoryError (the app and this test share a process, so it ends the run), on a main-thread stall over [MAX_STALL_MS] (an ANR needs 5
- * s, so it is caught as a stall), and when what the app shows does not follow the limits.
+ * The hostile library ([HostileLibrary], `docs/library-format.md` "Limits") against the real app. [generateLibrary] generates it in app
+ * storage and waits until it is written to disk; [hostileLibraryStaysUsable] then lets the app scan it and opens Home, Your Library, the
+ * 40,000-track album, a 250,000-entry playlist and Downloads through the UI. `-Pstress` runs each test in a process of its own (the test
+ * orchestrator), so the second one measures the app, not the generator's garbage and writes. It fails on an OutOfMemoryError (the app and
+ * this test share a process, so it ends the run), on a main-thread stall over [MAX_STALL_MS] (an ANR needs 5 s, so it is caught as a
+ * stall), and when what the app shows does not follow the limits.
  *
  * Instrumentation argument `hostileScale`: `full` (default; the core generator's full profile) or `small`.
  */
 @Stress
 @RunWith(AndroidJUnit4::class)
+@FixMethodOrder(MethodSorters.NAME_ASCENDING) // generateLibrary first
 class HostileLibraryTest {
     @get:Rule val leaks = DetectLeaksAfterTestSuccess()
 
@@ -55,15 +61,23 @@ class HostileLibraryTest {
         get() = context.applicationContext as TuneMeshApp
 
     private val device = UiDevice.getInstance(instrumentation)
-    private lateinit var root: File
+    private val root = File(context.filesDir, "hostile-library")
+    private val scale =
+        when (InstrumentationRegistry.getArguments().getString("hostileScale")) {
+            "small" -> HostileLibrary.Scale.SMALL
+            else -> HostileLibrary.Scale.FULL
+        }
+
+    /** Written once the library of [scale] is generated and on disk. */
+    private val marker = File(root, ".generated-${if (scale == HostileLibrary.Scale.SMALL) "small" else "full"}")
     private lateinit var previousRoot: File
     private val watchdog = MainThreadWatchdog()
+    private var cleanUp = false
 
     @Before
     fun setUp() {
         shell("appops set --uid ${context.packageName} MANAGE_EXTERNAL_STORAGE allow")
         app.settings.syncthingSetupSeen = true
-        root = File(context.filesDir, "hostile-library")
         previousRoot = app.settings.libraryRoot
     }
 
@@ -71,22 +85,29 @@ class HostileLibraryTest {
     fun tearDown() {
         watchdog.stop()
         finishActivities()
+        if (!cleanUp) return
         app.repository.setLibraryRoot(previousRoot.absolutePath)
         root.deleteRecursively()
-        File(context.filesDir, "tag-cache.json").delete()
+        File(context.filesDir, LibraryScanner.CACHE_FILE).delete()
         File(context.cacheDir, "covers").deleteRecursively()
+    }
+
+    /** Generates the library, then waits until the kernel has written it out, so its writes do not land in the next test's measurements. */
+    @Test
+    fun generateLibrary() {
+        marker.delete()
+        val generated = timed("generate") { HostileLibrary(root, scale).generate() }
+        report("generated $scale in $generated ms")
+        val flushed = timed("writeback") { waitForWriteback() }
+        report("written to disk in $flushed ms")
+        marker.writeText("$scale\n")
     }
 
     @Test
     fun hostileLibraryStaysUsable() {
-        val scale =
-            when (InstrumentationRegistry.getArguments().getString("hostileScale")) {
-                "small" -> HostileLibrary.Scale.SMALL
-                else -> HostileLibrary.Scale.FULL
-            }
+        check(marker.isFile) { "no generated library: run the stress tests with -Pstress, which runs generateLibrary first" }
+        cleanUp = true
         val library = HostileLibrary(root, scale)
-        val generated = timed("generate") { library.generate() }
-        report("generated $scale in $generated ms")
         val stignoreBytes = File(root, ".stignore").length()
 
         // Cold start of a debug build is not what this test is about: the watchdog starts once the app is up.
@@ -116,18 +137,6 @@ class HostileLibraryTest {
         val playlists = app.repository.state.value.playlists.filterNot { it.isLikedSongs }
         assertEquals(expected.playlistsListed, playlists.size)
         assertEquals(expected.tooLarge, playlists.count { it.problem != null })
-        val downloads = waitFor(30_000, "downloads read") { it.downloads.items.isNotEmpty() }.downloads
-        assertTrue("${downloads.items.size} downloads listed", downloads.items.size in 197..200)
-        assertTrue(downloads.older > 0)
-        assertTrue(
-            downloads.items.all {
-                (it.shown.message?.length ?: 0) <= ShownDownload.PREVIEW_CHARS &&
-                    it.shown.lines.size <= Limits.SHOWN_LIST_ROWS &&
-                    it.shown.lines.all { line -> line.length <= ShownDownload.LINE_PREVIEW_CHARS } &&
-                    it.trackCount <= Limits.MAX_STATUS_TRACKS &&
-                    (it.playlist?.length ?: 0) <= Limits.SHOWN_LINE_CHARS
-            }
-        )
         assertNull(app.repository.state.value.downloader.let { it as? io.github.brainage04.tunemesh.library.Downloader.Active })
         assertEquals(stignoreBytes, File(root, ".stignore").length())
 
@@ -156,6 +165,19 @@ class HostileLibraryTest {
         step("Downloads") {
             device.pressBack()
             tap("Downloads")
+            // The list is read once the Downloads screen is shown.
+            val downloads = waitFor(60_000, "downloads read") { it.downloads?.items?.isNotEmpty() == true }.downloads!!
+            assertTrue("${downloads.items.size} downloads listed", downloads.items.size in 197..200)
+            assertTrue(downloads.older > 0)
+            assertTrue(
+                downloads.items.all {
+                    (it.shown.message?.length ?: 0) <= ShownDownload.PREVIEW_CHARS &&
+                        it.shown.lines.size <= Limits.SHOWN_LIST_ROWS &&
+                        it.shown.lines.all { line -> line.length <= ShownDownload.LINE_PREVIEW_CHARS } &&
+                        it.trackCount <= Limits.MAX_STATUS_TRACKS &&
+                        (it.playlist?.length ?: 0) <= Limits.SHOWN_LINE_CHARS
+                }
+            )
             device.findObject(By.scrollable(true))?.fling(Direction.DOWN)
             device.findObject(By.scrollable(true))?.fling(Direction.DOWN)
         }
@@ -167,6 +189,24 @@ class HostileLibraryTest {
         }
         report("worst main-thread stall ${watchdog.worst} ms; ${heap()}")
         assertTrue("main thread stalled ${watchdog.worst} ms (${watchdog.worstAt})", watchdog.worst < MAX_STALL_MS)
+    }
+
+    /** Flushes the page cache's dirty pages (`sync`) and waits until the kernel reports almost none dirty or under writeback. */
+    private fun waitForWriteback() {
+        shellAndWait("sync")
+        val end = SystemClock.uptimeMillis() + WRITEBACK_TIMEOUT_MS
+        while (SystemClock.uptimeMillis() < end) {
+            val pending =
+                File("/proc/meminfo")
+                    .readLines()
+                    .filter { it.startsWith("Dirty:") || it.startsWith("Writeback:") }
+                    .sumOf { line ->
+                        line.split(Regex("\\s+"))[1].toLong()
+                    }
+            if (pending < WRITEBACK_DONE_KB) return
+            Thread.sleep(500)
+        }
+        error("the generated library was not written out within $WRITEBACK_TIMEOUT_MS ms")
     }
 
     /** Finishes the app's activities and waits until they are destroyed, so LeakCanary's check after the test covers them. */
@@ -270,6 +310,13 @@ class HostileLibraryTest {
         instrumentation.uiAutomation.executeShellCommand(command).close()
     }
 
+    /** Runs [command] and waits until it ends (its output closes). */
+    private fun shellAndWait(command: String) {
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use {
+            it.readBytes()
+        }
+    }
+
     /** Measures how late the main thread runs a message posted every [PERIOD_MS]: a stall shows as lateness. */
     private class MainThreadWatchdog {
         private val main = Handler(Looper.getMainLooper())
@@ -312,5 +359,9 @@ class HostileLibraryTest {
         private const val MAX_STALL_MS = 1_000L
         private const val PERIOD_MS = 50L
         private const val SCAN_TIMEOUT_MS = 60 * 60 * 1000L
+        private const val WRITEBACK_TIMEOUT_MS = 10 * 60 * 1000L
+
+        /** Dirty and under-writeback page cache, in KiB, below which the library counts as written out. */
+        private const val WRITEBACK_DONE_KB = 4 * 1024L
     }
 }

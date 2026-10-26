@@ -113,6 +113,9 @@ android {
     // JUnit 5 for the Jazzer fuzz tests; the vintage engine runs the JUnit 4 tests.
     testOptions {
         unitTests.all { it.useJUnitPlatform() }
+        // The stress test generates its library in one test and uses it in the next; the orchestrator runs each test in a process of its
+        // own, so the app is measured without the generator's garbage and writes (HostileLibraryTest).
+        if (providers.gradleProperty("stress").isPresent) execution = "ANDROIDX_TEST_ORCHESTRATOR"
     }
     // The hostile-library generator, shared with the macrobenchmarks in :baselineprofile; its plain-Kotlin files (common/)
     // also serve the JVM unit tests.
@@ -197,6 +200,7 @@ dependencies {
     // Every instrumented test class has DetectLeaksAfterTestSuccess: a test fails when an activity, service or view model it
     // destroyed is still reachable afterwards.
     androidTestImplementation(libs.leakcanary.android.instrumentation)
+    androidTestUtil(libs.androidx.test.orchestrator)
 
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.leakcanary.android)
