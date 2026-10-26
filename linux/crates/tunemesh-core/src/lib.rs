@@ -2,11 +2,13 @@
 //! track identity and metadata, playlists, download requests and status.
 
 pub mod atomic;
+pub mod bounded;
 pub mod fsx;
 #[cfg(any(test, feature = "hostile"))]
 pub mod hostile;
 pub mod library;
 pub mod limits;
+pub mod merge;
 pub mod playlist;
 pub mod request;
 pub mod sanitize;

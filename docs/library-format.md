@@ -160,9 +160,12 @@ path, or its line as written when it points outside the root. With base B,
 winner W and copy C, and b, w and c the number of entries with key k in
 each:
 
-1. The result has r = max(0, w + c - b) entries with key k: an entry one
-   side removed stays removed even where the other side kept it, and what
-   either side added is kept. Without a base (none kept yet, or unreadable)
+1. How many entries with key k the result has: when neither side removed
+   one (w ≥ b and c ≥ b), r = max(w, c), so a track both devices added is
+   there once; when neither side added one (w ≤ b and c ≤ b), r = min(w,
+   c); otherwise r = max(0, w + c - b). So an entry one side removed stays
+   removed even where the other side kept it, and what either side added is
+   kept. Without a base (none kept yet, or unreadable) b counts as 0, so
    r = max(w, c): removals made on another device before this device's
    first edit of the playlist can come back.
 2. Order: the result starts from W's entries, or from C's when C changed the

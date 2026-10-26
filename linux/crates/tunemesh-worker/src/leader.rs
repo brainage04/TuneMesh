@@ -68,7 +68,7 @@ impl State {
     }
 
     fn write_beat(&mut self) {
-        self.me.heartbeat_at = tunemesh_core::now_rfc3339();
+        self.me.heartbeat_at = tunemesh_core::now_rfc3339().into();
         if let Err(e) = worker::write(&self.root, &self.me) {
             log!("writing worker.json: {e}");
         }
@@ -87,7 +87,7 @@ impl State {
                 other.instance
             );
             self.active = false;
-            self.waiting_for = Some(other.device);
+            self.waiting_for = Some(other.device.to_string());
             LOST.store(true, Ordering::SeqCst);
             return;
         }
@@ -99,12 +99,12 @@ impl Leader {
     pub fn new(root: &Path, device: String, machine: String) -> Self {
         let me = WorkerInfo {
             version: 1,
-            device,
-            machine,
-            instance: random_instance(),
+            device: device.into(),
+            machine: machine.into(),
+            instance: random_instance().into(),
             pid: std::process::id(),
-            worker_version: config::VERSION.to_owned(),
-            heartbeat_at: String::new(),
+            worker_version: config::VERSION.into(),
+            heartbeat_at: Default::default(),
         };
         let leader = Self(Arc::new(Mutex::new(State {
             root: root.to_path_buf(),
@@ -155,7 +155,7 @@ impl Leader {
         {
             if s.waiting_for.as_deref() != Some(other.device.as_str()) {
                 log!("downloads are handled by {}; waiting", other.device);
-                s.waiting_for = Some(other.device);
+                s.waiting_for = Some(other.device.to_string());
             }
             return false;
         }
@@ -194,7 +194,7 @@ mod tests {
             instance: "other".into(),
             pid,
             worker_version: "0".into(),
-            heartbeat_at: at,
+            heartbeat_at: at.into(),
         }
     }
 

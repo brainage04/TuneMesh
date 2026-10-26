@@ -19,6 +19,18 @@ pub const MAX_INPUT_BYTES: usize = 8 * KIB;
 pub const MAX_REQUEST_PLAYLIST_BYTES: usize = KIB;
 /// Request and status ids clients read (the newest).
 pub const MAX_LISTED_REQUESTS: usize = 200;
+/// A request or status id, which is a file name (the JSON `id` is ignored).
+pub const MAX_ID_BYTES: usize = 255;
+/// Request `requestedBy`, `worker.json` `device`.
+pub const MAX_DEVICE_BYTES: usize = KIB;
+/// Request `requestedAt`, status `updatedAt`, `worker.json` `heartbeatAt`.
+pub const MAX_TIMESTAMP_BYTES: usize = 64;
+/// `worker.json` `machine`, `instance` and `workerVersion`.
+pub const MAX_WORKER_ID_BYTES: usize = 64;
+/// Each status `tracks` path.
+pub const MAX_TRACK_PATH_BYTES: usize = 4 * KIB;
+/// Status warnings a listed download keeps (the rest is counted).
+pub const MAX_LISTED_WARNINGS: usize = 3;
 
 /// Status `title`, each warning, each failure's `item` and `error`.
 pub const MAX_TEXT_BYTES: usize = KIB;

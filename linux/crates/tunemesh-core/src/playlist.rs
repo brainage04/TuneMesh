@@ -12,6 +12,7 @@ use crate::limits::{
     self, MAX_LABEL_BYTES, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES as MAX_ENTRIES,
     MAX_PLAYLIST_LINE_BYTES as MAX_LINE_BYTES, MAX_PLAYLISTS,
 };
+use crate::merge::Bases;
 use crate::{PLAYLISTS_DIR, sanitize};
 
 pub const LIKED_SONGS: &str = "Liked Songs";
@@ -52,19 +53,38 @@ const NO_DURATION: u32 = OUTSIDE - 1;
 
 /// Where one entry's text lives in `Entries::text`: the path at
 /// `start..start + path_len`, directly followed by its `#EXTINF` label
-/// (`label_len` bytes, 0 for none). 12 bytes per entry; both lengths fit
-/// in 16 bits because readers refuse longer lines and cut labels to
-/// `MAX_LABEL_BYTES` (`push` enforces it for every entry). `repr(C)` keeps
-/// the declared field order, so the layout (and its 12 bytes) is fixed.
+/// (`label_len` bytes, 0 for none), both lengths packed into `lens`. 12
+/// bytes per entry. A path has at most `MAX_PATH_LEN` bytes: readers refuse
+/// lines over 32 KiB, which their invalid UTF-8 replaced by U+FFFD (3 bytes
+/// each) makes at most 96 KiB. A label has at most `MAX_LABEL_BYTES`
+/// (`push` enforces both for every entry). `repr(C)` keeps the declared
+/// field order, so the layout (and its 12 bytes) is fixed.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 struct Span {
     start: u32,
-    path_len: u16,
-    label_len: u16,
+    /// `path_len << LABEL_BITS | label_len`.
+    lens: u32,
     /// `OUTSIDE` flag plus the `#EXTINF` duration in seconds
     /// (`NO_DURATION`: unknown).
     meta: u32,
+}
+
+/// Bits of `Span::lens` holding the label length.
+const LABEL_BITS: u32 = 11;
+const _: () = assert!(MAX_LABEL_BYTES < 1 << LABEL_BITS);
+/// Longest path an entry can hold.
+const MAX_PATH_LEN: usize = (1 << (32 - LABEL_BITS)) - 1;
+const _: () = assert!(MAX_PATH_LEN >= 3 * MAX_LINE_BYTES);
+
+impl Span {
+    fn path_len(self) -> usize {
+        (self.lens >> LABEL_BITS) as usize
+    }
+
+    fn label_len(self) -> usize {
+        (self.lens & ((1 << LABEL_BITS) - 1)) as usize
+    }
 }
 
 /// A playlist's entries: one text buffer and a 12-byte span per entry, so a
@@ -146,20 +166,18 @@ impl Entries {
     }
 
     /// Appends an entry; `false` (nothing added) when its path is longer
-    /// than 64 KiB (twice a playlist line; no writer could write it) or
+    /// than `MAX_PATH_LEN` (more than a line readers accept, even with its
+    /// invalid UTF-8 replaced; no writer could write it) or
     /// the buffer would pass 4 GiB. The label is cut to `MAX_LABEL_BYTES`.
     fn push(&mut self, path: &str, label: Option<&str>, meta: u32) -> bool {
         let label = label.map_or("", |l| limits::cut(l, MAX_LABEL_BYTES));
-        let (Ok(path_len), Ok(label_len), Ok(start)) = (
-            u16::try_from(path.len()),
-            u16::try_from(label.len()),
-            u32::try_from(self.text.len()),
-        ) else {
+        let Ok(start) = u32::try_from(self.text.len()) else {
             return false;
         };
-        if start
-            .checked_add(u32::from(path_len) + u32::from(label_len))
-            .is_none()
+        if path.len() > MAX_PATH_LEN
+            || start
+                .checked_add((path.len() + label.len()) as u32)
+                .is_none()
         {
             return false;
         }
@@ -167,8 +185,7 @@ impl Entries {
         self.text.push_str(label);
         self.spans.push(Span {
             start,
-            path_len,
-            label_len,
+            lens: (path.len() as u32) << LABEL_BITS | label.len() as u32,
             meta,
         });
         true
@@ -177,6 +194,11 @@ impl Entries {
     /// Appends a track entry (no label, unknown duration).
     fn push_track(&mut self, track: &str) -> bool {
         self.push(track, None, NO_DURATION)
+    }
+
+    /// Appends a copy of `e` (from any `Entries`).
+    pub(crate) fn push_entry(&mut self, e: PlaylistEntry<'_>) -> bool {
+        self.push(e.path, e.label, e.meta)
     }
 
     /// Drops the spans for which `keep` is false, then compacts if much of
@@ -194,11 +216,11 @@ impl Entries {
 
     fn view_in(text: &str, s: Span) -> PlaylistEntry<'_> {
         let start = s.start as usize;
-        let mid = start + usize::from(s.path_len);
-        let end = mid + usize::from(s.label_len);
+        let mid = start + s.path_len();
+        let end = mid + s.label_len();
         PlaylistEntry {
             path: &text[start..mid],
-            label: (s.label_len > 0).then(|| &text[mid..end]),
+            label: (s.label_len() > 0).then(|| &text[mid..end]),
             meta: s.meta,
         }
     }
@@ -206,7 +228,7 @@ impl Entries {
     fn live_bytes(&self) -> usize {
         self.spans
             .iter()
-            .map(|s| usize::from(s.path_len) + usize::from(s.label_len))
+            .map(|s| s.path_len() + s.label_len())
             .sum()
     }
 
@@ -221,7 +243,7 @@ impl Entries {
         let mut text = String::with_capacity(self.live_bytes());
         for s in &mut self.spans {
             let start = s.start as usize;
-            let end = start + usize::from(s.path_len) + usize::from(s.label_len);
+            let end = start + s.path_len() + s.label_len();
             let new = text.len() as u32;
             text.push_str(&self.text[start..end]);
             s.start = new;
@@ -229,7 +251,7 @@ impl Entries {
         self.text = text;
     }
 
-    fn shrink_to_fit(&mut self) {
+    pub(crate) fn shrink_to_fit(&mut self) {
         self.text.shrink_to_fit();
         self.spans.shrink_to_fit();
     }
@@ -354,6 +376,11 @@ fn read_lines(mut reader: impl BufRead, mut f: impl FnMut(Line<'_>) -> bool) -> 
                 };
                 reader.consume(used);
                 total += used as u64;
+                // A run of CRs counts towards the file size, so it is not
+                // read to the end of a huge file.
+                if total > MAX_PLAYLIST_BYTES {
+                    return Err(too_large("larger than 32 MiB"));
+                }
                 if end {
                     break;
                 }
@@ -424,8 +451,8 @@ fn read_entries(reader: impl BufRead, root: &Path) -> io::Result<Entries> {
                 Some(d) => (d, (!label.is_empty()).then_some(label.as_str())),
                 None => (NO_DURATION, None),
             };
-            // Fails only for a line of invalid UTF-8 that its U+FFFD
-            // replacements make longer than 64 KiB.
+            // Cannot fail: a line has at most 32 KiB (96 KiB once invalid
+            // UTF-8 is replaced) and the file at most 32 MiB.
             if resolve_into(line, root, &mut resolved) {
                 entries.push(&resolved, label, duration)
             } else {
@@ -502,8 +529,23 @@ fn file_name(name: &str) -> String {
 }
 
 /// The `Playlists` directory, refusing a symlink (see `fsx`).
-fn open_dir(root: &Path, create: bool) -> io::Result<Dir> {
+pub(crate) fn open_dir(root: &Path, create: bool) -> io::Result<Dir> {
     Dir::open(root)?.sub(PLAYLISTS_DIR, create)
+}
+
+/// An exclusive lock on the `Playlists/` directory, held until dropped.
+#[derive(Debug)]
+pub struct PlaylistsLock(#[allow(dead_code, reason = "held for its flock")] Dir);
+
+/// Takes the `Playlists/` lock (contract: "Playlists", edits on one
+/// machine), creating the directory if needed and waiting while another
+/// process or thread holds it. The lock is on the directory, whose inode
+/// stays the same, not on a playlist file, which every atomic write
+/// replaces.
+pub fn lock(root: &Path) -> io::Result<PlaylistsLock> {
+    let dir = open_dir(root, true)?;
+    dir.lock_exclusive()?;
+    Ok(PlaylistsLock(dir))
 }
 
 /// The file-system-safe form of a playlist name.
@@ -627,8 +669,18 @@ impl Playlist {
 
     /// Writes the playlist atomically. A playlist that would be over the
     /// size limits is not written (`is_too_large`), so readers can always
-    /// open what writers write.
+    /// open what writers write. Edits use `edit`, which re-reads the
+    /// playlist and writes it under the `Playlists/` lock.
     pub fn write(&self, root: &Path, info: &dyn Fn(&str) -> Option<TrackInfo>) -> io::Result<()> {
+        self.write_text(root, info).map(drop)
+    }
+
+    /// `write`, returning the text written.
+    pub(crate) fn write_text(
+        &self,
+        root: &Path,
+        info: &dyn Fn(&str) -> Option<TrackInfo>,
+    ) -> io::Result<String> {
         if self.entries.len() > MAX_ENTRIES {
             return Err(too_large("more than 250,000 entries"));
         }
@@ -640,12 +692,35 @@ impl Playlist {
         if text.lines().any(|line| line.len() > MAX_LINE_BYTES) {
             return Err(too_large("a line is longer than 32 KiB"));
         }
-        open_dir(root, true)?.write_atomic(&file_name(&self.name), text.as_bytes())
+        open_dir(root, true)?.write_atomic(&file_name(&self.name), text.as_bytes())?;
+        Ok(text)
+    }
+
+    /// Edits a playlist (contract: "Playlists", edits on one machine):
+    /// under the `Playlists/` lock, re-reads it (so changes from other
+    /// devices and processes are kept), notes the version it started from as
+    /// this device's base (`Bases`), applies `f` and writes it. Returns the
+    /// playlist as written.
+    pub fn edit(
+        root: &Path,
+        bases: &Bases,
+        name: &str,
+        info: &dyn Fn(&str) -> Option<TrackInfo>,
+        f: impl FnOnce(&mut Self) -> io::Result<()>,
+    ) -> io::Result<Self> {
+        let _lock = lock(root)?;
+        let mut p = Self::read(root, name)?;
+        bases.before_edit(name, &p.entries);
+        f(&mut p)?;
+        let text = p.write_text(root, info)?;
+        bases.wrote(name, &text);
+        Ok(p)
     }
 
     /// Creates an empty playlist with the sanitised `name`; fails if a
     /// playlist with that name, in any letter case, exists.
     pub fn create(root: &Path, name: &str) -> io::Result<Self> {
+        let _lock = lock(root)?;
         let name = sanitize_name(name);
         if let Some(existing) = existing_name(root, &name) {
             return Err(io::Error::new(
@@ -658,9 +733,10 @@ impl Playlist {
         Ok(p)
     }
 
-    /// Renames a playlist file; returns the sanitised new name. Changing only
-    /// the letter case of a name is allowed.
-    pub fn rename(root: &Path, old: &str, new: &str) -> io::Result<String> {
+    /// Renames a playlist file (and this device's base for it); returns the
+    /// sanitised new name. Changing only the letter case of a name is
+    /// allowed.
+    pub fn rename(root: &Path, bases: &Bases, old: &str, new: &str) -> io::Result<String> {
         if old == LIKED_SONGS {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -671,6 +747,7 @@ impl Playlist {
         if new == old {
             return Ok(new);
         }
+        let _lock = lock(root)?;
         if let Some(existing) = existing_name(root, &new).filter(|e| e != old) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -678,17 +755,22 @@ impl Playlist {
             ));
         }
         open_dir(root, false)?.rename(&file_name(old), &file_name(&new))?;
+        bases.rename(old, &new);
         Ok(new)
     }
 
-    pub fn delete(root: &Path, name: &str) -> io::Result<()> {
+    /// Deletes a playlist file (and this device's base for it).
+    pub fn delete(root: &Path, bases: &Bases, name: &str) -> io::Result<()> {
         if name == LIKED_SONGS {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Liked Songs cannot be deleted",
             ));
         }
-        open_dir(root, false)?.remove_file(&file_name(name))
+        let _lock = lock(root)?;
+        open_dir(root, false)?.remove_file(&file_name(name))?;
+        bases.remove(name);
+        Ok(())
     }
 
     pub fn contains(&self, track: &str) -> bool {
@@ -797,7 +879,7 @@ mod tests {
         let p = Playlist::new("z");
         assert!(p.write(root, &|_| None).is_err());
         assert!(!outside.path().join("z.m3u8").exists());
-        assert!(Playlist::delete(root, "y").is_err());
+        assert!(Playlist::delete(root, &Bases::none(), "y").is_err());
         assert!(outside.path().join("y.m3u8").exists());
         assert_eq!(
             fs::read_to_string(&secret).unwrap(),
@@ -906,12 +988,12 @@ mod tests {
         fs::write(playlist_path(root, LIKED_SONGS), "#EXTM3U\n").unwrap();
         assert_eq!(list_names(root), vec!["Road_ Trip_"]);
         assert_eq!(
-            Playlist::rename(root, "Road_ Trip_", "Drive").unwrap(),
+            Playlist::rename(root, &Bases::none(), "Road_ Trip_", "Drive").unwrap(),
             "Drive"
         );
-        assert!(Playlist::rename(root, LIKED_SONGS, "x").is_err());
-        assert!(Playlist::delete(root, LIKED_SONGS).is_err());
-        Playlist::delete(root, "Drive").unwrap();
+        assert!(Playlist::rename(root, &Bases::none(), LIKED_SONGS, "x").is_err());
+        assert!(Playlist::delete(root, &Bases::none(), LIKED_SONGS).is_err());
+        Playlist::delete(root, &Bases::none(), "Drive").unwrap();
         assert!(list_names(root).is_empty());
         assert!(
             Playlist::read(root, LIKED_SONGS)
@@ -948,20 +1030,20 @@ mod tests {
 
         Playlist::create(root, "Drive").unwrap();
         assert_eq!(
-            Playlist::rename(root, "Drive", "ROAD trip")
+            Playlist::rename(root, &Bases::none(), "Drive", "ROAD trip")
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
         assert_eq!(
-            Playlist::rename(root, "Drive", "liked songs")
+            Playlist::rename(root, &Bases::none(), "Drive", "liked songs")
                 .unwrap_err()
                 .kind(),
             io::ErrorKind::AlreadyExists
         );
         // Changing only the case of its own name is a rename, not a clash.
         assert_eq!(
-            Playlist::rename(root, "Road Trip", "road trip").unwrap(),
+            Playlist::rename(root, &Bases::none(), "Road Trip", "road trip").unwrap(),
             "road trip"
         );
         assert_eq!(list_names(root), vec!["Drive", "road trip"]);
@@ -1265,6 +1347,50 @@ mod tests {
         );
     }
 
+    /// Round 3 (trivial): a 30,003-byte line of invalid UTF-8, within the
+    /// 32 KiB line limit, failed `read` as too large (its U+FFFD
+    /// replacements did not fit a 16-bit span) while `summary` listed it.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn invalid_utf8_lines_read_like_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(playlists_dir(root)).unwrap();
+        let mut bytes = b"#EXTM3U\n".to_vec();
+        bytes.extend(std::iter::repeat_n(0xff, 30_003));
+        bytes.extend(b"\n../A/b.mp3\n");
+        fs::write(playlist_path(root, "P"), &bytes).unwrap();
+        let p = Playlist::read(root, "P").unwrap();
+        assert_eq!(p.entries.len(), 2);
+        assert!(p.entries.get(0).unwrap().key().len() > 3 * 30_003);
+        assert_eq!(Playlist::summary(root, "P", 0).unwrap().count, 2);
+    }
+
+    /// Round 3 (trivial): after an over-long line, a run of CRs was read to
+    /// the end of the file whatever its size.
+    #[test]
+    #[cfg_attr(miri, ignore = "too slow under Miri")]
+    fn a_run_of_crs_stops_at_the_size_limit() {
+        struct Counting<R>(R, u64);
+        impl<R: Read> Read for Counting<R> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                let n = self.0.read(buf)?;
+                self.1 += n as u64;
+                Ok(n)
+            }
+        }
+        let line = vec![b'x'; MAX_LINE_BYTES + 2];
+        let crs = io::repeat(b'\r').take(2 * MAX_PLAYLIST_BYTES);
+        let mut counting = Counting(line.as_slice().chain(crs), 0);
+        let e = read_lines(BufReader::new(&mut counting), |_| true).unwrap_err();
+        assert!(is_too_large(&e));
+        assert!(
+            counting.1 <= MAX_PLAYLIST_BYTES + 128 * 1024,
+            "{}",
+            counting.1
+        );
+    }
+
     /// `Span` is `repr(C)`: 12 bytes, fields in declared order.
     #[test]
     fn span_layout_is_fixed() {
@@ -1272,8 +1398,7 @@ mod tests {
         assert_eq!(size_of::<Span>(), 12);
         assert_eq!(align_of::<Span>(), 4);
         assert_eq!(offset_of!(Span, start), 0);
-        assert_eq!(offset_of!(Span, path_len), 4);
-        assert_eq!(offset_of!(Span, label_len), 6);
+        assert_eq!(offset_of!(Span, lens), 4);
         assert_eq!(offset_of!(Span, meta), 8);
     }
 

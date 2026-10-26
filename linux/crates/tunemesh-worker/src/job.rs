@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use tunemesh_core::fsx::{Dir, Kind};
 use tunemesh_core::library::{self, source_id_from_file_name};
+use tunemesh_core::merge::Bases;
 use tunemesh_core::playlist::{self, LIKED_SONGS, Playlist, TrackInfo};
 use tunemesh_core::request::{self, Request, RequestState, Status};
 use tunemesh_core::sanitize;
@@ -24,6 +25,38 @@ use crate::{leader, log, signals, spotify, ytdlp};
 /// every device).
 const STATUS_INTERVAL: Duration = Duration::from_secs(1);
 
+/// Source ids (`[<id>]` in file names) mapped to the library path carrying
+/// them, for skipping downloads that are already there. Built on first use
+/// only (a request that fails early never walks the library) and kept
+/// between requests for `SourceIds::MAX_AGE`; the worker's own placements
+/// update it, and a path is checked to still exist before it is used, so a
+/// kept index misses at most files another device added since.
+#[derive(Default)]
+pub struct SourceIds {
+    index: HashMap<String, String>,
+    built: Option<Instant>,
+    /// Library walks so far.
+    pub walks: usize,
+}
+
+impl SourceIds {
+    pub const MAX_AGE: Duration = Duration::from_secs(10 * 60);
+
+    /// The index, walking the library if there is none or it is too old.
+    fn get(&mut self, root: &Path) -> &mut HashMap<String, String> {
+        if self.built.is_none_or(|t| t.elapsed() >= Self::MAX_AGE) {
+            self.index = library::source_id_index(root);
+            self.built = Some(Instant::now());
+            self.walks += 1;
+        }
+        &mut self.index
+    }
+
+    pub fn is_built(&self) -> bool {
+        self.built.is_some()
+    }
+}
+
 /// What every job shares.
 pub struct Ctx {
     pub root: PathBuf,
@@ -34,6 +67,9 @@ pub struct Ctx {
     pub proxy: Proxy,
     pub http: Http,
     pub tools: Tools,
+    pub source_ids: SourceIds,
+    /// This device's playlist bases (contract: "Playlist conflict copies").
+    pub bases: Bases,
 }
 
 pub struct Job<'a> {
@@ -45,9 +81,12 @@ pub struct Job<'a> {
     pub req: Request,
     pub status: Status,
     /// Source id → library path, for deduplication.
-    pub ids: HashMap<String, String>,
+    pub ids: SourceIds,
     /// Items that failed, including those beyond the listed `failures`.
     pub failed: usize,
+    /// Every track the request produced or matched (the status lists at
+    /// most `MAX_STATUS_TRACKS`), for the playlist.
+    pub tracks: Vec<String>,
     last_write: Instant,
 }
 
@@ -148,7 +187,7 @@ impl Job<'_> {
     /// Writes the status now if `force` or enough time has passed.
     pub fn flush(&mut self, force: bool) {
         if force || self.last_write.elapsed() >= STATUS_INTERVAL {
-            self.status.updated_at = tunemesh_core::now_rfc3339();
+            self.status.updated_at = tunemesh_core::now_rfc3339().into();
             if let Err(e) = self.status.write(self.root) {
                 log!("[{}] writing status: {e}", self.req.id);
             }
@@ -157,6 +196,7 @@ impl Job<'_> {
     }
 
     pub fn set_title(&mut self, title: Option<String>) {
+        let title = title.map(request::Text::from_string);
         if title.is_some() && self.status.title != title {
             self.status.title = title;
             self.flush(true);
@@ -195,14 +235,19 @@ impl Job<'_> {
     }
 
     /// The library path of an already present track with this source id.
-    pub fn existing(&self, id: &str) -> Option<String> {
+    pub fn existing(&mut self, id: &str) -> Option<String> {
         let root = self.root_dir().ok()?;
-        self.ids.get(id).filter(|rel| root.is_file(rel)).cloned()
+        self.ids
+            .get(self.root)
+            .get(id)
+            .filter(|rel| root.is_file(rel))
+            .cloned()
     }
 
     /// Records a track; written with the next `item_done`.
     pub fn add_track(&mut self, rel: String) {
-        self.status.tracks.push(rel);
+        self.status.tracks.push(&rel);
+        self.tracks.push(rel);
     }
 
     /// Free space check before a download starts.
@@ -311,7 +356,7 @@ impl Job<'_> {
             Err(e) => return Err(e),
         }
         if let Some(id) = id {
-            self.ids.insert(id, target_rel.clone());
+            self.ids.get(self.root).insert(id, target_rel.clone());
         }
         Ok(target_rel)
     }
@@ -374,19 +419,14 @@ pub fn classify(input: &str) -> Input {
 /// Appends `tracks` to the playlist `name` (Liked Songs: inserted at the
 /// top), creating it if needed. A playlist whose name differs only in letter
 /// case is the same playlist. Returns the name of the playlist written.
-pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result<String> {
+pub fn add_to_playlist(
+    root: &Path,
+    bases: &Bases,
+    name: &str,
+    tracks: &[String],
+) -> io::Result<String> {
     let name = playlist::sanitize_name(name);
     let name = playlist::existing_name(root, &name).unwrap_or(name);
-    let mut p = match Playlist::read(root, &name) {
-        Ok(p) => p,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Playlist::new(&name),
-        Err(e) => return Err(e),
-    };
-    if name == LIKED_SONGS {
-        p.like_all(tracks.iter().map(String::as_str));
-    } else {
-        p.append(tracks.iter().map(String::as_str));
-    }
     let dir = Dir::open(root)?;
     let infos: HashMap<&str, (Option<u64>, String)> = tracks
         .iter()
@@ -402,26 +442,62 @@ pub fn add_to_playlist(root: &Path, name: &str, tracks: &[String]) -> io::Result
             )
         })
         .collect();
-    p.write(root, &|path| {
+    let info = |path: &str| {
         infos.get(path).map(|(d, l)| TrackInfo {
             duration_secs: *d,
             label: l.clone(),
         })
-    })?;
+    };
+    // Under the Playlists/ lock, so an app on this machine editing the same
+    // playlist does not lose its edit or ours.
+    let add = |p: &mut Playlist| {
+        if p.name == LIKED_SONGS {
+            p.like_all(tracks.iter().map(String::as_str));
+        } else {
+            p.append(tracks.iter().map(String::as_str));
+        }
+        Ok(())
+    };
+    match Playlist::edit(root, bases, &name, &info, add) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            match Playlist::create(root, &name) {
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            Playlist::edit(root, bases, &name, &info, add)?;
+        }
+        r => {
+            r?;
+        }
+    }
     Ok(name)
 }
 
 /// Processes one request to a final state, or back to `queued` when the
 /// worker is interrupted.
 pub fn process(ctx: &mut Ctx, req: Request) {
+    let ids = std::mem::take(&mut ctx.source_ids);
+    ctx.source_ids = run(ctx, req, ids);
+}
+
+/// `process`; returns the source-id index for the next request.
+fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> SourceIds {
     let id = req.id.clone();
     log!("[{id}] processing {:?}", req.input);
-    let dir = ctx.run.jobs().join(&id);
+    let dir = ctx.run.jobs().join(&*id);
     let _ = fs::remove_dir_all(&dir);
     if let Err(e) = fs::create_dir_all(&dir) {
         log!("[{id}] creating {}: {e}", dir.display());
     }
-    let tools = ctx.tools.resolve(&ctx.http);
+    // A request whose input was cut on reading fails at once, without
+    // resolving tools.
+    let too_long = req.input.was_cut();
+    let tools = if too_long {
+        Err("The request is too long (more than 8 KiB)".to_owned())
+    } else {
+        ctx.tools.resolve(&ctx.http)
+    };
     let ctx = &*ctx;
     let mut status = Status::new(&req, RequestState::Downloading);
     status.progress = Some(0.0);
@@ -437,17 +513,14 @@ pub fn process(ctx: &mut Ctx, req: Request) {
         dir: dir.clone(),
         req,
         status,
-        ids: library::source_id_index(&ctx.root),
+        ids,
         failed: 0,
+        tracks: Vec::new(),
         last_write: Instant::now(),
     };
     job.flush(true);
 
-    let too_long = job.req.input.len() > tunemesh_core::limits::MAX_INPUT_BYTES;
     let result = match tools {
-        _ if too_long => {
-            SourceResult::fatal("The request is too long (more than 8 KiB)".to_owned())
-        }
         Err(e) => SourceResult::fatal(e),
         Ok(tools) => {
             job.tools = tools;
@@ -463,6 +536,7 @@ pub fn process(ctx: &mut Ctx, req: Request) {
     };
     finish(&mut job, result);
     let _ = fs::remove_dir_all(&dir);
+    job.ids
 }
 
 fn finish(job: &mut Job, r: SourceResult) {
@@ -472,7 +546,7 @@ fn finish(job: &mut Job, r: SourceResult) {
         let s = &mut job.status;
         s.state = RequestState::Queued;
         s.progress = None;
-        s.message = Some("Interrupted; continues when a downloader is running".to_owned());
+        s.message = Some("Interrupted; continues when a downloader is running".into());
         log!("[{id}] interrupted");
         job.flush(true);
         return;
@@ -485,17 +559,20 @@ fn finish(job: &mut Job, r: SourceResult) {
     } else if let Some(fatal) = r.fatal {
         s.state = RequestState::Failed;
         s.progress = None;
-        s.message = Some(fatal);
-    } else if s.tracks.is_empty() {
+        s.message = Some(fatal.into());
+    } else if job.tracks.is_empty() {
         s.state = RequestState::Failed;
         s.progress = None;
-        let first = s.failures.first().map(|f| f.error.clone());
-        s.message = Some(match (r.total, first) {
-            (0, _) => "Nothing to download".to_owned(),
-            (1, Some(e)) => e,
-            (n, Some(e)) => format!("All {n} tracks unavailable: {e}"),
-            (_, None) => "Nothing was downloaded".to_owned(),
-        });
+        let first = s.failures.first().map(|f| f.error.to_string());
+        s.message = Some(
+            match (r.total, first) {
+                (0, _) => "Nothing to download".to_owned(),
+                (1, Some(e)) => e,
+                (n, Some(e)) => format!("All {n} tracks unavailable: {e}"),
+                (_, None) => "Nothing was downloaded".to_owned(),
+            }
+            .into(),
+        );
     } else {
         s.state = RequestState::Done;
         s.progress = Some(1.0);
@@ -503,12 +580,13 @@ fn finish(job: &mut Job, r: SourceResult) {
         if failed > 0 {
             notes.push(format!("{failed} of {} tracks unavailable", r.total));
         }
-        notes.extend(s.warnings.iter().cloned());
+        notes.extend(s.warnings.iter().map(|w| w.to_string()));
         let target = job
             .req
             .playlist
-            .clone()
+            .as_deref()
             .filter(|p| !p.trim().is_empty())
+            .map(str::to_owned)
             .or_else(|| {
                 if job.req.playlist_from_source {
                     r.source_playlist.clone()
@@ -517,10 +595,10 @@ fn finish(job: &mut Job, r: SourceResult) {
                 }
             });
         if let Some(name) = target {
-            match add_to_playlist(job.root, &name, &s.tracks) {
+            match add_to_playlist(job.root, &job.ctx.bases, &name, &job.tracks) {
                 Ok(name) => log!(
                     "[{id}] added {} track(s) to playlist {name:?}",
-                    s.tracks.len()
+                    job.tracks.len()
                 ),
                 Err(e) => {
                     // Too large (contract: "Playlists"): the playlist is
@@ -538,7 +616,7 @@ fn finish(job: &mut Job, r: SourceResult) {
             );
         }
         if !notes.is_empty() {
-            s.message = Some(notes.join(". "));
+            s.message = Some(notes.join(". ").into());
         }
     }
     log!(
@@ -574,6 +652,8 @@ pub mod tests {
             proxy,
             http,
             tools: Tools::new(None),
+            source_ids: SourceIds::default(),
+            bases: Bases::none(),
         }
     }
 
@@ -592,8 +672,9 @@ pub mod tests {
             dir: dir.to_path_buf(),
             req,
             status,
-            ids: HashMap::new(),
+            ids: SourceIds::default(),
             failed: 0,
+            tracks: Vec::new(),
             last_write: Instant::now(),
         }
     }
@@ -603,6 +684,27 @@ pub mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         p
+    }
+
+    /// R3Deepseek-3: every request walked the whole library first, even one
+    /// that failed at once (39 ms per tiny request on a 100k-file library).
+    #[test]
+    fn early_failures_do_not_walk_the_library() {
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(lib.path(), work.path());
+        let req = Request::new(&"q".repeat(9 * 1024), None, false, "t");
+        let id = req.id.to_string();
+        process(&mut ctx, req);
+        assert!(!ctx.source_ids.is_built());
+        let s = request::read_status(lib.path(), &id).unwrap();
+        assert_eq!(s.state, RequestState::Failed);
+        assert!(s.message.unwrap().contains("too long"));
+        // Built on first use, then kept.
+        let mut job = test_job(&ctx, work.path());
+        assert_eq!(job.existing("x"), None);
+        assert_eq!(job.existing("y"), None);
+        assert_eq!(job.ids.walks, 1);
     }
 
     #[test]
@@ -741,8 +843,11 @@ pub mod tests {
         let lib = tempfile::tempdir().unwrap();
         let root = lib.path();
         let tracks = vec!["A/B/one [1].opus".to_owned(), "A/B/two [2].opus".to_owned()];
-        assert_eq!(add_to_playlist(root, "Mix: 1", &tracks).unwrap(), "Mix_ 1");
-        add_to_playlist(root, "Mix: 1", &tracks[..1]).unwrap();
+        assert_eq!(
+            add_to_playlist(root, &Bases::none(), "Mix: 1", &tracks).unwrap(),
+            "Mix_ 1"
+        );
+        add_to_playlist(root, &Bases::none(), "Mix: 1", &tracks[..1]).unwrap();
         let p = Playlist::read(root, "Mix_ 1").unwrap();
         assert_eq!(p.entries.len(), 3);
 
@@ -752,7 +857,7 @@ pub mod tests {
             "#EXTM3U\n../old.mp3\n",
         )
         .unwrap();
-        add_to_playlist(root, LIKED_SONGS, &tracks).unwrap();
+        add_to_playlist(root, &Bases::none(), LIKED_SONGS, &tracks).unwrap();
         let liked = Playlist::read(root, LIKED_SONGS).unwrap();
         let order: Vec<_> = liked
             .entries
@@ -772,12 +877,12 @@ pub mod tests {
         let tracks = vec!["A/B/one [1].opus".to_owned()];
         Playlist::create(root, "Road Trip").unwrap();
         assert_eq!(
-            add_to_playlist(root, "road trip", &tracks).unwrap(),
+            add_to_playlist(root, &Bases::none(), "road trip", &tracks).unwrap(),
             "Road Trip"
         );
         // "liked songs" typed into a request is Liked Songs, with its insert-at-top rule.
         assert_eq!(
-            add_to_playlist(root, "liked songs", &tracks).unwrap(),
+            add_to_playlist(root, &Bases::none(), "liked songs", &tracks).unwrap(),
             LIKED_SONGS
         );
         assert_eq!(playlist::list_names(root), vec!["Road Trip"]);
@@ -806,7 +911,7 @@ pub mod tests {
         fs::create_dir(root.join("Playlists")).unwrap();
         symlink(&secret, playlist::playlist_path(root, "x")).unwrap();
         let tracks = vec!["A/B/one [1].opus".to_owned()];
-        assert!(add_to_playlist(root, "x", &tracks).is_err());
+        assert!(add_to_playlist(root, &Bases::none(), "x", &tracks).is_err());
         assert_eq!(fs::read_to_string(&secret).unwrap(), "ssh-ed25519 AAAA\n");
         assert!(
             fs::symlink_metadata(playlist::playlist_path(root, "x"))
@@ -828,7 +933,7 @@ pub mod tests {
             "../a.mp3\n".repeat(tunemesh_core::limits::MAX_PLAYLIST_ENTRIES + 1)
         );
         fs::write(root.join("Playlists/Big.m3u8"), &text).unwrap();
-        let err = add_to_playlist(root, "Big", &["b.mp3".to_owned()]).unwrap_err();
+        let err = add_to_playlist(root, &Bases::none(), "Big", &["b.mp3".to_owned()]).unwrap_err();
         assert!(playlist::is_too_large(&err));
         assert!(
             err.to_string()

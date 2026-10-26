@@ -8,7 +8,10 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::TUNEMESH_DIR;
+use crate::bounded::Bounded;
+use crate::bounded_struct;
 use crate::fsx::Dir;
+use crate::limits::{MAX_DEVICE_BYTES, MAX_TIMESTAMP_BYTES, MAX_WORKER_ID_BYTES};
 
 pub const FILE_NAME: &str = "worker.json";
 /// The active worker rewrites its heartbeat this often.
@@ -16,28 +19,33 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 /// A heartbeat younger than this means that worker is active.
 pub const FRESH_FOR: Duration = Duration::from_secs(180);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkerInfo {
-    pub version: u32,
-    /// Device name of the downloading host, for display.
-    pub device: String,
-    /// Hashed id of the machine and its process-id namespace. Only a worker
-    /// with the same `machine` may treat this heartbeat as stale because
-    /// `pid` no longer exists; empty in files from older workers.
-    #[serde(default)]
-    pub machine: String,
-    /// Random per-process id, telling two workers on one device apart.
-    #[serde(default)]
-    pub instance: String,
-    /// Process id of that worker on `device`.
-    #[serde(default)]
-    pub pid: u32,
-    /// `tunemesh-worker --version` of that worker.
-    #[serde(default)]
-    pub worker_version: String,
-    /// RFC 3339 time of the last heartbeat.
-    pub heartbeat_at: String,
+/// `machine`, `instance` and `workerVersion`.
+pub type WorkerId = Bounded<MAX_WORKER_ID_BYTES>;
+
+bounded_struct! {
+    #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    pub struct WorkerInfo {
+        pub version: u32,
+        /// Device name of the downloading host, for display.
+        pub device: Bounded<MAX_DEVICE_BYTES>,
+        /// Hashed id of the machine and its process-id namespace. Only a worker
+        /// with the same `machine` may treat this heartbeat as stale because
+        /// `pid` no longer exists; empty in files from older workers.
+        #[serde(default)]
+        pub machine: WorkerId,
+        /// Random per-process id, telling two workers on one device apart.
+        #[serde(default)]
+        pub instance: WorkerId,
+        /// Process id of that worker on `device`.
+        #[serde(default)]
+        pub pid: u32,
+        /// `tunemesh-worker --version` of that worker.
+        #[serde(default)]
+        pub worker_version: WorkerId,
+        /// RFC 3339 time of the last heartbeat.
+        pub heartbeat_at: Bounded<MAX_TIMESTAMP_BYTES>,
+    }
 }
 
 impl WorkerInfo {
@@ -131,5 +139,22 @@ mod tests {
         assert!(v.get("heartbeatAt").is_some() && v.get("workerVersion").is_some());
         remove(dir.path()).unwrap();
         assert!(read(dir.path()).is_none());
+    }
+
+    /// Every field is cut when read (contract: "Limits").
+    #[test]
+    fn fields_are_cut() {
+        let long = "x".repeat(10_000);
+        let json = serde_json::json!({
+            "version": 1, "device": long, "machine": long, "instance": long,
+            "pid": 1, "workerVersion": long, "heartbeatAt": long,
+        });
+        let w = parse(json.to_string().as_bytes()).unwrap();
+        assert_eq!(w.device.len(), MAX_DEVICE_BYTES);
+        for f in [&w.machine, &w.instance, &w.worker_version] {
+            assert_eq!(f.len(), MAX_WORKER_ID_BYTES);
+        }
+        assert_eq!(w.heartbeat_at.len(), MAX_TIMESTAMP_BYTES);
+        assert!(parse(br#"{"version":1,"device":"d","heartbeatAt":"t","pid":-1}"#).is_none());
     }
 }

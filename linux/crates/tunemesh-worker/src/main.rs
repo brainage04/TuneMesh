@@ -7,9 +7,10 @@
 use std::collections::HashSet;
 use std::path::Path;
 use std::process::ExitCode;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use tunemesh_core::merge::{self, Bases};
 use tunemesh_core::request::{self, Request, RequestState, Status};
 use tunemesh_worker::config::{self, Args, Parsed, USAGE, VERSION};
 use tunemesh_worker::job::{self, Ctx};
@@ -112,6 +113,7 @@ fn run(args: Args) -> Result<(), Fatal> {
         work_dir.display()
     );
     let leader = leader::Leader::new(&library, device, config::machine_id());
+    let bases = Bases::new(&library);
     let mut ctx = Ctx {
         root: library,
         work_dir,
@@ -120,6 +122,8 @@ fn run(args: Args) -> Result<(), Fatal> {
         proxy,
         http,
         tools: tools::Tools::new(args.yt_dlp.clone()),
+        source_ids: job::SourceIds::default(),
+        bases,
     };
 
     let mut reported_bad: HashSet<String> = HashSet::new();
@@ -149,12 +153,12 @@ fn run(args: Args) -> Result<(), Fatal> {
 
         if last_sweep.is_none_or(|t| t.elapsed() >= SWEEP_INTERVAL) {
             last_sweep = Some(Instant::now());
-            sweep_cancelled(&root);
+            sweep(&root, &ctx.bases);
         }
 
         // Every pending request gets a status so clients show "queued".
         for r in &requests {
-            if request::read_status(&root, &r.id).is_none()
+            if request::read_state(&root, &r.id).is_none()
                 && let Err(e) = Status::new(r, RequestState::Queued).write(&root)
             {
                 log!("[{}] writing status: {e}", r.id);
@@ -171,19 +175,29 @@ fn run(args: Args) -> Result<(), Fatal> {
     Ok(())
 }
 
-/// Statuses left unfinished whose request file is gone were cancelled while
-/// no worker was watching.
-fn sweep_cancelled(root: &Path) {
-    for status in request::list_newest_statuses(root, usize::MAX) {
-        if !status.state.is_final() && request::is_cancelled(root, &status.id) {
-            log!("[{}] request file gone; marking cancelled", status.id);
-            let mut s = status;
-            s.state = RequestState::Cancelled;
-            s.progress = None;
-            s.updated_at = tunemesh_core::now_rfc3339();
-            if let Err(e) = s.write(root) {
-                log!("[{}] writing status: {e}", s.id);
-            }
+/// Statuses whose request file is gone: unfinished ones were cancelled
+/// while no worker was watching, final ones past the newest listed are
+/// deleted (`request::sweep`, one status file at a time). Then playlist
+/// conflict copies that are due are merged (the worker does not know its
+/// Syncthing device ID, so it merges copies 10 minutes old).
+fn sweep(root: &Path, bases: &Bases) {
+    let done = request::sweep(root);
+    for id in &done.cancelled {
+        log!("[{id}] request file gone; marked cancelled");
+    }
+    if done.pruned > 0 {
+        log!(
+            "deleted {} finished status files no client lists",
+            done.pruned
+        );
+    }
+    for (id, e) in &done.errors {
+        log!("[{id}] status file: {e}");
+    }
+    for (name, result) in merge::merge_conflicts(root, bases, None, SystemTime::now()) {
+        match result {
+            Ok(()) => log!("merged conflict copies into playlist {name:?}"),
+            Err(e) => log!("merging conflict copies into playlist {name:?}: {e}"),
         }
     }
 }
@@ -193,9 +207,9 @@ fn sweep_cancelled(root: &Path) {
 /// queue. Removing a symlink removes the link, never its target.
 fn fail_invalid(root: &Path, id: &str, err: &str) {
     let mut req = Request::new("", None, false, "");
-    req.id = id.to_owned();
+    req.id = id.into();
     let mut status = Status::new(&req, RequestState::Failed);
-    status.message = Some(format!("Invalid request file: {err}"));
+    status.message = Some(format!("Invalid request file: {err}").into());
     if status.write(root).is_ok() {
         let _ = request::cancel(root, id);
     }

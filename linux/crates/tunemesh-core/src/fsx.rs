@@ -171,6 +171,17 @@ impl Dir {
         })
     }
 
+    /// Takes an exclusive `flock` on this directory, waiting for it; held
+    /// until this `Dir` (and every clone of its descriptor) is closed.
+    pub fn lock_exclusive(&self) -> io::Result<()> {
+        loop {
+            match rustix::fs::flock(&self.fd, rustix::fs::FlockOperation::LockExclusive) {
+                Err(rustix::io::Errno::INTR) => continue,
+                r => return r.map_err(io::Error::from),
+            }
+        }
+    }
+
     /// The directory holding `rel` and the final component's name.
     fn parent_of<'a>(&self, rel: &'a str, create: bool) -> io::Result<(Self, &'a str)> {
         let comps = components(rel)?;

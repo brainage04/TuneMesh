@@ -20,6 +20,7 @@ in the writers' format and compares it byte for byte with `merged.m3u8`.
 - `remove-and-reorder`, `reorder-in-copy`: one device removed B, the other
   moved D to the top; once with each as the winner (same result).
 - `both-add`: each device added a different track.
+- `both-add-same`: both devices added the same track; it is there once.
 - `no-base`: no base; B, which the winner's device had removed, comes back.
 - `duplicates`: one device removed one of two A entries, the other added a
   third.
