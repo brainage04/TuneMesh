@@ -320,9 +320,11 @@ How it works:
   files left unfinished by a request deleted while no worker ran become
   `cancelled` too.
 - Every minute the worker looks at the status files whose request file is
-  gone, one file at a time and reading only their `state`; finished ones
-  that are not among the newest 200 status files are deleted, since no
-  client lists them. It then merges playlist conflict copies that are 10
+  gone, oldest first, one file at a time and reading only their `state`;
+  finished ones that are not among the newest 200 status files are deleted,
+  since no client lists them. It changes at most 128 status files per pass,
+  so a large pile is worked off a minute at a time without holding up
+  downloads for long. It then merges playlist conflict copies that are 10
   minutes old (it does not know its Syncthing device ID).
 - Playlist edits (downloads added to a playlist) take the same `Playlists/`
   lock as the desktop app, so neither loses the other's edit.

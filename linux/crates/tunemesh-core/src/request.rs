@@ -19,7 +19,8 @@ use crate::fsx::{Dir, Kind};
 use crate::limits::{
     MAX_DEVICE_BYTES, MAX_FAILURES, MAX_ID_BYTES, MAX_INPUT_BYTES, MAX_JSON_BYTES,
     MAX_LISTED_REQUESTS, MAX_LISTED_WARNINGS, MAX_MESSAGE_BYTES, MAX_REQUEST_PLAYLIST_BYTES,
-    MAX_STATUS_TRACKS, MAX_TEXT_BYTES, MAX_TIMESTAMP_BYTES, MAX_TRACK_PATH_BYTES, MAX_WARNINGS,
+    MAX_STATUS_TRACKS, MAX_SWEEP_CHANGES, MAX_TEXT_BYTES, MAX_TIMESTAMP_BYTES,
+    MAX_TRACK_PATH_BYTES, MAX_WARNINGS,
 };
 
 const REQUESTS: &str = "requests";
@@ -554,17 +555,21 @@ pub struct Sweep {
 }
 
 /// The worker's sweep (contract: "Download status"): of the status files
-/// whose request file is gone, read one at a time and only for their
-/// `state`, an unfinished one is set to `cancelled` (its request was
-/// cancelled while no worker was watching), and a final one that is not
-/// among the newest `MAX_LISTED_REQUESTS` status ids is deleted. Memory does
-/// not grow with the number of status files beyond their names.
+/// whose request file is gone, read one at a time, oldest first, and only
+/// for their `state`, an unfinished one is set to `cancelled` (its request
+/// was cancelled while no worker was watching), and a final one that is not
+/// among the newest `MAX_LISTED_REQUESTS` status ids is deleted; at most
+/// `MAX_SWEEP_CHANGES` of them (tried) per call, the rest wait for the next.
+/// Memory does not grow with the number of status files beyond their names.
 pub fn sweep(root: &Path) -> Sweep {
     let mut done = Sweep::default();
     let (Some(dir), orphans) = orphan_status_ids(root) else {
         return done;
     };
     for (id, newest) in orphans {
+        if done.cancelled.len() + done.pruned + done.errors.len() >= MAX_SWEEP_CHANGES {
+            break;
+        }
         let Ok(state) = read_state_in(&dir, &id) else {
             continue;
         };
@@ -1021,6 +1026,53 @@ mod tests {
         // Now final and old: the next sweep deletes it.
         assert_eq!(sweep(root).pruned, 1);
         assert!(read_status(root, "10-00000000").is_none());
+    }
+
+    /// R4-Opus-7: one sweep cancels or deletes at most `MAX_SWEEP_CHANGES`
+    /// orphaned statuses, oldest first, so a pile a sharing device wrote
+    /// holds up downloads for one bounded pass at a time; later passes go
+    /// on. Final statuses it keeps (the newest 200) do not count, so an
+    /// unfinished one behind them is still reached.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn a_sweep_changes_a_bounded_number_of_statuses() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let n = 2 * MAX_SWEEP_CHANGES + 10;
+        let id = |i: usize| format!("{}-00000000", 1_000 + i);
+        for i in 0..n {
+            let r = request_with_id("x", &id(i));
+            Status::new(&r, RequestState::Downloading)
+                .write(root)
+                .unwrap();
+        }
+        let first = sweep(root);
+        assert_eq!(first.cancelled.len(), MAX_SWEEP_CHANGES);
+        assert_eq!(first.cancelled[0], id(0));
+        let mut passes = 1;
+        while !sweep(root).cancelled.is_empty() {
+            passes += 1;
+            assert!(passes < 10, "the sweep does not get through");
+        }
+        for i in 0..n {
+            assert!(
+                read_state(root, &id(i)).is_none_or(RequestState::is_final),
+                "{i}"
+            );
+        }
+
+        // The newest 200 final statuses, then an unfinished one.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for i in 0..MAX_LISTED_REQUESTS {
+            let r = request_with_id("x", &id(i));
+            Status::new(&r, RequestState::Done).write(root).unwrap();
+        }
+        let late = id(MAX_LISTED_REQUESTS);
+        Status::new(&request_with_id("x", &late), RequestState::Downloading)
+            .write(root)
+            .unwrap();
+        assert_eq!(sweep(root).cancelled, [late]);
     }
 
     /// Found by `fuzz/fuzz_targets/status_limits.rs`: 10,000 long track
