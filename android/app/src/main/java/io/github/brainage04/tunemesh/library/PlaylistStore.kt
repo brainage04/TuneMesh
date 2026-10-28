@@ -227,9 +227,10 @@ class PlaylistStore(
      * Merges the conflict copies of playlists into them (contract: "Playlist conflict copies") and deletes them; returns the names of the
      * playlists written. This device does not know its Syncthing device ID, so it merges only copies modified at least [CONFLICT_AGE_MS]
      * before [now]. A copy is merged only when its playlist exists; a too-large or unreadable playlist or copy, or a result over the
-     * limits, leaves both files alone. Copies of one playlist go one at a time in byte order of their names, each against the playlist's
-     * base as it was before the first of them; then the merged playlist becomes the base. The result is written without library lookups, so
-     * every device writes the same bytes.
+     * limits, leaves both files alone. Copies of one playlist go one at a time in byte order of their names, at most [MAX_COPIES_PER_PASS]
+     * per call, each against the playlist's base as it was before the first of them, in memory; then the playlist is written once, and the
+     * merged playlist becomes the base unless copies are left for the next call. The result is written without library lookups, so every
+     * device writes the same bytes.
      */
     fun mergeConflicts(now: Long = System.currentTimeMillis()): Set<String> {
         val bases = bases ?: return emptySet()
@@ -245,24 +246,31 @@ class PlaylistStore(
     private fun isDue(copy: File, name: String, now: Long): Boolean =
         copy.isFile && now - copy.lastModified() >= CONFLICT_AGE_MS && file(name).isFile
 
-    /** Merges the copies [names] of playlist [name] one at a time; returns whether the playlist was written. */
+    /**
+     * Merges the first [MAX_COPIES_PER_PASS] of the copies [names] of playlist [name] one at a time; returns whether it was written. While
+     * copies are left for the next pass the base stays, so they are merged against the same base.
+     */
     private fun mergeCopies(bases: PlaylistBases, name: String, names: List<String>): Boolean {
         var current = readOrNull(file(name)) ?: return false
         val base = bases.read(fileName(name), root.absolutePath)
         var written: ByteArray? = null
-        for (copyName in names.sortedWith { a, b -> compareBytes(a.toByteArray(), b.toByteArray()) }) {
+        val merged = ArrayList<File>()
+        for (copyName in names.sortedWith { a, b -> compareBytes(a.toByteArray(), b.toByteArray()) }.take(MAX_COPIES_PER_PASS)) {
             // A copy gone meanwhile (merged by another device and the deletion synced) reads as null.
             val copy = File(directory, copyName)
             val result = readOrNull(copy)?.let { PlaylistMerge.merge(base, current, it) }
             val bytes = result?.let(::serialised)
             if (result != null && bytes != null) {
-                AtomicFiles.write(file(name), bytes)
-                copy.delete()
                 current = result
                 written = bytes
+                merged += copy
             }
         }
-        written?.let { bases.merged(fileName(name), it) }
+        written?.let {
+            AtomicFiles.write(file(name), it)
+            for (copy in merged) copy.delete()
+            if (names.size > MAX_COPIES_PER_PASS) bases.written(fileName(name), it) else bases.merged(fileName(name), it)
+        }
         return written != null
     }
 
@@ -334,6 +342,9 @@ class PlaylistStore(
 
         /** How old a conflict copy must be before this device merges it (contract: "Who merges"). */
         const val CONFLICT_AGE_MS = 10 * 60 * 1000L
+
+        /** At most this many copies of one playlist are merged in one pass; the rest wait for the next (contract: "How"). */
+        const val MAX_COPIES_PER_PASS = 32
 
         /** Unsigned byte order, as the contract orders conflict copies. */
         private fun compareBytes(a: ByteArray, b: ByteArray): Int {

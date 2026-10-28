@@ -20,6 +20,10 @@ use crate::playlist::{self, Entries, Playlist, PlaylistEntry, serialize};
 /// this old.
 pub const MERGE_AFTER: Duration = Duration::from_secs(10 * 60);
 
+/// At most this many copies of one playlist are merged in one pass; the
+/// rest wait for the next pass.
+pub const MAX_COPIES_PER_PASS: usize = 32;
+
 /// FNV-1a, 64 bits: a stable hash for names and own-write markers.
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, b| {
@@ -279,8 +283,9 @@ pub fn conflict_copy(file: &str) -> Option<(&str, &str)> {
 /// characters of this device's Syncthing ID, when known; Syncthing names a
 /// copy after the device that made the winning version), others once their
 /// modification time is `MERGE_AFTER` before `now`. Each playlist is merged
-/// under the `Playlists/` lock; returns the playlists merged into, each with
-/// its result (an error leaves its files as they were).
+/// under the `Playlists/` lock, at most `MAX_COPIES_PER_PASS` of its copies
+/// (the first in byte order) per call; returns the playlists merged into,
+/// each with its result (an error leaves its files as they were).
 pub fn merge_conflicts(
     root: &Path,
     bases: &Bases,
@@ -314,44 +319,78 @@ pub fn merge_conflicts(
     due.into_iter()
         .map(|(name, mut copies)| {
             copies.sort();
-            let result = merge_copies(root, bases, &name, &copies);
+            let later = copies.len() > MAX_COPIES_PER_PASS;
+            copies.truncate(MAX_COPIES_PER_PASS);
+            let result = merge_copies(root, bases, &name, &copies, later);
             (name, result)
         })
         .collect()
 }
 
-/// Merges `copies` (file names, in order) into the playlist `name`.
-fn merge_copies(root: &Path, bases: &Bases, name: &str, copies: &[String]) -> io::Result<()> {
+/// Merges `copies` (file names, in order) into the playlist `name`: each
+/// into the result of the ones before it, in memory, then writes the
+/// playlist once and deletes the copies merged. A copy that cannot be read,
+/// or whose merge would be over the limits, ends the merge there: the
+/// copies before it are written and deleted, it and the rest stay, and its
+/// error is returned. The merged playlist becomes the base only when every
+/// copy was merged (none failed, and `later`, more copies left for the next
+/// pass, is false), so the copies still to merge keep the same base.
+fn merge_copies(
+    root: &Path,
+    bases: &Bases,
+    name: &str,
+    copies: &[String],
+    later: bool,
+) -> io::Result<()> {
     let _lock = playlist::lock(root)?;
     let dir = playlist::open_dir(root, false)?;
-    if !dir.is_file(&format!("{name}.m3u8")) {
+    let file_name = format!("{name}.m3u8");
+    if !dir.is_file(&file_name) {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             format!("“{name}” no longer exists"),
         ));
     }
     let base = bases.base(name);
-    let mut last = None;
+    let mut current = Playlist::read(root, name)?.entries;
+    let mut merged: Vec<&str> = Vec::new();
+    let mut text = None;
+    let mut result = Ok(());
     for file in copies {
         // Merged meanwhile by another process on this machine.
         if !dir.is_file(file) {
             continue;
         }
         let copy_name = &file[..file.len() - ".m3u8".len()];
-        let winner = Playlist::read(root, name)?;
-        let copy = Playlist::read(root, copy_name)?;
-        let merged = Playlist {
-            name: name.to_owned(),
-            entries: merge(base.as_ref(), &winner.entries, &copy.entries),
-        };
-        let text = merged.write_text(root, &|_| None)?;
-        dir.remove_file(file)?;
-        last = Some(text);
+        let step = Playlist::read(root, copy_name).and_then(|copy| {
+            let entries = merge(base.as_ref(), &current, &copy.entries);
+            let t = playlist::checked_text(&entries, &|_| None)?;
+            Ok((entries, t))
+        });
+        match step {
+            Ok((entries, t)) => {
+                current = entries;
+                text = Some(t);
+                merged.push(file);
+            }
+            Err(e) => {
+                result = Err(e);
+                break;
+            }
+        }
     }
-    if let Some(text) = last {
-        bases.merged(name, &text);
+    if let Some(text) = text {
+        dir.write_atomic(&file_name, text.as_bytes())?;
+        for file in merged {
+            dir.remove_file(file)?;
+        }
+        if later || result.is_err() {
+            bases.wrote(name, &text);
+        } else {
+            bases.merged(name, &text);
+        }
     }
-    Ok(())
+    result
 }
 
 #[cfg(test)]
@@ -548,6 +587,115 @@ mod tests {
             fs::read_dir(playlist::playlists_dir(root)).unwrap().count(),
             1
         );
+    }
+
+    /// Many copies of one playlist: one pass merges at most
+    /// `MAX_COPIES_PER_PASS` of them (the first in byte order) and writes
+    /// the playlist once; the next pass merges the rest against the same
+    /// base, so their entries are not taken for removals.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn copies_are_merged_in_bounded_passes() {
+        let lib = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let bases = Bases::in_dir(state.path(), root);
+        write(root, "P.m3u8", &lines("a"));
+        bases.merged("P", &lines("a"));
+        let n = MAX_COPIES_PER_PASS + 8;
+        let copy = |i: usize| format!("P.sync-conflict-20261019-{i:06}-AAAAAAA.m3u8");
+        for i in 0..n {
+            write(
+                root,
+                &copy(i),
+                &format!("#EXTM3U\n../a.mp3\n../n{i:03}.mp3\n"),
+            );
+        }
+        let now = SystemTime::now();
+        let left = || {
+            fs::read_dir(playlist::playlists_dir(root))
+                .unwrap()
+                .filter(|e| e.as_ref().unwrap().file_name() != "P.m3u8")
+                .count()
+        };
+        let done = merge_conflicts(root, &bases, Some("AAAAAAA"), now);
+        assert!(done.len() == 1 && done[0].1.is_ok(), "{done:?}");
+        assert_eq!(left(), n - MAX_COPIES_PER_PASS);
+        assert_eq!(
+            Playlist::read(root, "P").unwrap().entries.len(),
+            1 + MAX_COPIES_PER_PASS
+        );
+        // The copies merged are the first ones in byte order, and the base
+        // stays until the last copy is merged.
+        assert!(!playlist::playlists_dir(root).join(copy(0)).exists());
+        assert!(playlist::playlists_dir(root).join(copy(n - 1)).exists());
+        assert_eq!(keys(&bases.base("P").unwrap()), "a");
+        merge_conflicts(root, &bases, Some("AAAAAAA"), now);
+        assert_eq!(left(), 0);
+        let all = Playlist::read(root, "P").unwrap().entries;
+        assert_eq!(all.len(), 1 + n);
+        assert_eq!(bases.base("P").unwrap(), all);
+    }
+
+    /// Merging several copies in memory and writing once gives the bytes
+    /// that writing the playlist after each copy and reading it back for the
+    /// next gives (the contract's "each into the playlist as the one before
+    /// left it"), with entries without `#EXTINF`, outside the root,
+    /// duplicated and with CRLF endings. A copy over the limits stops the
+    /// pass: the copies before it are merged, it and the rest stay.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn merging_in_memory_matches_writing_after_each_copy() {
+        let lib = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let bases = Bases::in_dir(state.path(), root);
+        let base = "#EXTM3U\n../a.mp3\n#EXTINF:12,  Bee \n../b.mp3\n/elsewhere/x.mp3\n../a.mp3\n";
+        let winner = "#EXTM3U\r\n../b.mp3\r\n/elsewhere/x.mp3\r\n../c%20d.mp3\r\n../a.mp3\r\n";
+        let copies = [
+            "#EXTM3U\n../e.mp3\n../a.mp3\n#EXTINF:12,Bee\n../b.mp3\n/elsewhere/x.mp3\n../a.mp3\n",
+            "#EXTM3U\n../a.mp3\n../b.mp3\n../f.mp3\n../a.mp3\n../a.mp3\n",
+            "\u{feff}#EXTM3U\n#EXTINF:-1,G\n../g.mp3\n../b.mp3\n",
+        ];
+        write(root, "P.m3u8", winner);
+        bases.merged("P", base);
+        let name = |i: usize| format!("P.sync-conflict-20261019-10150{i}-AAAAAAA.m3u8");
+        for (i, c) in copies.iter().enumerate() {
+            write(root, &name(i), c);
+        }
+        // The reference: one copy at a time through the file.
+        let base_entries = bases.base("P").unwrap();
+        let mut text = winner.to_owned();
+        for c in copies {
+            let w = playlist::parse(&text, root).unwrap();
+            let merged = merge(Some(&base_entries), &w, &playlist::parse(c, root).unwrap());
+            text = merged_text(&merged);
+        }
+        let done = merge_conflicts(root, &bases, Some("AAAAAAA"), SystemTime::now());
+        assert!(done.len() == 1 && done[0].1.is_ok(), "{done:?}");
+        let written = fs::read_to_string(playlist::playlist_path(root, "P")).unwrap();
+        assert_eq!(written, text);
+        assert_eq!(
+            fs::read_dir(playlist::playlists_dir(root)).unwrap().count(),
+            1
+        );
+        assert_eq!(merged_text(&bases.base("P").unwrap()), text);
+
+        // A copy over the limits between two good ones.
+        let big = (0..crate::limits::MAX_PLAYLIST_ENTRIES)
+            .fold(String::from("#EXTM3U\n"), |s, i| {
+                s + &format!("../z{i}.mp3\n")
+            });
+        write(root, &name(0), &lines("h"));
+        write(root, &name(1), &big);
+        write(root, &name(2), &lines("i"));
+        let done = merge_conflicts(root, &bases, Some("AAAAAAA"), SystemTime::now());
+        assert!(playlist::is_too_large(done[0].1.as_ref().unwrap_err()));
+        let after = read_keys(root, "P");
+        assert!(after.contains('h') && !after.contains('i'), "{after}");
+        assert!(!playlist::playlists_dir(root).join(name(0)).exists());
+        assert!(playlist::playlists_dir(root).join(name(1)).exists());
+        assert!(playlist::playlists_dir(root).join(name(2)).exists());
     }
 
     /// A merge that would be too large, or a copy without its playlist,

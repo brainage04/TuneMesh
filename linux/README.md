@@ -135,7 +135,9 @@ downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
   removal is not undone. A copy that names this device's Syncthing ID is
   merged at once (the app asks its Syncthing for the ID); any other copy
   once it is 10 minutes old, by whichever device sees it then (phones and
-  the worker do not know their ID and always wait).
+  the worker do not know their ID and always wait). Up to 32 copies of one
+  playlist are merged at a time, with one write of the playlist; more wait
+  for the next pass.
 - Playlist edits are written on a background thread; quitting or closing
   the window waits up to 5 seconds for the ones still queued.
 - Cache (library scan, MPRIS cover art): `~/.cache/tunemesh/`. The scan cache
