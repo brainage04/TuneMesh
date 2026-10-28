@@ -7,7 +7,8 @@
 //! - a playlist reload that read the files before an edit never takes the
 //!   edit's result off the screen (R3-Opus-6);
 //! - the Downloads page keeps little of 200 request and 200 status files
-//!   at their limits (R3-Opus-3).
+//!   at their limits (R3-Opus-3);
+//! - "Clear finished" reads the status files off the main loop (R4-Opus-3).
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -235,6 +236,79 @@ fn the_downloads_page_keeps_little_of_large_files() {
             "the Downloads page holds {} MiB",
             grew >> 20
         );
+        app.navigate(Route::Home);
+        settle(&app);
+        drop(app);
+    });
+}
+
+/// Finished status files of just under 1 MiB each whose request is gone,
+/// the pile "Clear finished" reads while no worker prunes it.
+fn large_finished_statuses(root: &Path, n: usize) {
+    let dir = tunemesh_core::request::status_dir(root);
+    std::fs::create_dir_all(&dir).unwrap();
+    let tracks = vec!["\"a\""; (1024 * 1024 - 200) / 4].join(",");
+    for i in 0..n {
+        let id = format!("{}-{i:08x}", 1_700_000_000_000u64 + i as u64);
+        std::fs::write(
+            dir.join(format!("{id}.json")),
+            format!(
+                r#"{{"version":1,"id":"{id}","input":"x","tracks":[{tracks}],"state":"done"}}"#
+            ),
+        )
+        .unwrap();
+    }
+}
+
+/// The first button under `w` labelled `label`.
+fn button(w: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(b) = w.downcast_ref::<gtk::Button>()
+        && b.label().is_some_and(|l| l == label)
+    {
+        return Some(b.clone());
+    }
+    let mut child = w.first_child();
+    while let Some(c) = child {
+        if let Some(b) = button(&c, label) {
+            return Some(b);
+        }
+        child = c.next_sibling();
+    }
+    None
+}
+
+#[test]
+#[ignore = "needs a display; run by scripts/gui-checks.sh"]
+fn clearing_finished_requests_reads_off_the_main_loop() {
+    on_gtk(|| {
+        let dir = Scratch::new("clear-check");
+        std::fs::create_dir_all(&dir.0).unwrap();
+        large_finished_statuses(&dir.0, 400);
+        let app = open(&dir.0);
+        settle(&app);
+        app.navigate(Route::Downloads);
+        settle(&app);
+        let page = app.page_widget().expect("page");
+        let clear = button(&page, "Clear finished").expect("the Clear finished button");
+
+        let start = Instant::now();
+        clear.emit_clicked();
+        let took = start.elapsed();
+        // Reading the 400 MiB of statuses held the main loop for 8.8 s
+        // (debug build) before it moved to a thread.
+        assert!(
+            took < Duration::from_millis(50),
+            "Clear finished held the main loop for {took:?}"
+        );
+        let status = tunemesh_core::request::status_dir(&dir.0);
+        let left = || std::fs::read_dir(&status).unwrap().count();
+        let start = Instant::now();
+        while left() > 0 && start.elapsed() < Duration::from_secs(20) {
+            pump(Duration::from_millis(20));
+        }
+        assert_eq!(left(), 0, "every finished status is cleared");
+        drop(clear);
+        drop(page);
         app.navigate(Route::Home);
         settle(&app);
         drop(app);
