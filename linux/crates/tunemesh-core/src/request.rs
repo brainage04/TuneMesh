@@ -556,6 +556,9 @@ pub struct Sweep {
     pub cancelled: Vec<String>,
     /// Final statuses deleted.
     pub pruned: usize,
+    /// Status files that are not valid statuses (over the limit, not JSON,
+    /// no `state`) deleted.
+    pub invalid: usize,
     /// Errors writing or deleting, by id.
     pub errors: Vec<(String, String)>,
 }
@@ -563,9 +566,11 @@ pub struct Sweep {
 /// The worker's sweep (contract: "Download status"): of the status files
 /// whose request file is gone, read one at a time, oldest first, and only
 /// for their `state`, an unfinished one is set to `cancelled` (its request
-/// was cancelled while no worker was watching), and a final one that is not
-/// among the newest `MAX_LISTED_REQUESTS` status ids is deleted; at most
-/// `MAX_SWEEP_CHANGES` of them (tried) per call, the rest wait for the next.
+/// was cancelled while no worker was watching), and a final one, or a
+/// regular file that is not a valid status, that is not among the newest
+/// `MAX_LISTED_REQUESTS` status ids is deleted; at most `MAX_SWEEP_CHANGES`
+/// of them (tried) per call, the rest wait for the next. So beyond those
+/// changes a pass reads at most the newest `MAX_LISTED_REQUESTS` files.
 /// Memory does not grow with the number of status files beyond their names.
 pub fn sweep(root: &Path) -> Sweep {
     let mut done = Sweep::default();
@@ -573,32 +578,42 @@ pub fn sweep(root: &Path) -> Sweep {
         return done;
     };
     for (id, newest) in orphans {
-        if done.cancelled.len() + done.pruned + done.errors.len() >= MAX_SWEEP_CHANGES {
+        if done.cancelled.len() + done.pruned + done.invalid + done.errors.len()
+            >= MAX_SWEEP_CHANGES
+        {
             break;
         }
-        let Ok(state) = read_state_in(&dir, &id) else {
-            continue;
+        let state = match read_state_in(&dir, &id) {
+            Ok(state) => Some(state),
+            // A regular file that is not a valid status (over the limit,
+            // not JSON, no `state`): no client lists it either.
+            Err(_) if dir.is_file(&file_name(&id)) => None,
+            // Gone meanwhile, or a symlink or directory: left alone.
+            Err(_) => continue,
         };
         // A request file written since the ids were listed.
         if !is_cancelled(root, &id) {
             continue;
         }
-        if !state.is_final() {
-            let Ok(mut s) = read_status_in(&dir, &id) else {
-                continue;
-            };
-            s.state = RequestState::Cancelled;
-            s.progress = None;
-            s.updated_at = Timestamp::from_string(crate::now_rfc3339());
-            match s.write(root) {
-                Ok(()) => done.cancelled.push(id),
-                Err(e) => done.errors.push((id, e.to_string())),
+        match state {
+            Some(state) if !state.is_final() => {
+                let Ok(mut s) = read_status_in(&dir, &id) else {
+                    continue;
+                };
+                s.state = RequestState::Cancelled;
+                s.progress = None;
+                s.updated_at = Timestamp::from_string(crate::now_rfc3339());
+                match s.write(root) {
+                    Ok(()) => done.cancelled.push(id),
+                    Err(e) => done.errors.push((id, e.to_string())),
+                }
             }
-        } else if !newest {
-            match remove_status(root, &id) {
-                Ok(()) => done.pruned += 1,
+            _ if !newest => match remove_status(root, &id) {
+                Ok(()) if state.is_some() => done.pruned += 1,
+                Ok(()) => done.invalid += 1,
                 Err(e) => done.errors.push((id, e.to_string())),
-            }
+            },
+            _ => {}
         }
     }
     done
@@ -1079,6 +1094,43 @@ mod tests {
             .write(root)
             .unwrap();
         assert_eq!(sweep(root).cancelled, [late]);
+    }
+
+    /// R5-Opus-4: orphaned status files that are not valid statuses were
+    /// read again on every pass and never removed. Those past the newest
+    /// 200 are deleted (within the per-pass cap), so a pass reads at most
+    /// the newest 200 besides what it changes; a directory is left alone.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn a_sweep_deletes_old_invalid_status_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let n = MAX_LISTED_REQUESTS + 150;
+        fs::create_dir_all(status_dir(root)).unwrap();
+        for i in 0..n {
+            let body: &[u8] = if i % 2 == 0 {
+                b"not json"
+            } else {
+                b"{\"version\":1}"
+            };
+            fs::write(status_path(root, &format!("{}-00000000", 1_000 + i)), body).unwrap();
+        }
+        let odd = status_path(root, "999-00000000");
+        fs::create_dir(&odd).unwrap();
+        let first = sweep(root);
+        assert_eq!(first.invalid, MAX_SWEEP_CHANGES);
+        let mut removed = first.invalid;
+        loop {
+            let d = sweep(root);
+            if d.invalid == 0 {
+                break;
+            }
+            removed += d.invalid;
+        }
+        assert_eq!(removed, n - MAX_LISTED_REQUESTS);
+        // The newest 200 stay; the directory, the oldest, is left alone.
+        assert_eq!(status_ids(root).len(), MAX_LISTED_REQUESTS);
+        assert!(odd.is_dir());
     }
 
     /// Found by `fuzz/fuzz_targets/status_limits.rs`: 10,000 long track

@@ -335,8 +335,9 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - Every 60 seconds the worker looks at the status files whose request file
   is gone, oldest first, one file at a time and reading only their `state`:
   one that is not final is set to `cancelled` (its request was cancelled
-  while no worker was watching); a final one whose id is not among the
-  newest 200 status ids is deleted, since no client lists it (see
+  while no worker was watching); a final one, or a regular file that is not
+  a valid status (over the limit, not JSON, no `state`), whose id is not
+  among the newest 200 status ids is deleted, since no client lists it (see
   "Limits"). It changes at most 128 of them per pass; the rest wait for the
   next pass.
 
@@ -477,7 +478,7 @@ another value makes the file invalid (read as described in the first row).
 | Request `playlistFromSource` | a boolean | Otherwise invalid |
 | Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
 | Request and status files clients read | the newest 200 ids (a request with its status file counts once) | Older ones are counted but not read or shown |
-| Status files the worker reads | one at a time: the `state` of those whose request file is gone; at most 128 set to `cancelled` or deleted per pass, oldest first | Final ones past the newest 200 status ids are deleted (see "Download status"); the rest of the changes wait for the next pass |
+| Status files the worker reads | one at a time: the `state` of those whose request file is gone; at most 128 set to `cancelled` or deleted per pass, oldest first | Final and invalid ones past the newest 200 status ids are deleted (see "Download status"); the rest of the changes wait for the next pass |
 | Status `input` | 8 KiB | Cut |
 | Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |
 | Status `message` | 4 KiB | Cut |

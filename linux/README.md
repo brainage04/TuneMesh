@@ -322,8 +322,9 @@ How it works:
   `cancelled` too.
 - Every minute the worker looks at the status files whose request file is
   gone, oldest first, one file at a time and reading only their `state`;
-  finished ones that are not among the newest 200 status files are deleted,
-  since no client lists them. It changes at most 128 status files per pass,
+  finished ones, and files that are not valid statuses, that are not among
+  the newest 200 status files are deleted, since no client lists them. It
+  changes at most 128 status files per pass,
   so a large pile is worked off a minute at a time without holding up
   downloads for long. It then merges playlist conflict copies that are 10
   minutes old (it does not know its Syncthing device ID).

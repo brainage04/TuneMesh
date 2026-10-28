@@ -223,6 +223,12 @@ fn sweep(root: &Path, bases: &Bases) {
             done.pruned
         );
     }
+    if done.invalid > 0 {
+        log!(
+            "deleted {} status files that are not valid statuses",
+            done.invalid
+        );
+    }
     for (id, e) in &done.errors {
         log!("[{id}] status file: {e}");
     }
