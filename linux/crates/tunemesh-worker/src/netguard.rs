@@ -27,6 +27,7 @@ fn is_public_v4(ip: Ipv4Addr) -> bool {
         || a == 0
         || (a == 100 && (b & 0xc0) == 64) // 100.64.0.0/10: CGNAT, Tailscale
         || (a == 192 && b == 0 && c == 0) // 192.0.0.0/24: IETF protocol assignments
+        || (a == 192 && b == 88 && c == 99) // 192.88.99.0/24: deprecated 6to4 relay anycast
         || (a == 198 && (b & 0xfe) == 18) // 198.18.0.0/15: benchmarking
         || a >= 240)
 }
@@ -64,6 +65,7 @@ fn is_public_v6(ip: Ipv6Addr) -> bool {
     let global_in_2001 = [
         ([0x2001, 1, 0, 0, 0, 0, 0, 1], 128), // Port Control Protocol anycast
         ([0x2001, 1, 0, 0, 0, 0, 0, 2], 128), // TURN anycast
+        ([0x2001, 1, 0, 0, 0, 0, 0, 3], 128), // DNS-SD service registration anycast
         ([0x2001, 3, 0, 0, 0, 0, 0, 0], 32),  // AMT
         ([0x2001, 4, 0x112, 0, 0, 0, 0, 0], 48), // AS112-v6
         ([0x2001, 0x20, 0, 0, 0, 0, 0, 0], 28), // ORCHIDv2
@@ -642,5 +644,18 @@ mod tests {
         let own = [Net::new(ip("11.22.33.44"), 24)];
         assert!(refusal(ip("2002:b16:2101::1"), &own).is_some());
         assert_eq!(canonical(ip("2002:b16:212c::1")), ip("11.22.33.44"));
+    }
+
+    /// R4D-2: the IANA special-purpose registries' "globally reachable"
+    /// column: 192.88.99.0/24 (deprecated 6to4 relay anycast) is not, and
+    /// 2001:1::3 (DNS-SD service registration anycast) is.
+    #[test]
+    fn follows_the_iana_registries() {
+        for refused in ["192.88.99.1", "192.88.99.2", "2002:c058:6301::1"] {
+            assert!(!is_public(ip(refused)), "{refused}");
+        }
+        for allowed in ["2001:1::3", "192.88.98.1", "192.88.100.1"] {
+            assert!(is_public(ip(allowed)), "{allowed}");
+        }
     }
 }
