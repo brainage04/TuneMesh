@@ -390,7 +390,13 @@ fn merge_copies(
     if let Some(text) = text {
         dir.write_atomic(&file_name, text.as_bytes())?;
         for file in merged {
-            dir.remove_file(file)?;
+            // Gone already (another device merged it too and Syncthing
+            // applied its deletion during this pass): deleted all the same.
+            if let Err(e) = dir.remove_file(file)
+                && e.kind() != io::ErrorKind::NotFound
+            {
+                return Err(e);
+            }
         }
         if later || result.is_err() {
             bases.wrote(name, &text);
