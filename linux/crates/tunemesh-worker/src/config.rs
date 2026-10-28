@@ -32,6 +32,9 @@ usage: tunemesh-worker [options]
   --version                print the version and exit
   -h, --help               print this help and exit
 
+state that must persist (playlist bases, final statuses not written into the
+library yet) is kept in $XDG_STATE_HOME/tunemesh (default ~/.local/state/tunemesh)
+
 environment: TUNEMESH_YTDLP, TUNEMESH_DENO, TUNEMESH_FFMPEG_DIR";
 
 #[derive(Debug, Clone)]

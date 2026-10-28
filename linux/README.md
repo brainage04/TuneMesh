@@ -144,7 +144,9 @@ downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
   makes startup instant; a background rescan follows, and file changes (for
   example songs arriving through Syncthing) are picked up within a second.
 - The built-in downloader's work directory: `~/.cache/tunemesh/worker/`
-  (mode 0700).
+  (mode 0700, scratch and caches only). Final statuses it could not write
+  into the library yet are kept in `~/.local/state/tunemesh/unwritten/`, next
+  to the playlist bases, so their requests are not run again.
 - The desktop file, icon and AppStream metainfo install as
   `io.github.brainage04.TuneMesh`.
 
@@ -263,10 +265,11 @@ Programs it runs:
 - ffmpeg and ffprobe: `$TUNEMESH_FFMPEG_DIR`, else `PATH`. Required.
 
 Files it creates: in the work directory `jobs/<request id>/` (scratch, removed
-after each request), `tmp/`, `cache/yt-dlp/`, `spotify-queries.json` and
-`unwritten/` (final statuses it could not write into the library yet, so
-their requests are not run again); in the library the downloaded tracks,
-playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
+after each request), `tmp/`, `cache/yt-dlp/` and `spotify-queries.json`; in
+`$XDG_STATE_HOME/tunemesh/` (default `~/.local/state/tunemesh/`) the playlist
+bases and `unwritten/` (final statuses it could not write into the library
+yet, so their requests are not run again); in the library the downloaded
+tracks, playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
 
 How it works:
 
@@ -347,7 +350,8 @@ The flake exports `nixosModules.worker`:
     enable = true;
     user = "alice";
     libraryPath = "/home/alice/Music/TuneMesh";
-    workDir = "/var/cache/tunemesh-worker"; # default; created 0700 for `user`
+    workDir = "/var/cache/tunemesh-worker"; # default; scratch and caches
+    stateDir = "/var/lib/tunemesh-worker"; # default; bases, unwritten statuses
     # extraArgs = [ "--max-items" "1000" ];
   };
 }
@@ -356,16 +360,17 @@ The flake exports `nixosModules.worker`:
 This runs `tunemesh-worker.service` as `user` with `Restart=on-failure`
 (except after exit code 2); `journalctl -u tunemesh-worker` shows its log.
 The unit adds systemd sandboxing on top of the worker's own checks: the
-filesystem is read-only except the library and the work directory, and
-`IPAddressDeny` blocks private ranges for the whole service, with exceptions
-for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
-`allowedAddresses` (systemd cannot restrict these to one port). The worker's
-caches and its playlist bases (`XDG_CACHE_HOME`, `XDG_STATE_HOME` and the
-other XDG directories) are in the work directory, so it keeps its bases in
-`<workDir>/.local/state/tunemesh/playlist-base/`, not in the user's home.
-The work directory therefore holds state that must persist: do not clear
-it, and do not put it where caches are cleaned (without its bases the next
-merge of each playlist is a union, and a removal can come back once).
+filesystem is read-only except the library, the work directory and the
+state directory, and `IPAddressDeny` blocks private ranges for the whole
+service, with exceptions for 127.0.0.1 (the worker's proxy) and the DNS
+resolvers in `allowedAddresses` (systemd cannot restrict these to one
+port). The worker's caches (`XDG_CACHE_HOME` and the other XDG directories)
+are in the work directory, which can be cleared. Its playlist bases and the
+final statuses it could not write yet are in the state directory
+(`XDG_STATE_HOME`), `<stateDir>/tunemesh/`, which must persist: without the
+bases the next merge of each playlist is a union (a removal can come back
+once), and a request whose status was kept runs again. Both directories are
+created 0700 for `user`, not in the user's home.
 
 ## Development checks
 

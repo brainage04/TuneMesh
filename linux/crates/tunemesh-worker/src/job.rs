@@ -71,7 +71,7 @@ pub struct Ctx {
     /// This device's playlist bases (contract: "Playlist conflict copies").
     pub bases: Bases,
     /// Final statuses that could not be written into the library, kept in
-    /// the work directory until they can be.
+    /// the state directory until they can be.
     pub kept: Kept,
     /// When a request's status problem was last logged, by id.
     pub reported: HashMap<String, Instant>,
@@ -95,17 +95,20 @@ impl Ctx {
 
 /// Final statuses the worker could not write into the library (a full
 /// disk, or a status path another device made unwritable), kept in
-/// `<work dir>/unwritten/<library key>/<id>.json` with the request file
-/// left in place. A kept request is never run again, also after a restart:
-/// `retry_kept` writes its status once it can, then removes the request.
+/// `<state dir>/unwritten/<library key>/<id>.json` (next to the playlist
+/// bases, so it persists) with the request file left in place. A kept
+/// request is never run again, also after a restart: `retry_kept` writes
+/// its status once it can, then removes the request.
 pub struct Kept {
     dir: PathBuf,
 }
 
 impl Kept {
-    pub fn new(work_dir: &Path, root: &Path) -> Self {
+    /// Kept statuses of the library at `root` under `state_dir`
+    /// (`merge::state_dir()`, else the work directory).
+    pub fn new(state_dir: &Path, root: &Path) -> Self {
         Self {
-            dir: work_dir
+            dir: state_dir
                 .join("unwritten")
                 .join(tunemesh_core::merge::library_key(root)),
         }

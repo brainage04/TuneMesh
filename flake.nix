@@ -179,6 +179,7 @@
                 user = "alice";
                 libraryPath = "/home/alice/Music/Tune Mesh 100%";
                 workDir = "/var/cache/tunemesh worker 100%";
+                stateDir = "/var/lib/tunemesh state 100%";
               };
               systemd.services.tunemesh-sandbox-check = {
                 inherit (config.systemd.services.tunemesh-worker) environment;
@@ -208,10 +209,10 @@
             assert "self-test passed" in out, "self-test did not pass"
             assert "deno 42" in out, "deno did not run"
 
-            # Playlist bases live in the work directory (XDG_STATE_HOME), the
-            # only writable place besides the library: merging a conflict
-            # copy keeps the merged playlist as the base, so the next merge
-            # does not bring back what was removed.
+            # Playlist bases live in the state directory (XDG_STATE_HOME),
+            # which persists: merging a conflict copy keeps the merged
+            # playlist as the base, so the next merge does not bring back
+            # what was removed.
             lib = "/home/alice/Music/Tune Mesh 100%"
             copy = f"{lib}/Playlists/Mix.sync-conflict-20261028-080000-ABCDEFG.m3u8"
             machine.succeed(
@@ -223,7 +224,7 @@
             )
             machine.wait_until_fails(f"test -e '{copy}'", timeout=120)
             machine.succeed(
-                "grep -qx ../d.opus /var/cache/'tunemesh worker 100%'/.local/state/tunemesh/playlist-base/*/Mix.m3u8"
+                "grep -qx ../d.opus /var/lib/'tunemesh state 100%'/tunemesh/playlist-base/*/Mix.m3u8"
             )
             machine.fail("journalctl -u tunemesh-worker | grep -q 'keeping playlist base'")
             machine.fail("journalctl -b | grep -q 'status=31/SYS'")
@@ -309,15 +310,23 @@
               type = lib.types.str;
               default = "/var/cache/tunemesh-worker";
               description = ''
-                Directory outside the library where downloads are assembled
-                before they are moved into place. It also holds state that
-                must persist: the playlist bases (`.local/state/tunemesh/`,
-                for merging conflict copies) and final statuses not written
-                yet (`unwritten/`). Do not clear it or put it where caches
-                are cleaned (deleting it makes the next merge of each
-                playlist a union, so a removal can come back once). Created
-                for `user` with mode 0700; the worker refuses a work directory
-                that other users can access or that it does not own.
+                Scratch directory outside the library where downloads are
+                assembled before they are moved into place, and the worker's
+                caches (managed tools, yt-dlp cache). Created for `user` with
+                mode 0700; the worker refuses a work directory that other
+                users can access or that it does not own.
+              '';
+            };
+            stateDir = lib.mkOption {
+              type = lib.types.str;
+              default = "/var/lib/tunemesh-worker";
+              description = ''
+                The worker's state that must persist (its XDG_STATE_HOME):
+                the playlist bases for merging conflict copies and the final
+                statuses it could not write into the library yet, under
+                `tunemesh/`. Losing it makes the next merge of each playlist
+                a union (a removal can come back once), and a request whose
+                status was kept runs again. Created for `user` with mode 0700.
               '';
             };
             extraArgs = lib.mkOption {
@@ -365,26 +374,31 @@
 
           config = lib.mkIf cfg.enable {
             # tmpfiles expands `%` specifiers in paths.
-            systemd.tmpfiles.settings."10-tunemesh-worker".${lib.replaceStrings [ "%" ] [ "%%" ] cfg.workDir}.d = {
-              inherit (cfg) user;
-              group = config.users.users.${cfg.user}.group;
-              mode = "0700";
-            };
+            systemd.tmpfiles.settings."10-tunemesh-worker" = lib.genAttrs (map (lib.replaceStrings [ "%" ] [ "%%" ]) [
+              cfg.workDir
+              cfg.stateDir
+            ]) (_: {
+              d = {
+                inherit (cfg) user;
+                group = config.users.users.${cfg.user}.group;
+                mode = "0700";
+              };
+            });
 
             systemd.services.tunemesh-worker = {
               description = "TuneMesh download worker";
               wantedBy = [ "multi-user.target" ];
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];
-              # Caches, and the playlist bases the worker keeps for merging
-              # conflict copies (XDG_STATE_HOME), live in the work
-              # directory, the only writable place besides the library.
-              # systemd expands `%` specifiers in Environment= values.
+              # Caches live in the work directory; the playlist bases and
+              # unwritten final statuses (XDG_STATE_HOME) in the state
+              # directory. These and the library are the only writable
+              # places. systemd expands `%` specifiers in Environment= values.
               environment = lib.mapAttrs (_: lib.replaceStrings [ "%" ] [ "%%" ]) {
                 XDG_CACHE_HOME = "${cfg.workDir}/.cache";
                 XDG_CONFIG_HOME = "${cfg.workDir}/.config";
                 XDG_DATA_HOME = "${cfg.workDir}/.local/share";
-                XDG_STATE_HOME = "${cfg.workDir}/.local/state";
+                XDG_STATE_HOME = cfg.stateDir;
               };
               serviceConfig = {
                 User = cfg.user;
@@ -412,12 +426,14 @@
                 MemoryMax = cfg.memoryMax;
 
                 # The worker runs downloaders on input any synced device can
-                # write: it may touch the library and the work directory only.
+                # write: it may touch the library, the work directory and
+                # its state directory only.
                 ProtectSystem = "strict";
                 ProtectHome = "read-only";
                 ReadWritePaths = map systemdPath [
                   cfg.libraryPath
                   cfg.workDir
+                  cfg.stateDir
                 ];
                 PrivateTmp = true;
                 PrivateDevices = true;

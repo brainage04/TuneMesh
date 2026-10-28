@@ -50,22 +50,28 @@ pub struct Bases {
     root: PathBuf,
 }
 
+/// This user's per-device TuneMesh state directory outside any library:
+/// `$XDG_STATE_HOME/tunemesh`, default `~/.local/state/tunemesh`; none
+/// when neither variable is set.
+pub fn state_dir() -> Option<PathBuf> {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .map(|h| h.join(".local/state"))
+        })
+        .map(|s| s.join("tunemesh"))
+}
+
 impl Bases {
-    /// Bases under `$XDG_STATE_HOME/tunemesh` (default
-    /// `~/.local/state/tunemesh`), shared by the desktop app and a worker of
-    /// the same user; none when neither variable is set.
+    /// Bases under `state_dir()`, shared by the desktop app and a worker of
+    /// the same user; none when there is no state directory.
     pub fn new(root: &Path) -> Self {
-        let state = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .or_else(|| {
-                std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .filter(|p| p.is_absolute())
-                    .map(|h| h.join(".local/state"))
-            });
-        match state {
-            Some(s) => Self::in_dir(&s.join("tunemesh"), root),
+        match state_dir() {
+            Some(s) => Self::in_dir(&s, root),
             None => Self::none(),
         }
     }

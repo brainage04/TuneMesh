@@ -199,7 +199,7 @@ music. Deleting songs **inside** a synced folder deletes them on every device.
 | Where | What |
 | --- | --- |
 | `~/.config/tunemesh/config.toml` | Library path, downloader switch |
-| `~/.local/state/tunemesh/` | Queue, position, volume; playlist bases (`playlist-base/`: this device's copy of each playlist from before its own latest edits, for merging Syncthing conflict copies) |
+| `~/.local/state/tunemesh/` | Queue, position, volume; playlist bases (`playlist-base/`: this device's copy of each playlist from before its own latest edits, for merging Syncthing conflict copies); final download statuses the downloader could not write into the library yet (`unwritten/`) |
 | `~/.cache/tunemesh/` | Library scan cache, covers, downloader scratch space (`worker/`) |
 | `~/.local/share/tunemesh/` | The downloader's yt-dlp and deno |
 | Library folder | Songs (`<Artist>/<Album>/<Title> [<id>].<ext>`), `Playlists/*.m3u8`, `.tunemesh/` (download requests and status), `.stignore` |

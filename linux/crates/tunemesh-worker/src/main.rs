@@ -107,14 +107,21 @@ fn run(args: Args) -> Result<(), Fatal> {
         .map_err(Fatal::Other)?;
     let http = http::Http::new(&proxy.url()).map_err(|e| Fatal::Other(anyhow::anyhow!(e)))?;
     let device = args.device.clone().unwrap_or_else(config::host_name);
+    // Playlist bases and kept final statuses persist in the state directory;
+    // without one (no XDG_STATE_HOME and no HOME) statuses are kept in the
+    // work directory and there are no bases.
+    let state_dir = merge::state_dir();
     log!(
-        "tunemesh-worker {VERSION}: library {}, work dir {}, device {device:?}",
+        "tunemesh-worker {VERSION}: library {}, work dir {}, state dir {}, device {device:?}",
         library.display(),
-        work_dir.display()
+        work_dir.display(),
+        state_dir
+            .as_deref()
+            .map_or_else(|| "none".into(), Path::to_string_lossy)
     );
     let leader = leader::Leader::new(&library, device, config::machine_id());
     let bases = Bases::new(&library);
-    let kept = job::Kept::new(&work_dir, &library);
+    let kept = job::Kept::new(state_dir.as_deref().unwrap_or(&work_dir), &library);
     let mut ctx = Ctx {
         root: library,
         work_dir,
