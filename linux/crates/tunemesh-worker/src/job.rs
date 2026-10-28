@@ -105,13 +105,35 @@ pub struct Kept {
 
 impl Kept {
     /// Kept statuses of the library at `root` under `state_dir`
-    /// (`merge::state_dir()`, else the work directory).
+    /// (`merge::state_dir()`, else the work directory). Temporary files a
+    /// crash left there while keeping a status are removed; only those a
+    /// minute old, since another worker of the same user and library (the
+    /// desktop app's and a user service) may be keeping a status right now.
     pub fn new(state_dir: &Path, root: &Path) -> Self {
-        Self {
+        let kept = Self {
             dir: state_dir
                 .join("unwritten")
                 .join(tunemesh_core::merge::library_key(root)),
+        };
+        if let Ok(entries) = fs::read_dir(&kept.dir) {
+            for e in entries.flatten() {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                let stale = e.metadata().is_ok_and(|m| {
+                    m.is_file()
+                        && m.modified().is_ok_and(|t| {
+                            t.elapsed().is_ok_and(|age| age >= Duration::from_secs(60))
+                        })
+                });
+                if name.starts_with(tunemesh_core::atomic::TMP_PREFIX)
+                    && name.ends_with(".tmp")
+                    && stale
+                {
+                    let _ = fs::remove_file(e.path());
+                }
+            }
         }
+        kept
     }
 
     fn path(&self, id: &str) -> PathBuf {
@@ -987,6 +1009,33 @@ pub mod tests {
                 .as_deref(),
             Some("ran")
         );
+    }
+
+    /// R6-Opus-3: a temporary file a crash left in the kept statuses'
+    /// directory is removed at startup; kept statuses stay, and so does a
+    /// fresh temporary file (another worker may be writing it).
+    #[test]
+    fn startup_removes_temporary_files_of_kept_statuses() {
+        let lib = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let req = Request::new("x", None, false, "t");
+        let kept = Kept::new(state.path(), lib.path());
+        kept.keep(&Status::new(&req, RequestState::Done)).unwrap();
+        let old = tunemesh_core::atomic::temp_path_in(&kept.dir);
+        fs::File::create(&old)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - Duration::from_secs(120))
+            .unwrap();
+        let fresh = kept
+            .dir
+            .join(format!("{}fresh.tmp", tunemesh_core::atomic::TMP_PREFIX));
+        fs::write(&fresh, b"partial").unwrap();
+        let other = kept.dir.join("notes.txt");
+        fs::write(&other, b"not ours").unwrap();
+        let kept = Kept::new(state.path(), lib.path());
+        assert!(!old.exists(), "the temporary file is still there");
+        assert!(fresh.exists() && other.exists());
+        assert_eq!(kept.ids(), vec![req.id.to_string()]);
     }
 
     /// R6-Opus-1: a kept status that was written stays kept while its
