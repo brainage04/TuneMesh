@@ -131,6 +131,10 @@ loginctl enable-linger "$USER"   # keep it running while logged out
 ```
 
 The `.deb`, `.rpm`, Arch, Nix and source installs include this service. With
+Nix on a distribution other than NixOS, if `systemctl` says the unit does not
+exist, give its path:
+`systemctl --user enable --now ~/.nix-profile/share/systemd/user/tunemesh-worker.service`
+(the link goes through the profile, so it follows `nix profile upgrade`). With
 the Snap, run `snap run tunemesh.worker`, with the AppImage
 `./TuneMesh-<version>-<arch>.AppImage worker`, for example from your own
 systemd user unit. Only one device downloads at a time; the Downloads page
