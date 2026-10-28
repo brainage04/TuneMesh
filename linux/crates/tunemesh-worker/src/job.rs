@@ -70,6 +70,10 @@ pub struct Ctx {
     pub source_ids: SourceIds,
     /// This device's playlist bases (contract: "Playlist conflict copies").
     pub bases: Bases,
+    /// A final status that could not be written: its request file is kept,
+    /// and no other request is taken until it is written
+    /// (`retry_unwritten`).
+    pub unwritten: Option<Status>,
 }
 
 pub struct Job<'a> {
@@ -186,13 +190,17 @@ impl Job<'_> {
 
     /// Writes the status now if `force` or enough time has passed.
     pub fn flush(&mut self, force: bool) {
-        if force || self.last_write.elapsed() >= STATUS_INTERVAL {
-            self.status.updated_at = tunemesh_core::now_rfc3339().into();
-            if let Err(e) = self.status.write(self.root) {
-                log!("[{}] writing status: {e}", self.req.id);
-            }
-            self.last_write = Instant::now();
+        if (force || self.last_write.elapsed() >= STATUS_INTERVAL)
+            && let Err(e) = self.write_status()
+        {
+            log!("[{}] writing status: {e}", self.req.id);
         }
+    }
+
+    fn write_status(&mut self) -> io::Result<()> {
+        self.status.updated_at = tunemesh_core::now_rfc3339().into();
+        self.last_write = Instant::now();
+        self.status.write(self.root)
     }
 
     pub fn set_title(&mut self, title: Option<String>) {
@@ -479,14 +487,40 @@ pub fn add_to_playlist(
 }
 
 /// Processes one request to a final state, or back to `queued` when the
-/// worker is interrupted.
+/// worker is interrupted. A final status that cannot be written goes to
+/// `ctx.unwritten`, and the request file stays.
 pub fn process(ctx: &mut Ctx, req: Request) {
     let ids = std::mem::take(&mut ctx.source_ids);
-    ctx.source_ids = run(ctx, req, ids);
+    (ctx.source_ids, ctx.unwritten) = run(ctx, req, ids);
 }
 
-/// `process`; returns the source-id index for the next request.
-fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> SourceIds {
+/// Writes the final status kept in `ctx.unwritten`, if any, then removes
+/// its request file. Returns whether the worker may take another request:
+/// nothing was waiting, it is written now, or its request was cancelled
+/// meanwhile (the sweep then sees the status it has).
+pub fn retry_unwritten(ctx: &mut Ctx) -> bool {
+    let Some(mut status) = ctx.unwritten.take() else {
+        return true;
+    };
+    let id = status.id.to_string();
+    if request::is_cancelled(&ctx.root, &id) {
+        return true;
+    }
+    status.updated_at = tunemesh_core::now_rfc3339().into();
+    if status.write(&ctx.root).is_err() {
+        ctx.unwritten = Some(status);
+        return false;
+    }
+    log!("[{id}] final status written");
+    if let Err(e) = request::cancel(&ctx.root, &id) {
+        log!("[{id}] removing request file: {e}");
+    }
+    true
+}
+
+/// `process`; returns the source-id index for the next request and the
+/// final status, if it could not be written.
+fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, Option<Status>) {
     let id = req.id.clone();
     log!("[{id}] processing {:?}", req.input);
     let dir = ctx.run.jobs().join(&*id);
@@ -538,12 +572,16 @@ fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> SourceIds {
             }
         }
     };
-    finish(&mut job, result);
+    let unwritten = finish(&mut job, result);
     let _ = fs::remove_dir_all(&dir);
-    job.ids
+    (job.ids, unwritten)
 }
 
-fn finish(job: &mut Job, r: SourceResult) {
+/// Sets and writes the final status, then removes the request file. When
+/// the final status cannot be written, the request file stays and the
+/// status is returned, so the request is neither lost nor shown unfinished
+/// for good (`retry_unwritten`).
+fn finish(job: &mut Job, r: SourceResult) -> Option<Status> {
     let id = job.req.id.clone();
     if r.stopped == Some(Stop::Interrupted) {
         // Resumed by whichever worker runs next.
@@ -553,7 +591,7 @@ fn finish(job: &mut Job, r: SourceResult) {
         s.message = Some("Interrupted; continues when a downloader is running".into());
         log!("[{id}] interrupted");
         job.flush(true);
-        return;
+        return None;
     }
     let failed = job.failed;
     let s = &mut job.status;
@@ -631,10 +669,14 @@ fn finish(job: &mut Job, r: SourceResult) {
             .map(|m| format!(": {m}"))
             .unwrap_or_default()
     );
-    job.flush(true);
+    if let Err(e) = job.write_status() {
+        log!("[{id}] writing the final status: {e}; the request stays until it is written");
+        return Some(job.status.clone());
+    }
     if let Err(e) = request::cancel(job.root, &id) {
         log!("[{id}] removing request file: {e}");
     }
+    None
 }
 
 #[cfg(test)]
@@ -658,6 +700,7 @@ pub mod tests {
             tools: Tools::new(None),
             source_ids: SourceIds::default(),
             bases: Bases::none(),
+            unwritten: None,
         }
     }
 
@@ -709,6 +752,39 @@ pub mod tests {
         assert_eq!(job.existing("x"), None);
         assert_eq!(job.existing("y"), None);
         assert_eq!(job.ids.walks, 1);
+    }
+
+    /// R4D-1: a final status that cannot be written (the status directory
+    /// replaced by a symlink, a full disk) keeps the request file instead of
+    /// deleting it with no final status; the worker takes no other request
+    /// until the status is written, then removes the request.
+    #[test]
+    fn an_unwritten_final_status_keeps_the_request() {
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let elsewhere = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(lib.path(), work.path());
+        let req = Request::new(&"q".repeat(9 * 1024), None, false, "t");
+        let id = req.id.to_string();
+        let requests = request::requests_dir(lib.path());
+        fs::create_dir_all(&requests).unwrap();
+        let request_file = requests.join(format!("{id}.json"));
+        fs::write(&request_file, b"{}").unwrap();
+        let status_dir = request::status_dir(lib.path());
+        symlink(elsewhere.path(), &status_dir).unwrap();
+        process(&mut ctx, req);
+        assert!(request_file.exists(), "the request was deleted");
+        assert!(!retry_unwritten(&mut ctx), "written into a symlink");
+        assert!(request_file.exists());
+        assert!(fs::read_dir(elsewhere.path()).unwrap().next().is_none());
+        fs::remove_file(&status_dir).unwrap();
+        assert!(retry_unwritten(&mut ctx));
+        assert!(!request_file.exists());
+        assert!(ctx.unwritten.is_none());
+        let s = request::read_status(lib.path(), &id).unwrap();
+        assert_eq!(s.state, RequestState::Failed);
+        assert!(s.message.unwrap().contains("too long"));
+        assert!(retry_unwritten(&mut ctx), "nothing left to write");
     }
 
     #[test]

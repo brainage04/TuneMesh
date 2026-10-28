@@ -309,7 +309,10 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - The worker keeps every status file within the 1 MiB file limit (see
   "Limits"): when one would be larger, it drops entries from the end of
   `tracks`, then `failures`, then `warnings` until it fits.
-- After writing a final state the worker deletes the request file.
+- After writing a final state the worker deletes the request file. When it
+  cannot write the final state (for example a full disk), it keeps the
+  request file, takes no other request and tries again at every poll until
+  the status is written (or the request file is deleted).
 - Clients show a request with no status file yet as "Waiting for the
   downloader". Clients may delete status files in a final state ("Clear");
   "Clear" deletes every status file in a final state whose request file is

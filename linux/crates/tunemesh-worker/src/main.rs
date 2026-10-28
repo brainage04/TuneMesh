@@ -124,6 +124,7 @@ fn run(args: Args) -> Result<(), Fatal> {
         tools: tools::Tools::new(args.yt_dlp.clone()),
         source_ids: job::SourceIds::default(),
         bases,
+        unwritten: None,
     };
 
     let mut reported_bad: HashSet<String> = HashSet::new();
@@ -154,6 +155,13 @@ fn run(args: Args) -> Result<(), Fatal> {
         if last_sweep.is_none_or(|t| t.elapsed() >= SWEEP_INTERVAL) {
             last_sweep = Some(Instant::now());
             sweep(&root, &ctx.bases);
+        }
+
+        // A final status that could not be written keeps its request: no
+        // other request is taken until it is written.
+        if !job::retry_unwritten(&mut ctx) {
+            signals::sleep(args.poll);
+            continue;
         }
 
         // Every pending request gets a status so clients show "queued".
