@@ -475,7 +475,7 @@
                   # The other IPv6 blocks the worker refuses: local-use NAT64,
                   # 6to4, IPv4-compatible and SIIT addresses (all can reach a
                   # private IPv4 address), and IANA's not globally reachable
-                  # blocks (discard, IETF assignments incl. Teredo,
+                  # blocks (discard, dummy prefix, IETF assignments incl. Teredo,
                   # documentation, SRv6, site-local). The worker itself
                   # allows the few global ones inside 2001::/23; nothing
                   # needed for downloads lives there.
@@ -484,6 +484,7 @@
                   "::/96"
                   "::ffff:0:0:0/96"
                   "100::/64"
+                  "100:0:0:1::/64"
                   "2001::/23"
                   "2001:db8::/32"
                   "3fff::/20"
