@@ -207,6 +207,25 @@
             print(out)
             assert "self-test passed" in out, "self-test did not pass"
             assert "deno 42" in out, "deno did not run"
+
+            # Playlist bases live in the work directory (XDG_STATE_HOME), the
+            # only writable place besides the library: merging a conflict
+            # copy keeps the merged playlist as the base, so the next merge
+            # does not bring back what was removed.
+            lib = "/home/alice/Music/Tune Mesh 100%"
+            copy = f"{lib}/Playlists/Mix.sync-conflict-20261028-080000-ABCDEFG.m3u8"
+            machine.succeed(
+                f"runuser -u alice -- mkdir -p '{lib}/Playlists'",
+                f"printf '#EXTM3U\\n../c.opus\\n../b.opus\\n' | runuser -u alice -- tee '{lib}/Playlists/Mix.m3u8'",
+                f"printf '#EXTM3U\\n../d.opus\\n../a.opus\\n../b.opus\\n' | runuser -u alice -- tee '{copy}'",
+                f"touch -d '1 hour ago' '{copy}'",
+                "systemctl restart tunemesh-worker",
+            )
+            machine.wait_until_fails(f"test -e '{copy}'", timeout=120)
+            machine.succeed(
+                "grep -qx ../d.opus /var/cache/'tunemesh worker 100%'/.local/state/tunemesh/playlist-base/*/Mix.m3u8"
+            )
+            machine.fail("journalctl -u tunemesh-worker | grep -q 'keeping playlist base'")
             machine.fail("journalctl -b | grep -q 'status=31/SYS'")
           '';
         };
@@ -352,13 +371,15 @@
               wantedBy = [ "multi-user.target" ];
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];
-              # Caches live in the work directory, the only writable place
-              # besides the library.
+              # Caches, and the playlist bases the worker keeps for merging
+              # conflict copies (XDG_STATE_HOME), live in the work
+              # directory, the only writable place besides the library.
               # systemd expands `%` specifiers in Environment= values.
               environment = lib.mapAttrs (_: lib.replaceStrings [ "%" ] [ "%%" ]) {
                 XDG_CACHE_HOME = "${cfg.workDir}/.cache";
                 XDG_CONFIG_HOME = "${cfg.workDir}/.config";
                 XDG_DATA_HOME = "${cfg.workDir}/.local/share";
+                XDG_STATE_HOME = "${cfg.workDir}/.local/state";
               };
               serviceConfig = {
                 User = cfg.user;

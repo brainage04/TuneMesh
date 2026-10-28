@@ -355,7 +355,10 @@ The unit adds systemd sandboxing on top of the worker's own checks: the
 filesystem is read-only except the library and the work directory, and
 `IPAddressDeny` blocks private ranges for the whole service, with exceptions
 for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
-`allowedAddresses` (systemd cannot restrict these to one port).
+`allowedAddresses` (systemd cannot restrict these to one port). The worker's
+caches and its playlist bases (`XDG_CACHE_HOME`, `XDG_STATE_HOME` and the
+other XDG directories) are in the work directory, so it keeps its bases in
+`<workDir>/.local/state/tunemesh/playlist-base/`, not in the user's home.
 
 ## Development checks
 
