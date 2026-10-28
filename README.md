@@ -166,7 +166,7 @@ If you enabled the downloader service, stop it first:
 | Flatpak | `flatpak uninstall --user --delete-data io.github.brainage04.TuneMesh` (removes its settings too) |
 | Snap | `sudo snap remove --purge tunemesh` (removes its settings too) |
 | AppImage | delete the file |
-| Nix | `nix profile remove tunemesh` |
+| Nix | `nix profile remove TuneMesh` (the name `nix profile list` shows) |
 | From source | `sudo packaging/linux/install.sh --uninstall` |
 
 Then delete your settings, cache and the downloader's tools (not needed after
