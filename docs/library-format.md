@@ -172,9 +172,10 @@ next), all with the same base; the base becomes the merged playlist only
 after the last one, and stays while any copy is left (skipped, or waiting
 for a later pass), so a copy merged later is merged against the base the
 others were. A device merges the copies of one playlist in memory and
-writes the playlist once (the bytes are the same as writing it after each
-copy). It merges at most 32 copies of one playlist per pass; the rest wait
-for its next pass.
+writes the playlist once; the bytes are the same as writing it after each
+copy, because entries writers leave out (a line break inside an entry's
+line) are left out after each copy in memory too. It merges at most 32
+copies of one playlist per pass; the rest wait for its next pass.
 An entry's key is its root-relative track path, or its line as written when
 it points outside the root. With base B, winner W and copy C, and b, w and c
 the number of entries with key k in each:

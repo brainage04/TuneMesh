@@ -214,6 +214,14 @@ impl Entries {
         self.compact_if_sparse();
     }
 
+    /// Drops the entries writers leave out (a line break in the path), as
+    /// reading back what was written would.
+    pub(crate) fn drop_line_breaks(&mut self) {
+        if self.iter().any(|e| has_line_break(e.path)) {
+            self.retain(|_, e| !has_line_break(e.path));
+        }
+    }
+
     fn view_in(text: &str, s: Span) -> PlaylistEntry<'_> {
         let start = s.start as usize;
         let mid = start + s.path_len();

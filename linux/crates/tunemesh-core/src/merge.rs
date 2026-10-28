@@ -368,7 +368,9 @@ fn merge_copies(
         }
         let copy_name = &file[..file.len() - ".m3u8".len()];
         let step = Playlist::read(root, copy_name).and_then(|copy| {
-            let entries = merge(base.as_ref(), &current, &copy.entries);
+            let mut entries = merge(base.as_ref(), &current, &copy.entries);
+            // What the next copy would have read back from the file.
+            entries.drop_line_breaks();
             let t = playlist::checked_text(&entries, &|_| None)?;
             Ok((entries, t))
         });
@@ -710,6 +712,40 @@ mod tests {
         let all = Playlist::read(root, "P").unwrap().entries;
         assert_eq!(all.len(), 1 + n);
         assert_eq!(bases.base("P").unwrap(), all);
+    }
+
+    /// R5-Opus-5: an entry with a CR inside its line, which writers leave
+    /// out, is left out between copies too, so merging in memory still
+    /// writes what writing after each copy writes.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn line_break_entries_are_dropped_between_copies() {
+        let lib = tempfile::tempdir().unwrap();
+        let state = tempfile::tempdir().unwrap();
+        let root = lib.path();
+        let bases = Bases::in_dir(state.path(), root);
+        let start = "#EXTM3U\n../a.mp3\n../b.mp3\n";
+        let copies = [
+            "#EXTM3U\n../a.mp3\n../x\ry.mp3\n../b.mp3\n",
+            "#EXTM3U\n../x\ry.mp3\n../n.mp3\n../a.mp3\n../b.mp3\n",
+        ];
+        write(root, "P.m3u8", start);
+        bases.merged("P", start);
+        let name = |i: usize| format!("P.sync-conflict-20261019-10150{i}-AAAAAAA.m3u8");
+        for (i, c) in copies.iter().enumerate() {
+            write(root, &name(i), c);
+        }
+        let base = bases.base("P").unwrap();
+        let mut text = start.to_owned();
+        for c in copies {
+            let w = playlist::parse(&text, root).unwrap();
+            text = merged_text(&merge(Some(&base), &w, &playlist::parse(c, root).unwrap()));
+        }
+        merge_conflicts(root, &bases, Some("AAAAAAA"), SystemTime::now());
+        assert_eq!(
+            fs::read_to_string(playlist::playlist_path(root, "P")).unwrap(),
+            text
+        );
     }
 
     /// Merging several copies in memory and writing once gives the bytes

@@ -261,6 +261,34 @@ class PlaylistMergeTest {
         assertFalse(one.store.hasConflictCopies())
     }
 
+    /** An entry with a CR inside its line, which writers leave out, is left out between copies too (same inputs as tunemesh-core). */
+    @Test
+    fun lineBreakEntriesAreDroppedBetweenCopies() {
+        val one = Device("cr")
+        val dir = File(one.root, "Playlists").apply { mkdirs() }
+        val root = one.root.absolutePath
+        val start = "#EXTM3U\n../a.mp3\n../b.mp3\n"
+        val copies = listOf("#EXTM3U\n../a.mp3\n../x\ry.mp3\n../b.mp3\n", "#EXTM3U\n../x\ry.mp3\n../n.mp3\n../a.mp3\n../b.mp3\n")
+        fun parse(text: String): PlaylistEntries {
+            val entries = PlaylistEntries.Builder(root, keepExtinf = true)
+            text.byteInputStream().use { M3u8.read(it, root, keepExtinf = true) { entry -> entries.add(entry) } }
+            return entries.build()
+        }
+        File(dir, "P.m3u8").writeText(start)
+        PlaylistBases(one.bases).merged("P.m3u8", start.toByteArray())
+        copies.forEachIndexed { i, text ->
+            File(dir, "P.sync-conflict-20261019-10150$i-AAAAAAA.m3u8").apply {
+                writeText(text)
+                setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+            }
+        }
+        val base = parse(start)
+        var expected = start
+        for (copy in copies) expected = M3u8.write(PlaylistMerge.merge(base, parse(expected), parse(copy))) { null }
+        one.store.mergeConflicts(now)
+        assertEquals(expected, File(dir, "P.m3u8").readText())
+    }
+
     /** The shared cases in docs/test-vectors/playlist-copies/, byte for byte as tunemesh-core runs them. */
     @Test
     fun sharedCopyPassVectors() {

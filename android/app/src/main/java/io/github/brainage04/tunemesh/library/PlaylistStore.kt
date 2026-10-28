@@ -259,7 +259,7 @@ class PlaylistStore(
         val merged = ArrayList<File>()
         for (copyName in names.sortedWith { a, b -> compareBytes(a.toByteArray(), b.toByteArray()) }.take(MAX_COPIES_PER_PASS)) {
             val copy = File(directory, copyName)
-            val result = readOrNull(copy)?.let { PlaylistMerge.merge(base, current, it) }
+            val result = readOrNull(copy)?.let { withoutLineBreaks(PlaylistMerge.merge(base, current, it)) }
             val bytes = result?.let(::serialised)
             if (result != null && bytes != null) {
                 current = result
@@ -276,6 +276,15 @@ class PlaylistStore(
             if (skipped) bases.written(fileName(name), it) else bases.merged(fileName(name), it)
         }
         return written != null
+    }
+
+    /** [entries] without those writers leave out (a line break in the line), as the next copy would read them back from the file. */
+    private fun withoutLineBreaks(entries: PlaylistEntries): PlaylistEntries {
+        fun writable(i: Int) = !LibraryFormat.hasLineBreak(entries.path(i) ?: entries.raw(i))
+        if ((0 until entries.size).all(::writable)) return entries
+        val kept = entries.builder(entries.size)
+        for (i in 0 until entries.size) if (writable(i)) kept.add(entries, i)
+        return kept.build()
     }
 
     /** [file]'s entries for a writer, or null when it is gone, too large or unreadable. */
