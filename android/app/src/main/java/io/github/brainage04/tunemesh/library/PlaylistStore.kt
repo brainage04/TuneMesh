@@ -230,16 +230,18 @@ class PlaylistStore(
      * too-large or unreadable copy, or one whose result would be over the limits, is skipped and stays. Copies of one playlist go one at a
      * time in byte order of their names, at most [MAX_COPIES_PER_PASS] per call, each against the playlist's base as it was before the
      * first of them, in memory; then the playlist is written once, and the merged playlist becomes the base unless a copy stays (skipped,
-     * or left for the next call). The result is written without library lookups, so every device writes the same bytes.
+     * or left for the next call). The result is written without library lookups, so every device writes the same bytes. [onStuck] gets the
+     * file name of each copy that stays because it cannot be merged now: one over the limits stays until someone deletes it, and holds its
+     * playlist's base until then.
      */
-    fun mergeConflicts(now: Long = System.currentTimeMillis()): Set<String> {
+    fun mergeConflicts(now: Long = System.currentTimeMillis(), onStuck: (String) -> Unit = {}): Set<String> {
         val bases = bases ?: return emptySet()
         val copies = HashMap<String, MutableList<String>>()
         for (fileName in directory.list().orEmpty()) {
             val name = PlaylistMerge.conflictOf(fileName)
             if (name != null && isDue(File(directory, fileName), name, now)) copies.getOrPut(name) { ArrayList() } += fileName
         }
-        return copies.mapNotNullTo(HashSet()) { (name, names) -> name.takeIf { mergeCopies(bases, name, names) } }
+        return copies.mapNotNullTo(HashSet()) { (name, names) -> name.takeIf { mergeCopies(bases, name, names, onStuck) } }
     }
 
     /** Whether [copy] of playlist [name] is old enough to merge and its playlist exists. */
@@ -251,7 +253,7 @@ class PlaylistStore(
      * returns whether it was written. While a copy stays (skipped, or left for the next pass) the base stays, so it is merged against the
      * same base later and the entries the other copies added are not taken for its removals.
      */
-    private fun mergeCopies(bases: PlaylistBases, name: String, names: List<String>): Boolean {
+    private fun mergeCopies(bases: PlaylistBases, name: String, names: List<String>, onStuck: (String) -> Unit): Boolean {
         var current = readOrNull(file(name)) ?: return false
         val base = bases.read(fileName(name), root.absolutePath)
         var written: ByteArray? = null
@@ -266,8 +268,9 @@ class PlaylistStore(
                 written = bytes
                 merged += copy
             } else if (copy.exists()) {
-                // Not gone (merged by another device and the deletion synced): it stays.
+                // Not gone (merged by another device and the deletion synced): it stays, and holds the base.
                 skipped = true
+                onStuck(copyName)
             }
         }
         written?.let {

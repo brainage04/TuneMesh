@@ -172,7 +172,10 @@ class PlaylistMergeTest {
         val huge = File(dir, "Mix.sync-conflict-20261026-101011-AAAAAAA.m3u8")
         java.io.RandomAccessFile(huge, "rw").use { it.setLength(Limits.MAX_PLAYLIST_BYTES + 1) }
         huge.setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
-        assertEquals(emptySet<String>(), one.store.mergeConflicts(now))
+        // R6-Opus-5: the copy over the limits is reported (it holds the base until someone deletes it); the young one is not due yet.
+        val stuck = ArrayList<String>()
+        assertEquals(emptySet<String>(), one.store.mergeConflicts(now) { stuck += it })
+        assertEquals(listOf(huge.name), stuck)
         assertTrue(young.exists() && orphan.exists() && huge.exists())
         assertEquals("#EXTM3U\n../Artist/Album/A.opus\n", File(dir, "Mix.m3u8").readText())
         assertTrue(one.store.hasConflictCopies())

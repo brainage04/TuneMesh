@@ -169,9 +169,13 @@ someone deletes it, and the other copies are merged without it. Copies of
 one playlist are merged one at a time, in byte order of their names, each
 into the playlist as the one before left it (that is the winner of the
 next), all with the same base; the base becomes the merged playlist only
-after the last one, and stays while any copy is left (skipped, or waiting
-for a later pass), so a copy merged later is merged against the base the
-others were. A device merges the copies of one playlist in memory and
+after the last one, and stays while any due copy is left (skipped, or
+waiting for a later pass), so a copy merged later is merged against the
+base the others were. A copy that is not due yet (see "Who merges") does
+not hold the base: it is merged later against the base as it is then. A
+copy that can never be merged (over the limits) holds its playlist's base
+until someone deletes it, so every implementation reports it in its log.
+A device merges the copies of one playlist in memory and
 writes the playlist once; the bytes are the same as writing it after each
 copy, because entries writers leave out (a line break inside an entry's
 line) are left out after each copy in memory too. It merges at most 32

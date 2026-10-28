@@ -85,6 +85,8 @@ class LibraryRepository(
     /** `lastModified` and length of the files behind [LibraryState.liked] and [LibraryState.openPlaylist]. */
     private var likedStamp: Pair<Long, Long>? = null
     private var openStamp: Pair<Long, Long>? = null
+    /** Conflict copies already logged as stuck (see [PlaylistStore.mergeConflicts]), so each is logged once per process. */
+    private val stuckCopies: MutableSet<String> = java.util.concurrent.ConcurrentHashMap.newKeySet()
 
     val root: File
         get() = _state.value.root
@@ -192,7 +194,15 @@ class LibraryRepository(
             _state.update { it.copy(index = index, loaded = true, error = null) }
             reloadPlaylists()
             // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
-            if (playlistStore.hasConflictCopies()) mutate { playlistStore.mergeConflicts() }
+            if (playlistStore.hasConflictCopies()) {
+                mutate {
+                    playlistStore.mergeConflicts { copy ->
+                        if (stuckCopies.add(copy)) {
+                            Log.w(TAG, "Playlists/$copy cannot be merged; it stays (holding the base) until it can be or is deleted")
+                        }
+                    }
+                }
+            }
             reloadDownloads()
             observe(result.directories)
         } catch (error: IOException) {
