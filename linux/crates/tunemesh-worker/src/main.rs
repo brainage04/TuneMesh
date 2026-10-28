@@ -4,7 +4,7 @@
 //! at a time, and reports progress in `<root>/.tunemesh/status/`. See
 //! `--help` for the options.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime};
@@ -107,13 +107,21 @@ fn run(args: Args) -> Result<(), Fatal> {
         .map_err(Fatal::Other)?;
     let http = http::Http::new(&proxy.url()).map_err(|e| Fatal::Other(anyhow::anyhow!(e)))?;
     let device = args.device.clone().unwrap_or_else(config::host_name);
+    // Playlist bases and kept final statuses persist in the state directory;
+    // without one (no XDG_STATE_HOME and no HOME) statuses are kept in the
+    // work directory and there are no bases.
+    let state_dir = merge::state_dir();
     log!(
-        "tunemesh-worker {VERSION}: library {}, work dir {}, device {device:?}",
+        "tunemesh-worker {VERSION}: library {}, work dir {}, state dir {}, device {device:?}",
         library.display(),
-        work_dir.display()
+        work_dir.display(),
+        state_dir
+            .as_deref()
+            .map_or_else(|| "none".into(), Path::to_string_lossy)
     );
     let leader = leader::Leader::new(&library, device, config::machine_id());
     let bases = Bases::new(&library);
+    let kept = job::Kept::new(state_dir.as_deref().unwrap_or(&work_dir), &library);
     let mut ctx = Ctx {
         root: library,
         work_dir,
@@ -124,6 +132,8 @@ fn run(args: Args) -> Result<(), Fatal> {
         tools: tools::Tools::new(args.yt_dlp.clone()),
         source_ids: job::SourceIds::default(),
         bases,
+        kept,
+        reported: HashMap::new(),
     };
 
     let mut reported_bad: HashSet<String> = HashSet::new();
@@ -156,18 +166,28 @@ fn run(args: Args) -> Result<(), Fatal> {
             sweep(&root, &ctx.bases);
         }
 
+        // Final statuses that could not be written are kept with their
+        // requests, which are not run again; written once they can be.
+        let kept = job::retry_kept(&mut ctx);
+        let requests: Vec<Request> = requests
+            .into_iter()
+            .filter(|r| !kept.contains(&*r.id))
+            .collect();
+
         // Every pending request gets a status so clients show "queued".
         for r in &requests {
             if request::read_state(&root, &r.id).is_none()
                 && let Err(e) = Status::new(r, RequestState::Queued).write(&root)
             {
-                log!("[{}] writing status: {e}", r.id);
+                ctx.report(
+                    &r.id,
+                    &format!("writing status: {e}; the request is not run while its status cannot be written"),
+                );
             }
         }
 
-        match requests.into_iter().next() {
-            Some(r) => job::process(&mut ctx, r),
-            None => signals::sleep(args.poll),
+        if !job::run_next(&mut ctx, requests) {
+            signals::sleep(args.poll);
         }
     }
     log!("tunemesh-worker: stopping");
@@ -191,13 +211,21 @@ fn sweep(root: &Path, bases: &Bases) {
             done.pruned
         );
     }
+    if done.invalid > 0 {
+        log!(
+            "deleted {} status files that are not valid statuses",
+            done.invalid
+        );
+    }
     for (id, e) in &done.errors {
         log!("[{id}] status file: {e}");
     }
     for (name, result) in merge::merge_conflicts(root, bases, None, SystemTime::now()) {
         match result {
             Ok(()) => log!("merged conflict copies into playlist {name:?}"),
-            Err(e) => log!("merging conflict copies into playlist {name:?}: {e}"),
+            Err(e) => log!(
+                "merging conflict copies into playlist {name:?}: {e} (a copy that cannot be merged stays until it can be or is deleted)"
+            ),
         }
     }
 }

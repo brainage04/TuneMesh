@@ -966,10 +966,22 @@ pub fn page(app: &Rc<App>) -> Page {
         .valign(gtk::Align::Center)
         .build();
     let a = app.clone();
-    clear.connect_clicked(move |_| {
-        let n = request::clear_finished(&a.store.root());
-        a.toast(&format!("Cleared {}", plural(n, "request", "requests")));
-        refresh_if_shown();
+    clear.connect_clicked(move |button| {
+        // Reads every orphan status file (up to 1 MiB each): off the GTK
+        // thread, with the button off meanwhile.
+        button.set_sensitive(false);
+        let (a, button) = (a.clone(), button.downgrade());
+        let root = a.store.root();
+        glib::spawn_future_local(async move {
+            match gio::spawn_blocking(move || request::clear_finished(&root)).await {
+                Ok(n) => a.toast(&format!("Cleared {}", plural(n, "request", "requests"))),
+                Err(_) => a.toast("Could not clear the finished requests (see the log)"),
+            }
+            if let Some(button) = button.upgrade() {
+                button.set_sensitive(true);
+            }
+            refresh_if_shown();
+        });
     });
     head.append(&clear);
     b.append(&head);

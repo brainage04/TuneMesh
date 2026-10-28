@@ -402,8 +402,8 @@ impl Dir {
     }
 }
 
-/// `renameat2(RENAME_NOREPLACE)`, with a check-then-rename fallback for
-/// filesystems that do not support the flag.
+/// `renameat2(RENAME_NOREPLACE)`, with a fallback for filesystems that do
+/// not support the flag.
 fn rename_noreplace(
     from_dir: impl std::os::fd::AsFd,
     from: &OsStr,
@@ -413,16 +413,44 @@ fn rename_noreplace(
     match rustix::fs::renameat_with(&from_dir, from, &to_dir, to, RenameFlags::NOREPLACE) {
         Ok(()) => Ok(()),
         Err(rustix::io::Errno::INVAL | rustix::io::Errno::NOSYS) => {
-            match rustix::fs::statat(&to_dir, to, AtFlags::SYMLINK_NOFOLLOW) {
-                Ok(_) => Err(io::Error::new(
-                    io::ErrorKind::AlreadyExists,
-                    format!("{} exists", Path::new(to).display()),
-                )),
-                Err(rustix::io::Errno::NOENT) => {
-                    rustix::fs::renameat(&from_dir, from, &to_dir, to).map_err(io::Error::from)
-                }
-                Err(e) => Err(e.into()),
-            }
+            rename_noreplace_without_flag(from_dir, from, to_dir, to)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `rename_noreplace` where the filesystem lacks `RENAME_NOREPLACE` (some
+/// FUSE and network filesystems): a hard link at the new name, which fails
+/// when the name exists, then the old name removed, so a file another
+/// process creates at the new name meanwhile is never replaced. Only where
+/// hard links are not supported either is it a check-then-rename, which
+/// replaces a file created between the check and the rename.
+fn rename_noreplace_without_flag(
+    from_dir: impl std::os::fd::AsFd,
+    from: &OsStr,
+    to_dir: impl std::os::fd::AsFd,
+    to: &OsStr,
+) -> io::Result<()> {
+    use rustix::io::Errno;
+    let exists = || {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("{} exists", Path::new(to).display()),
+        )
+    };
+    match rustix::fs::linkat(&from_dir, from, &to_dir, to, AtFlags::empty()) {
+        Ok(()) => {
+            return rustix::fs::unlinkat(&from_dir, from, AtFlags::empty())
+                .map_err(io::Error::from);
+        }
+        Err(Errno::EXIST) => return Err(exists()),
+        Err(Errno::PERM | Errno::OPNOTSUPP | Errno::NOSYS) => {}
+        Err(e) => return Err(e.into()),
+    }
+    match rustix::fs::statat(&to_dir, to, AtFlags::SYMLINK_NOFOLLOW) {
+        Ok(_) => Err(exists()),
+        Err(Errno::NOENT) => {
+            rustix::fs::renameat(&from_dir, from, &to_dir, to).map_err(io::Error::from)
         }
         Err(e) => Err(e.into()),
     }
@@ -495,6 +523,51 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 2);
         assert!(root.free_space().unwrap() > 0);
+    }
+
+    /// R4D-3: without `RENAME_NOREPLACE`, a file another process (Syncthing)
+    /// creates at the target while the move runs is never replaced: either
+    /// the move fails with `AlreadyExists`, or the other process finds the
+    /// name taken.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn the_fallback_never_replaces_a_racing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let d = Dir::open(dir.path()).unwrap();
+        let target = dir.path().join("t");
+        let mut replaced = 0;
+        for _ in 0..2000 {
+            let _ = fs::remove_file(&target);
+            fs::write(dir.path().join("s"), b"moved").unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            let (moved, created) = std::thread::scope(|s| {
+                let racer = s.spawn(|| {
+                    barrier.wait();
+                    fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
+                        .and_then(|mut f| io::Write::write_all(&mut f, b"racer"))
+                        .is_ok()
+                });
+                barrier.wait();
+                let moved = rename_noreplace_without_flag(&d.fd, "s".as_ref(), &d.fd, "t".as_ref());
+                (moved, racer.join().unwrap())
+            });
+            match moved {
+                Ok(()) if created => replaced += 1,
+                Ok(()) => assert_eq!(fs::read(&target).unwrap(), b"moved"),
+                Err(e) => {
+                    assert_eq!(e.kind(), io::ErrorKind::AlreadyExists, "{e}");
+                    assert!(created);
+                    assert_eq!(fs::read(dir.path().join("s")).unwrap(), b"moved");
+                }
+            }
+        }
+        assert_eq!(
+            replaced, 0,
+            "the racing file was replaced {replaced} times in 2000"
+        );
     }
 
     #[test]

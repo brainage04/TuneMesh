@@ -19,6 +19,9 @@ pub const MAX_INPUT_BYTES: usize = 8 * KIB;
 pub const MAX_REQUEST_PLAYLIST_BYTES: usize = KIB;
 /// Request and status ids clients read (the newest).
 pub const MAX_LISTED_REQUESTS: usize = 200;
+/// Orphaned status files the worker's sweep cancels or deletes in one pass
+/// (oldest first); the rest wait for the next pass.
+pub const MAX_SWEEP_CHANGES: usize = 128;
 /// A request or status id, which is a file name (the JSON `id` is ignored).
 pub const MAX_ID_BYTES: usize = 255;
 /// Request `requestedBy`, `worker.json` `device`.
@@ -307,6 +310,7 @@ mod tests {
         assert_eq!(MAX_INPUT_BYTES, 8 << 10);
         assert_eq!(MAX_REQUEST_PLAYLIST_BYTES, 1 << 10);
         assert_eq!(MAX_LISTED_REQUESTS, 200);
+        assert_eq!(MAX_SWEEP_CHANGES, 128);
         assert_eq!(MAX_TEXT_BYTES, 1 << 10);
         assert_eq!(MAX_MESSAGE_BYTES, 4 << 10);
         assert_eq!(

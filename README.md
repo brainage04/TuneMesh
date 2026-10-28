@@ -64,6 +64,9 @@ Notes:
   [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingfork/).
 - The downloader fetches and updates its own copies of yt-dlp and deno (the
   JavaScript runtime yt-dlp needs for YouTube); ffmpeg comes with the package.
+  The Nix packages instead use the yt-dlp, deno and ffmpeg of the nixpkgs
+  they were built with and never download their own; update them by updating
+  the flake.
 
 <details>
 <summary>NixOS and home-manager</summary>
@@ -128,7 +131,15 @@ loginctl enable-linger "$USER"   # keep it running while logged out
 ```
 
 The `.deb`, `.rpm`, Arch, Nix and source installs include this service. With
-the Snap, run `snap run tunemesh.worker`, with the AppImage
+Nix on a distribution other than NixOS, if `systemctl` says the unit does not
+exist, give its path:
+`systemctl --user enable --now ~/.nix-profile/share/systemd/user/tunemesh-worker.service`
+(the link goes through the profile). After upgrading TuneMesh (any package,
+`nix profile upgrade` included), run
+`systemctl --user daemon-reload && systemctl --user restart tunemesh-worker`:
+systemd keeps the old unit until it reloads, and the running worker keeps
+the old version until it restarts. With the Snap, run
+`snap run tunemesh.worker`, with the AppImage
 `./TuneMesh-<version>-<arch>.AppImage worker`, for example from your own
 systemd user unit. Only one device downloads at a time; the Downloads page
 shows which one.
@@ -166,7 +177,7 @@ If you enabled the downloader service, stop it first:
 | Flatpak | `flatpak uninstall --user --delete-data io.github.brainage04.TuneMesh` (removes its settings too) |
 | Snap | `sudo snap remove --purge tunemesh` (removes its settings too) |
 | AppImage | delete the file |
-| Nix | `nix profile remove tunemesh` |
+| Nix | `nix profile remove TuneMesh` (the name `nix profile list` shows) |
 | From source | `sudo packaging/linux/install.sh --uninstall` |
 
 Then delete your settings, cache and the downloader's tools (not needed after
@@ -192,7 +203,7 @@ music. Deleting songs **inside** a synced folder deletes them on every device.
 | Where | What |
 | --- | --- |
 | `~/.config/tunemesh/config.toml` | Library path, downloader switch |
-| `~/.local/state/tunemesh/` | Queue, position, volume |
+| `~/.local/state/tunemesh/` | Queue, position, volume; playlist bases (`playlist-base/`: this device's copy of each playlist from before its own latest edits, for merging Syncthing conflict copies); final download statuses the downloader could not write into the library yet (`unwritten/`) |
 | `~/.cache/tunemesh/` | Library scan cache, covers, downloader scratch space (`worker/`) |
 | `~/.local/share/tunemesh/` | The downloader's yt-dlp and deno |
 | Library folder | Songs (`<Artist>/<Album>/<Title> [<id>].<ext>`), `Playlists/*.m3u8`, `.tunemesh/` (download requests and status), `.stignore` |

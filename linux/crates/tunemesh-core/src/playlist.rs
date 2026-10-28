@@ -214,6 +214,14 @@ impl Entries {
         self.compact_if_sparse();
     }
 
+    /// Drops the entries writers leave out (a line break in the path), as
+    /// reading back what was written would.
+    pub(crate) fn drop_line_breaks(&mut self) {
+        if self.iter().any(|e| has_line_break(e.path)) {
+            self.retain(|_, e| !has_line_break(e.path));
+        }
+    }
+
     fn view_in(text: &str, s: Span) -> PlaylistEntry<'_> {
         let start = s.start as usize;
         let mid = start + s.path_len();
@@ -516,6 +524,26 @@ pub fn serialize(entries: &Entries, info: &dyn Fn(&str) -> Option<TrackInfo>) ->
     out
 }
 
+/// `serialize`, or a `TooLarge` error when the text would be over the size
+/// limits, so readers can always open what writers write.
+pub(crate) fn checked_text(
+    entries: &Entries,
+    info: &dyn Fn(&str) -> Option<TrackInfo>,
+) -> io::Result<String> {
+    if entries.len() > MAX_ENTRIES {
+        return Err(too_large("more than 250,000 entries"));
+    }
+    let text = serialize(entries, info);
+    if text.len() as u64 > MAX_PLAYLIST_BYTES {
+        return Err(too_large("larger than 32 MiB"));
+    }
+    // Every line, #EXTINF lines included, must be one readers accept.
+    if text.lines().any(|line| line.len() > MAX_LINE_BYTES) {
+        return Err(too_large("a line is longer than 32 KiB"));
+    }
+    Ok(text)
+}
+
 pub fn playlists_dir(root: &Path) -> PathBuf {
     root.join(PLAYLISTS_DIR)
 }
@@ -681,17 +709,7 @@ impl Playlist {
         root: &Path,
         info: &dyn Fn(&str) -> Option<TrackInfo>,
     ) -> io::Result<String> {
-        if self.entries.len() > MAX_ENTRIES {
-            return Err(too_large("more than 250,000 entries"));
-        }
-        let text = serialize(&self.entries, info);
-        if text.len() as u64 > MAX_PLAYLIST_BYTES {
-            return Err(too_large("larger than 32 MiB"));
-        }
-        // Every line, #EXTINF lines included, must be one readers accept.
-        if text.lines().any(|line| line.len() > MAX_LINE_BYTES) {
-            return Err(too_large("a line is longer than 32 KiB"));
-        }
+        let text = checked_text(&self.entries, info)?;
         open_dir(root, true)?.write_atomic(&file_name(&self.name), text.as_bytes())?;
         Ok(text)
     }

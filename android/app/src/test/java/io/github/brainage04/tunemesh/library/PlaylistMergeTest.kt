@@ -172,7 +172,10 @@ class PlaylistMergeTest {
         val huge = File(dir, "Mix.sync-conflict-20261026-101011-AAAAAAA.m3u8")
         java.io.RandomAccessFile(huge, "rw").use { it.setLength(Limits.MAX_PLAYLIST_BYTES + 1) }
         huge.setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
-        assertEquals(emptySet<String>(), one.store.mergeConflicts(now))
+        // R6-Opus-5: the copy over the limits is reported (it holds the base until someone deletes it); the young one is not due yet.
+        val stuck = ArrayList<String>()
+        assertEquals(emptySet<String>(), one.store.mergeConflicts(now) { stuck += it })
+        assertEquals(listOf(huge.name), stuck)
         assertTrue(young.exists() && orphan.exists() && huge.exists())
         assertEquals("#EXTM3U\n../Artist/Album/A.opus\n", File(dir, "Mix.m3u8").readText())
         assertTrue(one.store.hasConflictCopies())
@@ -194,6 +197,126 @@ class PlaylistMergeTest {
         assertEquals(setOf("Mix"), one.store.mergeConflicts(now))
         assertEquals(listOf(a.path, d.path, c.path, b.path), one.paths("Mix"))
         assertFalse(one.store.hasConflictCopies())
+    }
+
+    /**
+     * One pass merges at most [PlaylistStore.MAX_COPIES_PER_PASS] copies of a playlist, the first in byte order; the next the rest, against
+     * the same base, so their entries are not taken for removals.
+     */
+    @Test
+    fun copiesMergeInBoundedPasses() {
+        val (one, _) = devices("Mix", a)
+        PlaylistBases(one.bases).merged("Mix.m3u8", one.file("Mix").readBytes())
+        val dir = File(one.root, "Playlists")
+        val n = PlaylistStore.MAX_COPIES_PER_PASS + 8
+        val copy = { i: Int -> File(dir, "Mix.sync-conflict-20261026-${i.toString().padStart(6, '0')}-AAAAAAA.m3u8") }
+        for (i in 0 until n) {
+            copy(i).apply {
+                writeText("#EXTM3U\n../Artist/Album/A.opus\n../Artist/Album/N$i.opus\n")
+                setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+            }
+        }
+        assertEquals(setOf("Mix"), one.store.mergeConflicts(now))
+        assertEquals(1 + PlaylistStore.MAX_COPIES_PER_PASS, one.paths("Mix").size)
+        assertFalse(copy(0).exists())
+        assertTrue(copy(n - 1).exists())
+        assertEquals(setOf("Mix"), one.store.mergeConflicts(now))
+        assertEquals(1 + n, one.paths("Mix").size)
+        assertFalse(one.store.hasConflictCopies())
+    }
+
+    /**
+     * Merging several copies in memory and writing once gives the bytes that writing the playlist after each copy and reading it back for
+     * the next gives (contract: "each into the playlist as the one before left it"), with entries without `#EXTINF`, outside the root,
+     * duplicated and with CRLF endings; the same inputs as tunemesh-core's `merging_in_memory_matches_writing_after_each_copy`.
+     */
+    @Test
+    fun mergingInMemoryMatchesWritingAfterEachCopy() {
+        val one = Device("chain")
+        val dir = File(one.root, "Playlists").apply { mkdirs() }
+        val root = one.root.absolutePath
+        val base = "#EXTM3U\n../a.mp3\n#EXTINF:12,  Bee \n../b.mp3\n/elsewhere/x.mp3\n../a.mp3\n"
+        val winner = "#EXTM3U\r\n../b.mp3\r\n/elsewhere/x.mp3\r\n../c%20d.mp3\r\n../a.mp3\r\n"
+        val copies =
+            listOf(
+                "#EXTM3U\n../e.mp3\n../a.mp3\n#EXTINF:12,Bee\n../b.mp3\n/elsewhere/x.mp3\n../a.mp3\n",
+                "#EXTM3U\n../a.mp3\n../b.mp3\n../f.mp3\n../a.mp3\n../a.mp3\n",
+                "\uFEFF#EXTM3U\n#EXTINF:-1,G\n../g.mp3\n../b.mp3\n",
+            )
+        fun parse(text: String): PlaylistEntries {
+            val entries = PlaylistEntries.Builder(root, keepExtinf = true)
+            text.byteInputStream().use { M3u8.read(it, root, keepExtinf = true) { entry -> entries.add(entry) } }
+            return entries.build()
+        }
+        File(dir, "P.m3u8").writeText(winner)
+        PlaylistBases(one.bases).merged("P.m3u8", base.toByteArray())
+        copies.forEachIndexed { i, text ->
+            File(dir, "P.sync-conflict-20261019-10150$i-AAAAAAA.m3u8").apply {
+                writeText(text)
+                setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+            }
+        }
+        val baseEntries = parse(base)
+        var expected = winner
+        for (copy in copies) expected = M3u8.write(PlaylistMerge.merge(baseEntries, parse(expected), parse(copy))) { null }
+        assertEquals(setOf("P"), one.store.mergeConflicts(now))
+        assertEquals(expected, File(dir, "P.m3u8").readText())
+        assertFalse(one.store.hasConflictCopies())
+    }
+
+    /** An entry with a CR inside its line, which writers leave out, is left out between copies too (same inputs as tunemesh-core). */
+    @Test
+    fun lineBreakEntriesAreDroppedBetweenCopies() {
+        val one = Device("cr")
+        val dir = File(one.root, "Playlists").apply { mkdirs() }
+        val root = one.root.absolutePath
+        val start = "#EXTM3U\n../a.mp3\n../b.mp3\n"
+        val copies = listOf("#EXTM3U\n../a.mp3\n../x\ry.mp3\n../b.mp3\n", "#EXTM3U\n../x\ry.mp3\n../n.mp3\n../a.mp3\n../b.mp3\n")
+        fun parse(text: String): PlaylistEntries {
+            val entries = PlaylistEntries.Builder(root, keepExtinf = true)
+            text.byteInputStream().use { M3u8.read(it, root, keepExtinf = true) { entry -> entries.add(entry) } }
+            return entries.build()
+        }
+        File(dir, "P.m3u8").writeText(start)
+        PlaylistBases(one.bases).merged("P.m3u8", start.toByteArray())
+        copies.forEachIndexed { i, text ->
+            File(dir, "P.sync-conflict-20261019-10150$i-AAAAAAA.m3u8").apply {
+                writeText(text)
+                setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+            }
+        }
+        val base = parse(start)
+        var expected = start
+        for (copy in copies) expected = M3u8.write(PlaylistMerge.merge(base, parse(expected), parse(copy))) { null }
+        one.store.mergeConflicts(now)
+        assertEquals(expected, File(dir, "P.m3u8").readText())
+    }
+
+    /** The shared cases in docs/test-vectors/playlist-copies/, byte for byte as tunemesh-core runs them. */
+    @Test
+    fun sharedCopyPassVectors() {
+        val cases = File(vectors, "../playlist-copies").listFiles { file -> file.isDirectory }!!.sortedBy { it.name }
+        assertTrue("found ${cases.size} cases", cases.isNotEmpty())
+        for (case in cases) {
+            val one = Device("copies-${case.name}")
+            val dir = File(one.root, "Playlists").apply { mkdirs() }
+            File(case, "Mix.m3u8").copyTo(File(dir, "Mix.m3u8"))
+            PlaylistBases(one.bases).merged("Mix.m3u8", File(case, "base.m3u8").readBytes())
+            var pass = 1
+            while (File(case, "pass-$pass").isDirectory) {
+                for (copy in File(case, "pass-$pass").listFiles()!!) {
+                    copy.copyTo(File(dir, copy.name), overwrite = true).setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+                }
+                one.store.mergeConflicts(now)
+                val expected = File(case, "pass-$pass-expected")
+                val what = "${case.name} pass $pass"
+                assertArrayEquals("$what: playlist", File(expected, "Mix.m3u8").readBytes(), File(dir, "Mix.m3u8").readBytes())
+                assertArrayEquals("$what: base", File(expected, "base.m3u8").readBytes(), File(one.bases, "Mix.m3u8").readBytes())
+                val left = dir.list()!!.filter { it != "Mix.m3u8" }.sorted()
+                assertEquals("$what: copies left", File(expected, "left.txt").readLines(), left)
+                pass++
+            }
+        }
     }
 
     companion object {

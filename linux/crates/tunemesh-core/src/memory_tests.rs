@@ -205,7 +205,11 @@ fn worker_sweep_reads_one_status_at_a_time() {
         .unwrap();
     }
     let (done, retained, peak) = measure(|| request::sweep(root));
-    assert_eq!(done.cancelled.len(), n);
+    // One pass changes at most `MAX_SWEEP_CHANGES` of them.
+    assert_eq!(
+        done.cancelled.len(),
+        n.min(crate::limits::MAX_SWEEP_CHANGES)
+    );
     eprintln!(
         "MEMORY worker sweep: {n} status files, {total} B, peak {peak} B, retained {retained} B"
     );

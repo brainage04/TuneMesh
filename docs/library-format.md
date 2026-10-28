@@ -162,14 +162,27 @@ copy gone instead of overwriting the first merger's result.
 How. A copy is merged only if its name is exactly as above (`<Name>` not
 empty, 8 digits, `-`, 6 digits, `-`, 7 characters of `A`-`Z` and `2`-`7`)
 and the playlist `<Name>.m3u8` exists; the winner and the copy are read with
-the playlist rules, and a too-large or unreadable one leaves both files
-alone. Copies of one playlist are merged one at a time, in byte order of
-their names, each into the playlist as the one before left it (that is the
-winner of the next), all with the same base; the base becomes the merged
-playlist only after the last one. An entry's key is its root-relative track
-path, or its line as written when it points outside the root. With base B,
-winner W and copy C, and b, w and c the number of entries with key k in
-each:
+the playlist rules. A too-large or unreadable winner leaves the playlist and
+its copies alone. A too-large or unreadable copy, or one whose merge would
+be over the limits (step 5), is skipped: it stays until it can be merged or
+someone deletes it, and the other copies are merged without it. Copies of
+one playlist are merged one at a time, in byte order of their names, each
+into the playlist as the one before left it (that is the winner of the
+next), all with the same base; the base becomes the merged playlist only
+after the last one, and stays while any due copy is left (skipped, or
+waiting for a later pass), so a copy merged later is merged against the
+base the others were. A copy that is not due yet (see "Who merges") does
+not hold the base: it is merged later against the base as it is then. A
+copy that can never be merged (over the limits) holds its playlist's base
+until someone deletes it, so every implementation reports it in its log.
+A device merges the copies of one playlist in memory and
+writes the playlist once; the bytes are the same as writing it after each
+copy, because entries writers leave out (a line break inside an entry's
+line) are left out after each copy in memory too. It merges at most 32
+copies of one playlist per pass; the rest wait for its next pass.
+An entry's key is its root-relative track path, or its line as written when
+it points outside the root. With base B, winner W and copy C, and b, w and c
+the number of entries with key k in each:
 
 1. How many entries with key k the result has: when neither side removed
    one (w ≥ b and c ≥ b), r = max(w, c), so a track both devices added is
@@ -199,11 +212,13 @@ each:
    same bytes. Liked Songs is merged the same way: a like at the top of the
    copy stays at the top.
 5. The merged playlist is written only if it is within the limits, then the
-   copy is deleted. A merge that would be too large leaves both files as
-   they are (and the base as it was).
+   copy is deleted. A copy whose merge would be too large is skipped (see
+   How).
 
 Shared test cases (base, winner, copy and the expected bytes) are in
-`docs/test-vectors/playlist-merge/`; every implementation runs them.
+`docs/test-vectors/playlist-merge/`, and cases for passes over several
+copies in `docs/test-vectors/playlist-copies/`; every implementation runs
+them.
 
 ## Download requests
 
@@ -306,7 +321,19 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 - The worker keeps every status file within the 1 MiB file limit (see
   "Limits"): when one would be larger, it drops entries from the end of
   `tracks`, then `failures`, then `warnings` until it fits.
-- After writing a final state the worker deletes the request file.
+- After writing a final state the worker deletes the request file. When it
+  cannot write the final state (for example a full disk, or a directory
+  another device made at the status path), it keeps the status in its
+  per-device state directory outside `<root>` (next to its playlist bases,
+  so it survives a restart and a cleared work directory) and the request
+  file in place, never runs that request again (also after a restart), and
+  tries the status again at every poll until it is written (then deletes
+  the request file) or the request file is deleted. A request whose status
+  is already final is never run again either: when its request file cannot
+  be deleted, the worker tries again at every poll and logs the id once a
+  minute, and a kept status stays kept until the request file is gone. A
+  request whose status cannot be written when it would start is not run;
+  the worker goes on with the next one and logs the id once a minute.
 - Clients show a request with no status file yet as "Waiting for the
   downloader". Clients may delete status files in a final state ("Clear");
   "Clear" deletes every status file in a final state whose request file is
@@ -315,10 +342,13 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
   "Limits"): of a status's `tracks` only their number. A client that needs
   the paths, to play a finished request, reads that one status file again.
 - Every 60 seconds the worker looks at the status files whose request file
-  is gone, one file at a time and reading only their `state`: one that is
-  not final is set to `cancelled` (its request was cancelled while no worker
-  was watching); a final one whose id is not among the newest 200 status ids
-  is deleted, since no client lists it (see "Limits").
+  is gone, oldest first, one file at a time and reading only their `state`:
+  one that is not final is set to `cancelled` (its request was cancelled
+  while no worker was watching); a final one, or a regular file that is not
+  a valid status (over the limit, not JSON, no `state`), whose id is not
+  among the newest 200 status ids is deleted, since no client lists it (see
+  "Limits"). It changes at most 128 of them per pass; the rest wait for the
+  next pass.
 
 ## One downloader per library
 
@@ -457,7 +487,7 @@ another value makes the file invalid (read as described in the first row).
 | Request `playlistFromSource` | a boolean | Otherwise invalid |
 | Request files the worker considers | the oldest 500 (`--max-pending`) | The others wait their turn |
 | Request and status files clients read | the newest 200 ids (a request with its status file counts once) | Older ones are counted but not read or shown |
-| Status files the worker reads | one at a time: the `state` of those whose request file is gone | Final ones past the newest 200 status ids are deleted (see "Download status") |
+| Status files the worker reads | one at a time: the `state` of those whose request file is gone; at most 128 set to `cancelled` or deleted per pass, oldest first | Final and invalid ones past the newest 200 status ids are deleted (see "Download status"); the rest of the changes wait for the next pass |
 | Status `input` | 8 KiB | Cut |
 | Status `title`; each warning; each failure's `item` and `error` | 1 KiB | Cut |
 | Status `message` | 4 KiB | Cut |

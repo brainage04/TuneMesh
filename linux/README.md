@@ -135,14 +135,18 @@ downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
   removal is not undone. A copy that names this device's Syncthing ID is
   merged at once (the app asks its Syncthing for the ID); any other copy
   once it is 10 minutes old, by whichever device sees it then (phones and
-  the worker do not know their ID and always wait).
+  the worker do not know their ID and always wait). Up to 32 copies of one
+  playlist are merged at a time, with one write of the playlist; more wait
+  for the next pass.
 - Playlist edits are written on a background thread; quitting or closing
   the window waits up to 5 seconds for the ones still queued.
 - Cache (library scan, MPRIS cover art): `~/.cache/tunemesh/`. The scan cache
   makes startup instant; a background rescan follows, and file changes (for
   example songs arriving through Syncthing) are picked up within a second.
 - The built-in downloader's work directory: `~/.cache/tunemesh/worker/`
-  (mode 0700).
+  (mode 0700, scratch and caches only). Final statuses it could not write
+  into the library yet are kept in `~/.local/state/tunemesh/unwritten/`, next
+  to the playlist bases, so their requests are not run again.
 - The desktop file, icon and AppStream metainfo install as
   `io.github.brainage04.TuneMesh`.
 
@@ -262,8 +266,10 @@ Programs it runs:
 
 Files it creates: in the work directory `jobs/<request id>/` (scratch, removed
 after each request), `tmp/`, `cache/yt-dlp/` and `spotify-queries.json`; in
-the library the downloaded tracks, playlists, `.tunemesh/status/*.json` and
-`.tunemesh/worker.json`.
+`$XDG_STATE_HOME/tunemesh/` (default `~/.local/state/tunemesh/`) the playlist
+bases and `unwritten/` (final statuses it could not write into the library
+yet, so their requests are not run again); in the library the downloaded
+tracks, playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
 
 How it works:
 
@@ -318,9 +324,12 @@ How it works:
   files left unfinished by a request deleted while no worker ran become
   `cancelled` too.
 - Every minute the worker looks at the status files whose request file is
-  gone, one file at a time and reading only their `state`; finished ones
-  that are not among the newest 200 status files are deleted, since no
-  client lists them. It then merges playlist conflict copies that are 10
+  gone, oldest first, one file at a time and reading only their `state`;
+  finished ones, and files that are not valid statuses, that are not among
+  the newest 200 status files are deleted, since no client lists them. It
+  changes at most 128 status files per pass,
+  so a large pile is worked off a minute at a time without holding up
+  downloads for long. It then merges playlist conflict copies that are 10
   minutes old (it does not know its Syncthing device ID).
 - Playlist edits (downloads added to a playlist) take the same `Playlists/`
   lock as the desktop app, so neither loses the other's edit.
@@ -341,7 +350,8 @@ The flake exports `nixosModules.worker`:
     enable = true;
     user = "alice";
     libraryPath = "/home/alice/Music/TuneMesh";
-    workDir = "/var/cache/tunemesh-worker"; # default; created 0700 for `user`
+    workDir = "/var/cache/tunemesh-worker"; # default; scratch and caches
+    stateDir = "/var/lib/tunemesh-worker"; # default; bases, unwritten statuses
     # extraArgs = [ "--max-items" "1000" ];
   };
 }
@@ -350,10 +360,17 @@ The flake exports `nixosModules.worker`:
 This runs `tunemesh-worker.service` as `user` with `Restart=on-failure`
 (except after exit code 2); `journalctl -u tunemesh-worker` shows its log.
 The unit adds systemd sandboxing on top of the worker's own checks: the
-filesystem is read-only except the library and the work directory, and
-`IPAddressDeny` blocks private ranges for the whole service, with exceptions
-for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
-`allowedAddresses` (systemd cannot restrict these to one port).
+filesystem is read-only except the library, the work directory and the
+state directory, and `IPAddressDeny` blocks private ranges for the whole
+service, with exceptions for 127.0.0.1 (the worker's proxy) and the DNS
+resolvers in `allowedAddresses` (systemd cannot restrict these to one
+port). The worker's caches (`XDG_CACHE_HOME` and the other XDG directories)
+are in the work directory, which can be cleared. Its playlist bases and the
+final statuses it could not write yet are in the state directory
+(`XDG_STATE_HOME`), `<stateDir>/tunemesh/`, which must persist: without the
+bases the next merge of each playlist is a union (a removal can come back
+once), and a request whose status was kept runs again. Both directories are
+created 0700 for `user`, not in the user's home.
 
 ## Development checks
 

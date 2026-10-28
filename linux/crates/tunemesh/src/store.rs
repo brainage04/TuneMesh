@@ -95,6 +95,11 @@ pub struct Store {
     playlists: RefCell<Vec<Summary>>,
     liked: RefCell<Playlist>,
     liked_set: RefCell<HashSet<String>>,
+    /// Likes and unlikes queued on the writer thread and not applied yet:
+    /// path → (the state asked for last, how many are queued). `is_liked`
+    /// answers from here first, so a second click on a heart before the
+    /// first write lands undoes it instead of repeating it.
+    pending_likes: RefCell<HashMap<String, (bool, usize)>>,
     /// Playlists over the contract's size limits (Liked Songs included):
     /// listed, never opened or rewritten.
     too_large: RefCell<HashSet<String>>,
@@ -136,6 +141,7 @@ impl Store {
             playlists: RefCell::new(Vec::new()),
             liked: RefCell::new(Playlist::new(LIKED_SONGS)),
             liked_set: RefCell::new(HashSet::new()),
+            pending_likes: RefCell::new(HashMap::new()),
             too_large: RefCell::new(HashSet::new()),
             playlist_stamps: RefCell::new(HashMap::new()),
             playlists_loading: Cell::new(false),
@@ -660,6 +666,9 @@ impl Store {
     }
 
     pub fn is_liked(&self, path: &str) -> bool {
+        if let Some(&(like, _)) = self.pending_likes.borrow().get(path) {
+            return like;
+        }
         self.liked_set.borrow().contains(path)
     }
 
@@ -697,13 +706,21 @@ impl Store {
     }
 
     /// Likes or unlikes `paths`; `done` runs once Liked Songs is written.
+    /// Until then `is_liked` reports the state asked for.
     pub fn set_liked_paths(
         &self,
         paths: &[String],
         like: bool,
         done: impl FnOnce(io::Result<()>) + 'static,
     ) {
-        let paths = paths.to_vec();
+        let mut pending = self.pending_likes.borrow_mut();
+        for p in paths {
+            let e = pending.entry(p.clone()).or_insert((like, 0));
+            *e = (like, e.1 + 1);
+        }
+        drop(pending);
+        let paths: Arc<[String]> = paths.into();
+        let (queued, weak) = (paths.clone(), self.me.clone());
         self.modify_playlist(
             LIKED_SONGS,
             move |liked| {
@@ -714,7 +731,21 @@ impl Store {
                 }
                 Ok(())
             },
-            done,
+            move |result| {
+                // Applied (or failed): Liked Songs as read says the rest.
+                if let Some(store) = weak.upgrade() {
+                    let mut pending = store.pending_likes.borrow_mut();
+                    for p in queued.iter() {
+                        if let Some(e) = pending.get_mut(p) {
+                            e.1 -= 1;
+                            if e.1 == 0 {
+                                pending.remove(p);
+                            }
+                        }
+                    }
+                }
+                done(result);
+            },
         );
     }
 
@@ -1597,6 +1628,49 @@ mod tests {
                 .filter(|n| n.starts_with(".~tunemesh-"))
                 .collect();
             assert!(temps.is_empty(), "left behind: {temps:?}");
+            drop(store);
+            fs::remove_dir_all(&base).unwrap();
+        });
+    }
+
+    /// R4D-6: two clicks on a heart before the first write is applied like
+    /// and then unlike (each click flips what the previous one asked for).
+    #[test]
+    fn a_second_toggle_before_the_write_undoes_the_first() {
+        on_own_context(|| {
+            let (base, store, _) = playlist_lib("toggle", &["A"]);
+            fs::write(
+                base.join(PLAYLISTS_DIR).join(format!("{LIKED_SONGS}.m3u8")),
+                "#EXTM3U\n",
+            )
+            .unwrap();
+            store.reload_playlists();
+            store.settle();
+            let liked_on_disk = || {
+                Playlist::read(&base, LIKED_SONGS)
+                    .unwrap()
+                    .entries
+                    .iter()
+                    .any(|e| e.track() == Some("New.opus"))
+            };
+            let ctx = glib::MainContext::ref_thread_default();
+            for clicks in [2, 3] {
+                let done = Rc::new(Cell::new(0));
+                for _ in 0..clicks {
+                    let d = done.clone();
+                    store.toggle_like("New.opus", move |r| {
+                        r.unwrap();
+                        d.set(d.get() + 1);
+                    });
+                }
+                while done.get() < clicks {
+                    ctx.iteration(true);
+                }
+                // Two clicks from unliked: unliked; then three: liked.
+                let liked = clicks == 3;
+                assert_eq!(store.is_liked("New.opus"), liked, "{clicks} clicks");
+                assert_eq!(liked_on_disk(), liked, "{clicks} clicks");
+            }
             drop(store);
             fs::remove_dir_all(&base).unwrap();
         });
