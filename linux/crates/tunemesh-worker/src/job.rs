@@ -135,8 +135,10 @@ impl Kept {
 }
 
 /// Writes the kept final statuses (`Kept`) that can be written now and
-/// removes their requests; drops those whose request was deleted. Returns
-/// the ids still kept: their requests are not run.
+/// removes their requests; drops those whose request was deleted. A kept
+/// status stays until its request file is gone, so a request file that
+/// cannot be deleted is not run again. Returns the ids still kept: their
+/// requests are not run.
 pub fn retry_kept(ctx: &mut Ctx) -> HashSet<String> {
     let mut still = HashSet::new();
     for id in ctx.kept.ids() {
@@ -145,16 +147,20 @@ pub fn retry_kept(ctx: &mut Ctx) -> HashSet<String> {
             let _ = fs::remove_file(&path);
             continue;
         }
-        let written =
-            fs::read(&path).and_then(|json| request::write_status_json(&ctx.root, &id, &json));
+        // Written at an earlier poll; only the request is left to delete.
+        let written = if request::read_state(&ctx.root, &id).is_some_and(RequestState::is_final) {
+            Ok(())
+        } else {
+            fs::read(&path)
+                .and_then(|json| request::write_status_json(&ctx.root, &id, &json))
+                .inspect(|()| log!("[{id}] final status written"))
+        };
         match written {
-            Ok(()) => {
-                log!("[{id}] final status written");
-                if let Err(e) = request::cancel(&ctx.root, &id) {
-                    log!("[{id}] removing request file: {e}");
-                }
+            Ok(()) if remove_finished(ctx, &id) => {
                 let _ = fs::remove_file(&path);
-                ctx.reported.remove(&id);
+            }
+            Ok(()) => {
+                still.insert(id);
             }
             Err(e) => {
                 ctx.report(
@@ -166,6 +172,27 @@ pub fn retry_kept(ctx: &mut Ctx) -> HashSet<String> {
         }
     }
     still
+}
+
+/// Deletes the request file of `id`, whose status is final; returns
+/// whether it is gone. A failure is logged once a minute, and the caller
+/// tries again at its next poll without running the request.
+fn remove_finished(ctx: &mut Ctx, id: &str) -> bool {
+    match request::cancel(&ctx.root, id) {
+        Ok(()) => {
+            ctx.reported.remove(id);
+            true
+        }
+        Err(e) => {
+            ctx.report(
+                id,
+                &format!(
+                    "its status is final, so it is not run again; removing its request file: {e}"
+                ),
+            );
+            false
+        }
+    }
 }
 
 pub struct Job<'a> {
@@ -578,6 +605,32 @@ pub fn add_to_playlist(
     Ok(name)
 }
 
+/// Runs the oldest of `requests` that can run; returns whether one ran.
+/// One whose status is already final (it ran, but its request file could
+/// not be deleted, or the worker stopped in between) is not run again:
+/// only deleting its request file is tried again. One whose status cannot
+/// be written (a full disk, or a status path another device made
+/// unwritable) is skipped, and when none can run, the caller waits.
+pub fn run_next(ctx: &mut Ctx, requests: Vec<Request>) -> bool {
+    for r in requests {
+        let id = r.id.to_string();
+        // Removed since it was listed (a kept status written, or the
+        // request cancelled).
+        if request::is_cancelled(&ctx.root, &id) {
+            continue;
+        }
+        if request::read_state(&ctx.root, &id).is_some_and(RequestState::is_final) {
+            remove_finished(ctx, &id);
+            continue;
+        }
+        match process(ctx, r) {
+            Ok(()) => return true,
+            Err(e) => ctx.report(&id, &format!("not run: its status cannot be written: {e}")),
+        }
+    }
+    false
+}
+
 /// Processes one request to a final state, or back to `queued` when the
 /// worker is interrupted. A request whose status cannot be written at the
 /// start is not run (`Err`, the request stays); a final status that cannot
@@ -757,8 +810,12 @@ fn finish(job: &mut Job, r: SourceResult) {
             ),
         }
     }
+    // When this fails, `run_next` does not run the request again (its
+    // status is final) and tries the deletion again at every poll.
     if let Err(e) = request::cancel(job.root, &id) {
-        log!("[{id}] removing request file: {e}");
+        log!(
+            "[{id}] removing request file: {e}; tried again at every poll, the request is not run again"
+        );
     }
 }
 
@@ -882,6 +939,81 @@ pub mod tests {
         status.id = "1-00000001".into();
         ctx.kept.keep(&status).unwrap();
         assert!(retry_kept(&mut ctx).is_empty());
+        assert!(ctx.kept.ids().is_empty());
+    }
+
+    /// R6-Opus-1: a request whose status is already final (its request
+    /// file could not be deleted, or a crash came between the two) is not
+    /// run again, which would append its tracks to the playlist again;
+    /// only deleting its request file is tried again, until it works.
+    #[test]
+    fn a_request_whose_status_is_final_is_not_run_again() {
+        use std::os::unix::fs::PermissionsExt;
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(lib.path(), work.path());
+        let req = Request::new(&"q".repeat(9 * 1024), None, false, "t");
+        let id = req.id.to_string();
+        let requests = request::requests_dir(lib.path());
+        fs::create_dir_all(&requests).unwrap();
+        let request_file = requests.join(format!("{id}.json"));
+        fs::write(&request_file, b"{}").unwrap();
+        let mut done = Status::new(&req, RequestState::Done);
+        done.message = Some("ran".into());
+        done.write(lib.path()).unwrap();
+        // The request file cannot be deleted.
+        fs::set_permissions(&requests, fs::Permissions::from_mode(0o555)).unwrap();
+        for _ in 0..3 {
+            assert!(
+                !run_next(&mut ctx, vec![req.clone()]),
+                "the request ran again"
+            );
+        }
+        let s = request::read_status(lib.path(), &id).unwrap();
+        assert_eq!(s.state, RequestState::Done);
+        assert_eq!(s.message.as_deref(), Some("ran"));
+        assert!(request_file.exists());
+        // Once it can be, it is deleted, still without running.
+        fs::set_permissions(&requests, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!run_next(&mut ctx, vec![req]));
+        assert!(!request_file.exists());
+        assert_eq!(
+            request::read_status(lib.path(), &id)
+                .unwrap()
+                .message
+                .as_deref(),
+            Some("ran")
+        );
+    }
+
+    /// R6-Opus-1: a kept status that was written stays kept while its
+    /// request file cannot be deleted, so the request is not run again.
+    #[test]
+    fn a_kept_status_stays_until_its_request_is_deleted() {
+        use std::os::unix::fs::PermissionsExt;
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(lib.path(), work.path());
+        let req = Request::new("x", None, false, "t");
+        let id = req.id.to_string();
+        let requests = request::requests_dir(lib.path());
+        fs::create_dir_all(&requests).unwrap();
+        let request_file = requests.join(format!("{id}.json"));
+        fs::write(&request_file, b"{}").unwrap();
+        ctx.kept
+            .keep(&Status::new(&req, RequestState::Done))
+            .unwrap();
+        fs::set_permissions(&requests, fs::Permissions::from_mode(0o555)).unwrap();
+        assert_eq!(retry_kept(&mut ctx), HashSet::from([id.clone()]));
+        assert_eq!(
+            request::read_state(lib.path(), &id),
+            Some(RequestState::Done)
+        );
+        assert!(request_file.exists());
+        assert_eq!(retry_kept(&mut ctx), HashSet::from([id.clone()]));
+        fs::set_permissions(&requests, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(retry_kept(&mut ctx).is_empty());
+        assert!(!request_file.exists());
         assert!(ctx.kept.ids().is_empty());
     }
 

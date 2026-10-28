@@ -179,26 +179,7 @@ fn run(args: Args) -> Result<(), Fatal> {
             }
         }
 
-        // The oldest request whose status can be written runs; one whose
-        // status cannot (a full disk, or a status path another device made
-        // unwritable) is skipped, and when none can, the worker waits.
-        let mut ran = false;
-        for r in requests {
-            let id = r.id.to_string();
-            // Removed since it was listed (a kept status written above, or
-            // the request cancelled).
-            if request::is_cancelled(&root, &id) {
-                continue;
-            }
-            match job::process(&mut ctx, r) {
-                Ok(()) => {
-                    ran = true;
-                    break;
-                }
-                Err(e) => ctx.report(&id, &format!("not run: its status cannot be written: {e}")),
-            }
-        }
-        if !ran {
+        if !job::run_next(&mut ctx, requests) {
             signals::sleep(args.poll);
         }
     }
