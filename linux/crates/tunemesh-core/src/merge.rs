@@ -31,6 +31,12 @@ fn fnv(bytes: &[u8]) -> u64 {
     })
 }
 
+/// A file name for per-device data about the library at `root`, kept
+/// outside it (bases, the worker's unwritten statuses): a hash of its path.
+pub fn library_key(root: &Path) -> String {
+    format!("{:016x}", fnv(root.as_os_str().as_encoded_bytes()))
+}
+
 /// This device's bases of one library's playlists: the version each
 /// playlist had before this device's own edits since it last saw another
 /// device's version (contract: "Playlist conflict copies", Base). Kept
@@ -66,9 +72,8 @@ impl Bases {
 
     /// Bases under `state_dir` (the app's per-device state directory).
     pub fn in_dir(state_dir: &Path, root: &Path) -> Self {
-        let library = format!("{:016x}", fnv(root.as_os_str().as_encoded_bytes()));
         Self {
-            dir: Some(state_dir.join("playlist-base").join(library)),
+            dir: Some(state_dir.join("playlist-base").join(library_key(root))),
             root: root.to_owned(),
         }
     }

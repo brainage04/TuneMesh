@@ -263,9 +263,10 @@ Programs it runs:
 - ffmpeg and ffprobe: `$TUNEMESH_FFMPEG_DIR`, else `PATH`. Required.
 
 Files it creates: in the work directory `jobs/<request id>/` (scratch, removed
-after each request), `tmp/`, `cache/yt-dlp/` and `spotify-queries.json`; in
-the library the downloaded tracks, playlists, `.tunemesh/status/*.json` and
-`.tunemesh/worker.json`.
+after each request), `tmp/`, `cache/yt-dlp/`, `spotify-queries.json` and
+`unwritten/` (final statuses it could not write into the library yet, so
+their requests are not run again); in the library the downloaded tracks,
+playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
 
 How it works:
 

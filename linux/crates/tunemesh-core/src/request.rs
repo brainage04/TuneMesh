@@ -277,7 +277,7 @@ impl Request {
 impl Status {
     pub fn write(&self, root: &Path) -> io::Result<()> {
         let json = self.to_json().map_err(io::Error::other)?;
-        open_dir(root, STATUS, true)?.write_atomic(&file_name(&self.id), &json)
+        write_status_json(root, &self.id, &json)
     }
 
     /// The file `write` writes: the status (whose fields are within the
@@ -508,6 +508,12 @@ pub fn cancel(root: &Path, id: &str) -> io::Result<()> {
 /// Deletes a status file (a missing one is not an error).
 pub fn remove_status(root: &Path, id: &str) -> io::Result<()> {
     remove(root, STATUS, id)
+}
+
+/// Writes `json`, a status as `Status::to_json` made it, as the status file
+/// of `id` (atomically).
+pub fn write_status_json(root: &Path, id: &str, json: &[u8]) -> io::Result<()> {
+    open_dir(root, STATUS, true)?.write_atomic(&file_name(id), json)
 }
 
 /// Status ids whose request file is gone, oldest first, with whether each is

@@ -4,7 +4,7 @@
 //! at a time, and reports progress in `<root>/.tunemesh/status/`. See
 //! `--help` for the options.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime};
@@ -114,6 +114,7 @@ fn run(args: Args) -> Result<(), Fatal> {
     );
     let leader = leader::Leader::new(&library, device, config::machine_id());
     let bases = Bases::new(&library);
+    let kept = job::Kept::new(&work_dir, &library);
     let mut ctx = Ctx {
         root: library,
         work_dir,
@@ -124,7 +125,8 @@ fn run(args: Args) -> Result<(), Fatal> {
         tools: tools::Tools::new(args.yt_dlp.clone()),
         source_ids: job::SourceIds::default(),
         bases,
-        unwritten: None,
+        kept,
+        reported: HashMap::new(),
     };
 
     let mut reported_bad: HashSet<String> = HashSet::new();
@@ -157,25 +159,47 @@ fn run(args: Args) -> Result<(), Fatal> {
             sweep(&root, &ctx.bases);
         }
 
-        // A final status that could not be written keeps its request: no
-        // other request is taken until it is written.
-        if !job::retry_unwritten(&mut ctx) {
-            signals::sleep(args.poll);
-            continue;
-        }
+        // Final statuses that could not be written are kept with their
+        // requests, which are not run again; written once they can be.
+        let kept = job::retry_kept(&mut ctx);
+        let requests: Vec<Request> = requests
+            .into_iter()
+            .filter(|r| !kept.contains(&*r.id))
+            .collect();
 
         // Every pending request gets a status so clients show "queued".
         for r in &requests {
             if request::read_state(&root, &r.id).is_none()
                 && let Err(e) = Status::new(r, RequestState::Queued).write(&root)
             {
-                log!("[{}] writing status: {e}", r.id);
+                ctx.report(
+                    &r.id,
+                    &format!("writing status: {e}; the request is not run while its status cannot be written"),
+                );
             }
         }
 
-        match requests.into_iter().next() {
-            Some(r) => job::process(&mut ctx, r),
-            None => signals::sleep(args.poll),
+        // The oldest request whose status can be written runs; one whose
+        // status cannot (a full disk, or a status path another device made
+        // unwritable) is skipped, and when none can, the worker waits.
+        let mut ran = false;
+        for r in requests {
+            let id = r.id.to_string();
+            // Removed since it was listed (a kept status written above, or
+            // the request cancelled).
+            if request::is_cancelled(&root, &id) {
+                continue;
+            }
+            match job::process(&mut ctx, r) {
+                Ok(()) => {
+                    ran = true;
+                    break;
+                }
+                Err(e) => ctx.report(&id, &format!("not run: its status cannot be written: {e}")),
+            }
+        }
+        if !ran {
+            signals::sleep(args.poll);
         }
     }
     log!("tunemesh-worker: stopping");

@@ -1,6 +1,6 @@
 //! Processing one request from start to final status.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -70,10 +70,102 @@ pub struct Ctx {
     pub source_ids: SourceIds,
     /// This device's playlist bases (contract: "Playlist conflict copies").
     pub bases: Bases,
-    /// A final status that could not be written: its request file is kept,
-    /// and no other request is taken until it is written
-    /// (`retry_unwritten`).
-    pub unwritten: Option<Status>,
+    /// Final statuses that could not be written into the library, kept in
+    /// the work directory until they can be.
+    pub kept: Kept,
+    /// When a request's status problem was last logged, by id.
+    pub reported: HashMap<String, Instant>,
+}
+
+/// How often the same request's status problem is logged again.
+const REPORT_EVERY: Duration = Duration::from_secs(60);
+
+impl Ctx {
+    /// Logs `what` about request `id`, at most once per `REPORT_EVERY`.
+    pub fn report(&mut self, id: &str, what: &str) {
+        let now = Instant::now();
+        self.reported
+            .retain(|_, t| now.duration_since(*t) < REPORT_EVERY);
+        if !self.reported.contains_key(id) {
+            log!("[{id}] {what}");
+            self.reported.insert(id.to_owned(), now);
+        }
+    }
+}
+
+/// Final statuses the worker could not write into the library (a full
+/// disk, or a status path another device made unwritable), kept in
+/// `<work dir>/unwritten/<library key>/<id>.json` with the request file
+/// left in place. A kept request is never run again, also after a restart:
+/// `retry_kept` writes its status once it can, then removes the request.
+pub struct Kept {
+    dir: PathBuf,
+}
+
+impl Kept {
+    pub fn new(work_dir: &Path, root: &Path) -> Self {
+        Self {
+            dir: work_dir
+                .join("unwritten")
+                .join(tunemesh_core::merge::library_key(root)),
+        }
+    }
+
+    fn path(&self, id: &str) -> PathBuf {
+        self.dir.join(format!("{id}.json"))
+    }
+
+    fn keep(&self, status: &Status) -> io::Result<()> {
+        let json = status.to_json().map_err(io::Error::other)?;
+        tunemesh_core::atomic::write(&self.path(&status.id), &json)
+    }
+
+    fn ids(&self) -> Vec<String> {
+        let Ok(entries) = fs::read_dir(&self.dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().into_string().ok()?;
+                name.strip_suffix(".json").map(str::to_owned)
+            })
+            .collect()
+    }
+}
+
+/// Writes the kept final statuses (`Kept`) that can be written now and
+/// removes their requests; drops those whose request was deleted. Returns
+/// the ids still kept: their requests are not run.
+pub fn retry_kept(ctx: &mut Ctx) -> HashSet<String> {
+    let mut still = HashSet::new();
+    for id in ctx.kept.ids() {
+        let path = ctx.kept.path(&id);
+        if request::is_cancelled(&ctx.root, &id) {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
+        let written =
+            fs::read(&path).and_then(|json| request::write_status_json(&ctx.root, &id, &json));
+        match written {
+            Ok(()) => {
+                log!("[{id}] final status written");
+                if let Err(e) = request::cancel(&ctx.root, &id) {
+                    log!("[{id}] removing request file: {e}");
+                }
+                let _ = fs::remove_file(&path);
+                ctx.reported.remove(&id);
+            }
+            Err(e) => {
+                ctx.report(
+                    &id,
+                    &format!("the final status still cannot be written: {e}; delete the request to drop it"),
+                );
+                still.insert(id);
+            }
+        }
+    }
+    still
 }
 
 pub struct Job<'a> {
@@ -487,41 +579,27 @@ pub fn add_to_playlist(
 }
 
 /// Processes one request to a final state, or back to `queued` when the
-/// worker is interrupted. A final status that cannot be written goes to
-/// `ctx.unwritten`, and the request file stays.
-pub fn process(ctx: &mut Ctx, req: Request) {
+/// worker is interrupted. A request whose status cannot be written at the
+/// start is not run (`Err`, the request stays); a final status that cannot
+/// be written is kept (`Kept`) and the request stays.
+pub fn process(ctx: &mut Ctx, req: Request) -> io::Result<()> {
     let ids = std::mem::take(&mut ctx.source_ids);
-    (ctx.source_ids, ctx.unwritten) = run(ctx, req, ids);
+    let (ids, result) = run(ctx, req, ids);
+    ctx.source_ids = ids;
+    result
 }
 
-/// Writes the final status kept in `ctx.unwritten`, if any, then removes
-/// its request file. Returns whether the worker may take another request:
-/// nothing was waiting, it is written now, or its request was cancelled
-/// meanwhile (the sweep then sees the status it has).
-pub fn retry_unwritten(ctx: &mut Ctx) -> bool {
-    let Some(mut status) = ctx.unwritten.take() else {
-        return true;
-    };
-    let id = status.id.to_string();
-    if request::is_cancelled(&ctx.root, &id) {
-        return true;
-    }
-    status.updated_at = tunemesh_core::now_rfc3339().into();
-    if status.write(&ctx.root).is_err() {
-        ctx.unwritten = Some(status);
-        return false;
-    }
-    log!("[{id}] final status written");
-    if let Err(e) = request::cancel(&ctx.root, &id) {
-        log!("[{id}] removing request file: {e}");
-    }
-    true
-}
-
-/// `process`; returns the source-id index for the next request and the
-/// final status, if it could not be written.
-fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, Option<Status>) {
+/// `process`; returns the source-id index for the next request.
+fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, io::Result<()>) {
     let id = req.id.clone();
+    let mut status = Status::new(&req, RequestState::Downloading);
+    status.progress = Some(0.0);
+    // Nothing is run for a request whose status cannot be written: its
+    // result could not be reported, and a status path another device made
+    // unwritable must not hold up the others.
+    if let Err(e) = status.write(&ctx.root) {
+        return (ids, Err(e));
+    }
     log!("[{id}] processing {:?}", req.input);
     let dir = ctx.run.jobs().join(&*id);
     let _ = fs::remove_dir_all(&dir);
@@ -537,8 +615,6 @@ fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, Option<Status
         ctx.tools.resolve(&ctx.http)
     };
     let ctx = &*ctx;
-    let mut status = Status::new(&req, RequestState::Downloading);
-    status.progress = Some(0.0);
     let mut job = Job {
         root: &ctx.root,
         ctx,
@@ -556,7 +632,6 @@ fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, Option<Status
         tracks: Vec::new(),
         last_write: Instant::now(),
     };
-    job.flush(true);
 
     let result = match tools {
         Err(e) => SourceResult::fatal(e),
@@ -572,16 +647,16 @@ fn run(ctx: &mut Ctx, req: Request, ids: SourceIds) -> (SourceIds, Option<Status
             }
         }
     };
-    let unwritten = finish(&mut job, result);
+    finish(&mut job, result);
     let _ = fs::remove_dir_all(&dir);
-    (job.ids, unwritten)
+    (job.ids, Ok(()))
 }
 
 /// Sets and writes the final status, then removes the request file. When
-/// the final status cannot be written, the request file stays and the
-/// status is returned, so the request is neither lost nor shown unfinished
-/// for good (`retry_unwritten`).
-fn finish(job: &mut Job, r: SourceResult) -> Option<Status> {
+/// the final status cannot be written, it is kept (`Kept`) and the request
+/// file stays, so the request is neither lost nor run again; only if it
+/// cannot be kept either is the request removed without it.
+fn finish(job: &mut Job, r: SourceResult) {
     let id = job.req.id.clone();
     if r.stopped == Some(Stop::Interrupted) {
         // Resumed by whichever worker runs next.
@@ -591,7 +666,7 @@ fn finish(job: &mut Job, r: SourceResult) -> Option<Status> {
         s.message = Some("Interrupted; continues when a downloader is running".into());
         log!("[{id}] interrupted");
         job.flush(true);
-        return None;
+        return;
     }
     let failed = job.failed;
     let s = &mut job.status;
@@ -670,13 +745,21 @@ fn finish(job: &mut Job, r: SourceResult) -> Option<Status> {
             .unwrap_or_default()
     );
     if let Err(e) = job.write_status() {
-        log!("[{id}] writing the final status: {e}; the request stays until it is written");
-        return Some(job.status.clone());
+        match job.ctx.kept.keep(&job.status) {
+            Ok(()) => {
+                log!(
+                    "[{id}] writing the final status: {e}; kept, the request stays until it is written"
+                );
+                return;
+            }
+            Err(k) => log!(
+                "[{id}] writing the final status: {e}; keeping it in the work directory: {k}; the request is removed without it"
+            ),
+        }
     }
     if let Err(e) = request::cancel(job.root, &id) {
         log!("[{id}] removing request file: {e}");
     }
-    None
 }
 
 #[cfg(test)]
@@ -700,7 +783,8 @@ pub mod tests {
             tools: Tools::new(None),
             source_ids: SourceIds::default(),
             bases: Bases::none(),
-            unwritten: None,
+            kept: Kept::new(work, root),
+            reported: HashMap::new(),
         }
     }
 
@@ -742,7 +826,7 @@ pub mod tests {
         let mut ctx = test_ctx(lib.path(), work.path());
         let req = Request::new(&"q".repeat(9 * 1024), None, false, "t");
         let id = req.id.to_string();
-        process(&mut ctx, req);
+        process(&mut ctx, req).unwrap();
         assert!(!ctx.source_ids.is_built());
         let s = request::read_status(lib.path(), &id).unwrap();
         assert_eq!(s.state, RequestState::Failed);
@@ -754,37 +838,71 @@ pub mod tests {
         assert_eq!(job.ids.walks, 1);
     }
 
-    /// R4D-1: a final status that cannot be written (the status directory
-    /// replaced by a symlink, a full disk) keeps the request file instead of
-    /// deleting it with no final status; the worker takes no other request
-    /// until the status is written, then removes the request.
+    /// R4D-1 and R5-Opus-1: a final status that cannot be written (the
+    /// status directory replaced by a symlink, a full disk) keeps the
+    /// request file instead of deleting it with no final status, and is
+    /// kept in the work directory, so a restarted worker does not run the
+    /// request again; once the status can be written, it is, and the
+    /// request is removed.
     #[test]
-    fn an_unwritten_final_status_keeps_the_request() {
+    fn an_unwritten_final_status_is_kept_across_restarts() {
         let lib = tempfile::tempdir().unwrap();
         let work = tempfile::tempdir().unwrap();
         let elsewhere = tempfile::tempdir().unwrap();
-        let mut ctx = test_ctx(lib.path(), work.path());
-        let req = Request::new(&"q".repeat(9 * 1024), None, false, "t");
-        let id = req.id.to_string();
         let requests = request::requests_dir(lib.path());
         fs::create_dir_all(&requests).unwrap();
-        let request_file = requests.join(format!("{id}.json"));
-        fs::write(&request_file, b"{}").unwrap();
         let status_dir = request::status_dir(lib.path());
-        symlink(elsewhere.path(), &status_dir).unwrap();
-        process(&mut ctx, req);
+        let id = {
+            let ctx = test_ctx(lib.path(), work.path());
+            let mut job = test_job(&ctx, work.path());
+            let id = job.req.id.to_string();
+            fs::write(requests.join(format!("{id}.json")), b"{}").unwrap();
+            // The status directory goes bad while the request runs.
+            symlink(elsewhere.path(), &status_dir).unwrap();
+            finish(&mut job, SourceResult::fatal("broken".into()));
+            id
+        };
+        let request_file = requests.join(format!("{id}.json"));
         assert!(request_file.exists(), "the request was deleted");
-        assert!(!retry_unwritten(&mut ctx), "written into a symlink");
+        // A restart: a new context on the same work directory.
+        let mut ctx = test_ctx(lib.path(), work.path());
+        assert_eq!(retry_kept(&mut ctx), HashSet::from([id.clone()]));
         assert!(request_file.exists());
         assert!(fs::read_dir(elsewhere.path()).unwrap().next().is_none());
         fs::remove_file(&status_dir).unwrap();
-        assert!(retry_unwritten(&mut ctx));
+        assert!(retry_kept(&mut ctx).is_empty());
         assert!(!request_file.exists());
-        assert!(ctx.unwritten.is_none());
         let s = request::read_status(lib.path(), &id).unwrap();
         assert_eq!(s.state, RequestState::Failed);
-        assert!(s.message.unwrap().contains("too long"));
-        assert!(retry_unwritten(&mut ctx), "nothing left to write");
+        assert_eq!(s.message.as_deref(), Some("broken"));
+        assert!(ctx.kept.ids().is_empty());
+
+        // A kept status whose request was deleted meanwhile is dropped.
+        let mut status = s.clone();
+        status.id = "1-00000001".into();
+        ctx.kept.keep(&status).unwrap();
+        assert!(retry_kept(&mut ctx).is_empty());
+        assert!(ctx.kept.ids().is_empty());
+    }
+
+    /// R5-Opus-2: a request whose status path cannot be written (a
+    /// directory another device made there) is not run and does not hold
+    /// up the requests behind it.
+    #[test]
+    fn an_unwritable_status_path_skips_only_its_request() {
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(lib.path(), work.path());
+        let stuck = Request::new(&"q".repeat(9 * 1024), None, false, "t");
+        let next = Request::new(&"r".repeat(9 * 1024), None, false, "t");
+        let stuck_path = request::status_path(lib.path(), &stuck.id);
+        fs::create_dir_all(stuck_path.join("x")).unwrap();
+        assert!(process(&mut ctx, stuck).is_err());
+        assert!(stuck_path.join("x").is_dir());
+        let next_id = next.id.to_string();
+        process(&mut ctx, next).unwrap();
+        let s = request::read_status(lib.path(), &next_id).unwrap();
+        assert_eq!(s.state, RequestState::Failed);
     }
 
     #[test]
