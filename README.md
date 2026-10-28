@@ -64,6 +64,9 @@ Notes:
   [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingfork/).
 - The downloader fetches and updates its own copies of yt-dlp and deno (the
   JavaScript runtime yt-dlp needs for YouTube); ffmpeg comes with the package.
+  The Nix packages instead use the yt-dlp, deno and ffmpeg of the nixpkgs
+  they were built with and never download their own; update them by updating
+  the flake.
 
 <details>
 <summary>NixOS and home-manager</summary>
