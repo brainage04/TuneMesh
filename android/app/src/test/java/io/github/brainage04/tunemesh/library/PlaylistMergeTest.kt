@@ -261,6 +261,33 @@ class PlaylistMergeTest {
         assertFalse(one.store.hasConflictCopies())
     }
 
+    /** The shared cases in docs/test-vectors/playlist-copies/, byte for byte as tunemesh-core runs them. */
+    @Test
+    fun sharedCopyPassVectors() {
+        val cases = File(vectors, "../playlist-copies").listFiles { file -> file.isDirectory }!!.sortedBy { it.name }
+        assertTrue("found ${cases.size} cases", cases.isNotEmpty())
+        for (case in cases) {
+            val one = Device("copies-${case.name}")
+            val dir = File(one.root, "Playlists").apply { mkdirs() }
+            File(case, "Mix.m3u8").copyTo(File(dir, "Mix.m3u8"))
+            PlaylistBases(one.bases).merged("Mix.m3u8", File(case, "base.m3u8").readBytes())
+            var pass = 1
+            while (File(case, "pass-$pass").isDirectory) {
+                for (copy in File(case, "pass-$pass").listFiles()!!) {
+                    copy.copyTo(File(dir, copy.name), overwrite = true).setLastModified(now - PlaylistStore.CONFLICT_AGE_MS)
+                }
+                one.store.mergeConflicts(now)
+                val expected = File(case, "pass-$pass-expected")
+                val what = "${case.name} pass $pass"
+                assertArrayEquals("$what: playlist", File(expected, "Mix.m3u8").readBytes(), File(dir, "Mix.m3u8").readBytes())
+                assertArrayEquals("$what: base", File(expected, "base.m3u8").readBytes(), File(one.bases, "Mix.m3u8").readBytes())
+                val left = dir.list()!!.filter { it != "Mix.m3u8" }.sorted()
+                assertEquals("$what: copies left", File(expected, "left.txt").readLines(), left)
+                pass++
+            }
+        }
+    }
+
     companion object {
         private const val ROOT = "/library"
 

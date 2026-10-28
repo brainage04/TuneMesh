@@ -229,7 +229,9 @@ fn sweep(root: &Path, bases: &Bases) {
     for (name, result) in merge::merge_conflicts(root, bases, None, SystemTime::now()) {
         match result {
             Ok(()) => log!("merged conflict copies into playlist {name:?}"),
-            Err(e) => log!("merging conflict copies into playlist {name:?}: {e}"),
+            Err(e) => log!(
+                "merging conflict copies into playlist {name:?}: {e} (a copy that cannot be merged stays until it can be or is deleted)"
+            ),
         }
     }
 }

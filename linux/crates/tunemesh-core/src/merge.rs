@@ -335,11 +335,11 @@ pub fn merge_conflicts(
 /// Merges `copies` (file names, in order) into the playlist `name`: each
 /// into the result of the ones before it, in memory, then writes the
 /// playlist once and deletes the copies merged. A copy that cannot be read,
-/// or whose merge would be over the limits, ends the merge there: the
-/// copies before it are written and deleted, it and the rest stay, and its
-/// error is returned. The merged playlist becomes the base only when every
-/// copy was merged (none failed, and `later`, more copies left for the next
-/// pass, is false), so the copies still to merge keep the same base.
+/// or whose merge would be over the limits, is skipped and stays (until it
+/// can be merged or someone deletes it); the first such error is returned.
+/// The merged playlist becomes the base only when no copy stays (none was
+/// skipped, and `later`, more copies left for the next pass, is false), so
+/// the copies still to merge keep the same base.
 fn merge_copies(
     root: &Path,
     bases: &Bases,
@@ -379,8 +379,9 @@ fn merge_copies(
                 merged.push(file);
             }
             Err(e) => {
-                result = Err(e);
-                break;
+                if result.is_ok() {
+                    result = Err(e);
+                }
             }
         }
     }
@@ -433,6 +434,75 @@ mod tests {
             cases += 1;
         }
         assert!(cases >= 8);
+    }
+
+    /// The shared cases in `docs/test-vectors/playlist-copies/`: passes over
+    /// several copies, with the playlist, the base and the copies left
+    /// after each.
+    #[test]
+    #[cfg_attr(miri, ignore = "file system")]
+    fn shared_copy_pass_vectors() {
+        let cases = vectors().join("../playlist-copies");
+        let mut n = 0;
+        for case in fs::read_dir(&cases).unwrap() {
+            let case = case.unwrap().path();
+            if !case.is_dir() {
+                continue;
+            }
+            let lib = tempfile::tempdir().unwrap();
+            let state = tempfile::tempdir().unwrap();
+            let root = lib.path();
+            let bases = Bases::in_dir(state.path(), root);
+            let lists = playlist::playlists_dir(root);
+            fs::create_dir_all(&lists).unwrap();
+            // Bytes only: `fs::copy` keeps the mode, and the vectors are
+            // read-only in the Nix store.
+            fs::write(
+                lists.join("Mix.m3u8"),
+                fs::read(case.join("Mix.m3u8")).unwrap(),
+            )
+            .unwrap();
+            bases.merged("Mix", &fs::read_to_string(case.join("base.m3u8")).unwrap());
+            for pass in 1.. {
+                let copies = case.join(format!("pass-{pass}"));
+                if !copies.is_dir() {
+                    break;
+                }
+                for copy in fs::read_dir(&copies).unwrap() {
+                    let copy = copy.unwrap();
+                    // Replaces a copy left from the pass before.
+                    fs::write(lists.join(copy.file_name()), fs::read(copy.path()).unwrap())
+                        .unwrap();
+                }
+                merge_conflicts(root, &bases, Some("AAAAAAA"), SystemTime::now());
+                let expected = case.join(format!("pass-{pass}-expected"));
+                let what = format!("{} pass {pass}", case.display());
+                assert_eq!(
+                    fs::read_to_string(lists.join("Mix.m3u8")).unwrap(),
+                    fs::read_to_string(expected.join("Mix.m3u8")).unwrap(),
+                    "{what}: playlist"
+                );
+                assert_eq!(
+                    fs::read_to_string(bases.path("Mix", "m3u8").unwrap()).unwrap(),
+                    fs::read_to_string(expected.join("base.m3u8")).unwrap(),
+                    "{what}: base"
+                );
+                let mut left: Vec<String> = fs::read_dir(&lists)
+                    .unwrap()
+                    .map(|e| e.unwrap().file_name().into_string().unwrap())
+                    .filter(|f| f != "Mix.m3u8")
+                    .collect();
+                left.sort();
+                let want = fs::read_to_string(expected.join("left.txt")).unwrap();
+                assert_eq!(
+                    left,
+                    want.lines().collect::<Vec<_>>(),
+                    "{what}: copies left"
+                );
+            }
+            n += 1;
+        }
+        assert!(n >= 1);
     }
 
     fn lines(keys: &str) -> String {
@@ -646,8 +716,8 @@ mod tests {
     /// that writing the playlist after each copy and reading it back for the
     /// next gives (the contract's "each into the playlist as the one before
     /// left it"), with entries without `#EXTINF`, outside the root,
-    /// duplicated and with CRLF endings. A copy over the limits stops the
-    /// pass: the copies before it are merged, it and the rest stay.
+    /// duplicated and with CRLF endings. A copy over the limits is skipped:
+    /// the others are merged, it stays, and so does the base.
     #[test]
     #[cfg_attr(miri, ignore = "file system")]
     fn merging_in_memory_matches_writing_after_each_copy() {
@@ -697,10 +767,11 @@ mod tests {
         let done = merge_conflicts(root, &bases, Some("AAAAAAA"), SystemTime::now());
         assert!(playlist::is_too_large(done[0].1.as_ref().unwrap_err()));
         let after = read_keys(root, "P");
-        assert!(after.contains('h') && !after.contains('i'), "{after}");
+        assert!(after.contains('h') && after.contains('i'), "{after}");
         assert!(!playlist::playlists_dir(root).join(name(0)).exists());
         assert!(playlist::playlists_dir(root).join(name(1)).exists());
-        assert!(playlist::playlists_dir(root).join(name(2)).exists());
+        assert!(!playlist::playlists_dir(root).join(name(2)).exists());
+        assert_eq!(merged_text(&bases.base("P").unwrap()), text);
     }
 
     /// A merge that would be too large, or a copy without its playlist,

@@ -226,11 +226,11 @@ class PlaylistStore(
     /**
      * Merges the conflict copies of playlists into them (contract: "Playlist conflict copies") and deletes them; returns the names of the
      * playlists written. This device does not know its Syncthing device ID, so it merges only copies modified at least [CONFLICT_AGE_MS]
-     * before [now]. A copy is merged only when its playlist exists; a too-large or unreadable playlist or copy, or a result over the
-     * limits, leaves both files alone. Copies of one playlist go one at a time in byte order of their names, at most [MAX_COPIES_PER_PASS]
-     * per call, each against the playlist's base as it was before the first of them, in memory; then the playlist is written once, and the
-     * merged playlist becomes the base unless copies are left for the next call. The result is written without library lookups, so every
-     * device writes the same bytes.
+     * before [now]. A copy is merged only when its playlist exists; a too-large or unreadable playlist leaves its copies alone, and a
+     * too-large or unreadable copy, or one whose result would be over the limits, is skipped and stays. Copies of one playlist go one at a
+     * time in byte order of their names, at most [MAX_COPIES_PER_PASS] per call, each against the playlist's base as it was before the
+     * first of them, in memory; then the playlist is written once, and the merged playlist becomes the base unless a copy stays (skipped,
+     * or left for the next call). The result is written without library lookups, so every device writes the same bytes.
      */
     fun mergeConflicts(now: Long = System.currentTimeMillis()): Set<String> {
         val bases = bases ?: return emptySet()
@@ -247,16 +247,17 @@ class PlaylistStore(
         copy.isFile && now - copy.lastModified() >= CONFLICT_AGE_MS && file(name).isFile
 
     /**
-     * Merges the first [MAX_COPIES_PER_PASS] of the copies [names] of playlist [name] one at a time; returns whether it was written. While
-     * copies are left for the next pass the base stays, so they are merged against the same base.
+     * Merges the first [MAX_COPIES_PER_PASS] of the copies [names] of playlist [name] one at a time, skipping those that cannot be merged;
+     * returns whether it was written. While a copy stays (skipped, or left for the next pass) the base stays, so it is merged against the
+     * same base later and the entries the other copies added are not taken for its removals.
      */
     private fun mergeCopies(bases: PlaylistBases, name: String, names: List<String>): Boolean {
         var current = readOrNull(file(name)) ?: return false
         val base = bases.read(fileName(name), root.absolutePath)
         var written: ByteArray? = null
+        var skipped = names.size > MAX_COPIES_PER_PASS
         val merged = ArrayList<File>()
         for (copyName in names.sortedWith { a, b -> compareBytes(a.toByteArray(), b.toByteArray()) }.take(MAX_COPIES_PER_PASS)) {
-            // A copy gone meanwhile (merged by another device and the deletion synced) reads as null.
             val copy = File(directory, copyName)
             val result = readOrNull(copy)?.let { PlaylistMerge.merge(base, current, it) }
             val bytes = result?.let(::serialised)
@@ -264,12 +265,15 @@ class PlaylistStore(
                 current = result
                 written = bytes
                 merged += copy
+            } else if (copy.exists()) {
+                // Not gone (merged by another device and the deletion synced): it stays.
+                skipped = true
             }
         }
         written?.let {
             AtomicFiles.write(file(name), it)
             for (copy in merged) copy.delete()
-            if (names.size > MAX_COPIES_PER_PASS) bases.written(fileName(name), it) else bases.merged(fileName(name), it)
+            if (skipped) bases.written(fileName(name), it) else bases.merged(fileName(name), it)
         }
         return written != null
     }

@@ -162,14 +162,19 @@ copy gone instead of overwriting the first merger's result.
 How. A copy is merged only if its name is exactly as above (`<Name>` not
 empty, 8 digits, `-`, 6 digits, `-`, 7 characters of `A`-`Z` and `2`-`7`)
 and the playlist `<Name>.m3u8` exists; the winner and the copy are read with
-the playlist rules, and a too-large or unreadable one leaves both files
-alone. Copies of one playlist are merged one at a time, in byte order of
-their names, each into the playlist as the one before left it (that is the
-winner of the next), all with the same base; the base becomes the merged
-playlist only after the last one. A device merges the copies of one playlist
-in memory and writes the playlist once (the bytes are the same as writing it
-after each copy). It merges at most 32 copies of one playlist per pass; the
-rest wait for its next pass, and the base stays until they are merged too.
+the playlist rules. A too-large or unreadable winner leaves the playlist and
+its copies alone. A too-large or unreadable copy, or one whose merge would
+be over the limits (step 5), is skipped: it stays until it can be merged or
+someone deletes it, and the other copies are merged without it. Copies of
+one playlist are merged one at a time, in byte order of their names, each
+into the playlist as the one before left it (that is the winner of the
+next), all with the same base; the base becomes the merged playlist only
+after the last one, and stays while any copy is left (skipped, or waiting
+for a later pass), so a copy merged later is merged against the base the
+others were. A device merges the copies of one playlist in memory and
+writes the playlist once (the bytes are the same as writing it after each
+copy). It merges at most 32 copies of one playlist per pass; the rest wait
+for its next pass.
 An entry's key is its root-relative track path, or its line as written when
 it points outside the root. With base B, winner W and copy C, and b, w and c
 the number of entries with key k in each:
@@ -202,11 +207,13 @@ the number of entries with key k in each:
    same bytes. Liked Songs is merged the same way: a like at the top of the
    copy stays at the top.
 5. The merged playlist is written only if it is within the limits, then the
-   copy is deleted. A merge that would be too large leaves both files as
-   they are (and the base as it was).
+   copy is deleted. A copy whose merge would be too large is skipped (see
+   How).
 
 Shared test cases (base, winner, copy and the expected bytes) are in
-`docs/test-vectors/playlist-merge/`; every implementation runs them.
+`docs/test-vectors/playlist-merge/`, and cases for passes over several
+copies in `docs/test-vectors/playlist-copies/`; every implementation runs
+them.
 
 ## Download requests
 
