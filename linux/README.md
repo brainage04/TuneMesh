@@ -363,6 +363,9 @@ for 127.0.0.1 (the worker's proxy) and the DNS resolvers in
 caches and its playlist bases (`XDG_CACHE_HOME`, `XDG_STATE_HOME` and the
 other XDG directories) are in the work directory, so it keeps its bases in
 `<workDir>/.local/state/tunemesh/playlist-base/`, not in the user's home.
+The work directory therefore holds state that must persist: do not clear
+it, and do not put it where caches are cleaned (without its bases the next
+merge of each playlist is a union, and a removal can come back once).
 
 ## Development checks
 

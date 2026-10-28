@@ -310,9 +310,14 @@
               default = "/var/cache/tunemesh-worker";
               description = ''
                 Directory outside the library where downloads are assembled
-                before they are moved into place. Created for `user` with mode
-                0700; the worker refuses a work directory that other users can
-                access or that it does not own.
+                before they are moved into place. It also holds state that
+                must persist: the playlist bases (`.local/state/tunemesh/`,
+                for merging conflict copies) and final statuses not written
+                yet (`unwritten/`). Do not clear it or put it where caches
+                are cleaned (deleting it makes the next merge of each
+                playlist a union, so a removal can come back once). Created
+                for `user` with mode 0700; the worker refuses a work directory
+                that other users can access or that it does not own.
               '';
             };
             extraArgs = lib.mkOption {
