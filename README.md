@@ -134,8 +134,12 @@ The `.deb`, `.rpm`, Arch, Nix and source installs include this service. With
 Nix on a distribution other than NixOS, if `systemctl` says the unit does not
 exist, give its path:
 `systemctl --user enable --now ~/.nix-profile/share/systemd/user/tunemesh-worker.service`
-(the link goes through the profile, so it follows `nix profile upgrade`). With
-the Snap, run `snap run tunemesh.worker`, with the AppImage
+(the link goes through the profile). After upgrading TuneMesh (any package,
+`nix profile upgrade` included), run
+`systemctl --user daemon-reload && systemctl --user restart tunemesh-worker`:
+systemd keeps the old unit until it reloads, and the running worker keeps
+the old version until it restarts. With the Snap, run
+`snap run tunemesh.worker`, with the AppImage
 `./TuneMesh-<version>-<arch>.AppImage worker`, for example from your own
 systemd user unit. Only one device downloads at a time; the Downloads page
 shows which one.
