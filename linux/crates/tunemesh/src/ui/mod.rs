@@ -5,6 +5,7 @@ pub mod menu;
 pub mod nowplaying;
 pub mod pages;
 pub mod queue;
+pub mod rows;
 pub mod settings;
 pub mod setup;
 pub mod sidebar;

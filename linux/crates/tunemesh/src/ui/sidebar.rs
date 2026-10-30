@@ -4,20 +4,21 @@ use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
 use gtk::prelude::*;
-use gtk::{gio, glib};
 use tunemesh_core::{LIKED_SONGS, limits};
 
 use crate::app::{App, Route};
 use crate::covers::Source;
 use crate::ui::pages::create_playlist_dialog;
+use crate::ui::rows::{self, LIST_CHUNK, LIST_WINDOW, LazyRows};
 use crate::ui::widgets::{self, label, plural};
 
 pub struct Sidebar {
     pub widget: gtk::Box,
     app: Weak<App>,
     nav: Vec<(Route, gtk::Button)>,
-    /// The library list's model and the entries it holds.
-    store: gio::ListStore,
+    /// The library list's model and the entries it shows.
+    model: LazyRows,
+    list: gtk::ListView,
     entries: RefCell<Vec<Entry>>,
     /// Every row widget the list has made (bound or not).
     rows: RefCell<Vec<Row>>,
@@ -149,11 +150,12 @@ impl Sidebar {
         lib_panel.append(&head);
         // A recycling list: a library may hold a thousand playlists, and a
         // box of a thousand rows took a quarter of a second to rebuild and
-        // measure after every playlist, like or library change.
-        let store = gio::ListStore::new::<glib::BoxedAnyObject>();
+        // measure after every playlist, like or library change. Its rows
+        // fill a screenful per frame (`LazyRows`).
+        let model = LazyRows::new(LIST_WINDOW, LIST_CHUNK);
         let factory = gtk::SignalListItemFactory::new();
         let list = gtk::ListView::builder()
-            .model(&gtk::NoSelection::new(Some(store.clone())))
+            .model(&gtk::NoSelection::new(Some(model.clone())))
             .factory(&factory)
             .css_classes(["tm-sidebar-list"])
             .build();
@@ -169,7 +171,8 @@ impl Sidebar {
             widget,
             app: Rc::downgrade(app),
             nav,
-            store,
+            model,
+            list,
             entries: RefCell::new(Vec::new()),
             rows: RefCell::new(Vec::new()),
         });
@@ -212,6 +215,7 @@ impl Sidebar {
                 }
             });
             li.set_child(Some(&button));
+            me.model.track(li);
             me.rows.borrow_mut().push(Row {
                 button,
                 art,
@@ -228,11 +232,9 @@ impl Sidebar {
             };
             let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
             let Some(row) = me.row_of(li) else { return };
-            let item = li
-                .item()
-                .and_downcast::<glib::BoxedAnyObject>()
-                .expect("item");
-            let e = item.borrow::<Entry>();
+            let Some(e) = me.entries.borrow().get(li.position() as usize).cloned() else {
+                return;
+            };
             while let Some(c) = row.art.first_child() {
                 row.art.remove(&c);
             }
@@ -332,25 +334,15 @@ impl Sidebar {
                 title: p.name,
             });
         }
-        let old = self.entries.borrow();
-        let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
-        let suffix = old[prefix..]
-            .iter()
-            .rev()
-            .zip(new[prefix..].iter().rev())
-            .take_while(|(a, b)| a == b)
-            .count();
-        let removed = old.len() - prefix - suffix;
-        let added: Vec<glib::BoxedAnyObject> = new[prefix..new.len() - suffix]
-            .iter()
-            .cloned()
-            .map(glib::BoxedAnyObject::new)
-            .collect();
-        drop(old);
-        if removed > 0 || !added.is_empty() {
-            self.store.splice(prefix as u32, removed as u32, &added);
-        }
+        let (position, removed, added) = rows::diff(&self.entries.borrow(), &new);
+        let first = self.entries.borrow().is_empty();
         *self.entries.borrow_mut() = new;
+        if first {
+            self.model.reset(added as u32, &self.list);
+        } else if removed > 0 || added > 0 {
+            self.model
+                .splice(position as u32, removed as u32, added as u32);
+        }
         self.set_active(&app.route());
     }
 

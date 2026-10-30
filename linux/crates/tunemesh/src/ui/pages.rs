@@ -1,5 +1,10 @@
 //! Page builders: home, search, library grids and detail pages.
+//!
+//! The pages the window keeps (see `App::show`) update in place when the
+//! library changes: grids and track lists replace only the items that
+//! changed, so a synced file arriving does not build the page again.
 
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -11,9 +16,13 @@ use tunemesh_core::{LIKED_SONGS, Library, Playlist};
 
 use crate::app::{App, Page, Route};
 use crate::covers::Source;
+use crate::store::StoreChange;
 use crate::ui::menu::{self, MenuCtx};
-use crate::ui::tracklist::{self, Entries, Spec};
-use crate::ui::widgets::{self, Tile, TileArt, fmt_total, label, plural, section_title, tile_flow};
+use crate::ui::rows::{self, LazyRows};
+use crate::ui::tracklist::{self, Entries, Spec, TrackList};
+use crate::ui::widgets::{
+    self, TILE_COVER, Tile, TileArt, fmt_total, label, plural, section_title, tile_flow, tile_host,
+};
 use crate::ui::{downloads, settings};
 
 pub fn build(app: &Rc<App>, route: &Route) -> Page {
@@ -108,10 +117,13 @@ fn page_box() -> gtk::Box {
 
 fn simple(child: &impl IsA<gtk::Widget>) -> Page {
     let s = scrolled(child);
-    Page {
-        widget: s.clone().upcast(),
-        scroller: Some(s),
-    }
+    Page::plain(s.clone(), Some(s))
+}
+
+/// A page with tiles: the scrolled window in a `tile_host`.
+fn with_tiles(child: &impl IsA<gtk::Widget>) -> Page {
+    let s = scrolled(child);
+    Page::plain(tile_host(&s), Some(s))
 }
 
 /// A playlist over the contract's size limits: it is not opened, played or
@@ -141,10 +153,14 @@ fn fmt_count(n: usize) -> String {
     out
 }
 
-fn not_found() -> Page {
+fn not_found_widget() -> gtk::Widget {
     let b = page_box();
     b.append(&widgets::empty("This item is no longer in your library."));
-    simple(&b)
+    b.upcast()
+}
+
+fn not_found() -> Page {
+    simple(&not_found_widget())
 }
 
 // ---- tiles --------------------------------------------------------------
@@ -364,105 +380,340 @@ fn home(app: &Rc<App>) -> Page {
     if let Some(s) = flow_section("Artists", artists, Some((app.clone(), Route::Artists))) {
         b.append(&s);
     }
-    simple(&b)
+    with_tiles(&b)
 }
 
 // ---- search -------------------------------------------------------------
 
-fn search(app: &Rc<App>, text: &str) -> Page {
-    let lib = app.store.library();
-    let b = page_box();
+/// What a search found, worked out on a thread.
+struct Found {
+    /// The first 50 songs.
+    tracks: Vec<String>,
+    /// The first 12 artists and albums (library indices).
+    artists: Vec<usize>,
+    albums: Vec<usize>,
+    /// The first 12 playlists, and whether more matched.
+    lists: Vec<Summary>,
+    more_lists: bool,
+    nothing: bool,
+}
+
+fn find(lib: &Library, playlists: Vec<Summary>, text: &str) -> Found {
     let q = Query::new(text);
-    if q.is_empty() {
-        b.append(&label("Search", &["tm-page-title"]));
-        b.append(&widgets::empty(
-            "Find songs, artists, albums and playlists in your library.",
-        ));
-        return simple(&b);
-    }
     let r = lib.search(&q);
-    let lists: Vec<Summary> = std::iter::once(app.store.liked_summary())
-        .chain(app.store.playlists())
+    let mut lists: Vec<Summary> = playlists
+        .into_iter()
         .filter(|p| q.matches(&fold(&p.name)))
         .collect();
-    if r.tracks.is_empty() && r.albums.is_empty() && r.artists.is_empty() && lists.is_empty() {
-        b.append(&widgets::empty(&format!("No results found for “{text}”")));
-        return simple(&b);
-    }
-    if !r.tracks.is_empty() {
-        b.append(&section_title("Songs"));
-        let entries = Entries::Tracks(
-            r.tracks
-                .iter()
-                .take(50)
-                .map(|&i| lib.tracks[i].path.clone())
-                .collect(),
-        );
-        let list = tracklist::build(
-            app,
-            Spec {
-                context: format!("Search “{text}”"),
-                entries,
-                show_album: true,
-                show_cover: true,
-                playlist: None,
-                header: None,
-            },
-        );
-        list.add_css_class("tm-flush");
-        b.append(&list);
-    }
-    let artists: Vec<gtk::Widget> = r
-        .artists
-        .iter()
-        .take(12)
-        .map(|&i| {
-            let t = Tile::new(true);
-            artist_tile(app, &lib, i, &t);
-            t.widget.upcast()
-        })
-        .collect();
-    if let Some(s) = flow_section("Artists", artists, None) {
-        b.append(&s);
-    }
-    let albums: Vec<gtk::Widget> = r
-        .albums
-        .iter()
-        .take(12)
-        .map(|&i| {
-            let t = Tile::new(false);
-            album_tile(app, &lib, i, &t, true);
-            t.widget.upcast()
-        })
-        .collect();
-    if let Some(s) = flow_section("Albums", albums, None) {
-        b.append(&s);
-    }
+    let nothing =
+        r.tracks.is_empty() && r.albums.is_empty() && r.artists.is_empty() && lists.is_empty();
     // Twelve tiles like the other sections: "a" matches nearly every
     // playlist of a library, and a tile per playlist stalled the window.
-    let more = (lists.len() > 12).then(|| (app.clone(), Route::Playlists));
-    let lists: Vec<gtk::Widget> = lists
-        .iter()
-        .take(12)
-        .map(|p| playlist_tile(app, &lib, p))
-        .collect();
-    if let Some(s) = flow_section("Playlists", lists, more) {
-        b.append(&s);
+    let more_lists = lists.len() > 12;
+    lists.truncate(12);
+    Found {
+        tracks: r
+            .tracks
+            .iter()
+            .take(50)
+            .map(|&i| lib.tracks[i].path.clone())
+            .collect(),
+        artists: r.artists.iter().take(12).copied().collect(),
+        albums: r.albums.iter().take(12).copied().collect(),
+        lists,
+        more_lists,
+        nothing,
     }
-    simple(&b)
+}
+
+/// A titled row of tiles whose tiles are bound again for each new result
+/// instead of made anew (a query's three sections made up to 36 tiles).
+struct TileSection {
+    root: gtk::Box,
+    flow: gtk::FlowBox,
+    see_all: Option<gtk::Button>,
+    tiles: RefCell<Vec<Tile>>,
+    round: bool,
+}
+
+impl TileSection {
+    fn new(title: &str, round: bool, see_all: Option<(Rc<App>, Route)>) -> Self {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 4);
+        let head = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let t = section_title(title);
+        t.set_hexpand(true);
+        head.append(&t);
+        let see_all = see_all.map(|(app, route)| {
+            let btn = gtk::Button::builder()
+                .label("Show all")
+                .css_classes(["flat", "tm-link", "dim"])
+                .valign(gtk::Align::Center)
+                .build();
+            // Weak: the button is part of a page the window may keep.
+            let app = Rc::downgrade(&app);
+            btn.connect_clicked(move |_| {
+                if let Some(app) = app.upgrade() {
+                    app.navigate(route.clone());
+                }
+            });
+            head.append(&btn);
+            btn
+        });
+        root.append(&head);
+        let flow = tile_flow();
+        flow.set_max_children_per_line(8);
+        root.append(&flow);
+        root.set_visible(false);
+        Self {
+            root,
+            flow,
+            see_all,
+            tiles: RefCell::new(Vec::new()),
+            round,
+        }
+    }
+
+    /// Shows `n` tiles, bound by `bind`, and the "Show all" button if `more`.
+    fn fill(&self, n: usize, more: bool, bind: impl Fn(usize, &Tile)) {
+        let mut tiles = self.tiles.borrow_mut();
+        while tiles.len() > n {
+            let t = tiles.pop().expect("tile");
+            if let Some(child) = t.widget.parent() {
+                self.flow.remove(&child);
+            }
+        }
+        for (i, t) in tiles.iter().enumerate() {
+            bind(i, t);
+        }
+        for i in tiles.len()..n {
+            let t = Tile::new(self.round);
+            bind(i, &t);
+            self.flow.append(&t.widget);
+            tiles.push(t);
+        }
+        self.root.set_visible(n > 0);
+        if let Some(b) = &self.see_all {
+            b.set_visible(more);
+        }
+    }
+}
+
+/// The search page. It stays while the query changes: each query is
+/// searched on a thread (100,000 tracks take 5-7 ms), and only the newest
+/// one's results are shown.
+struct SearchPage {
+    text: RefCell<String>,
+    /// Bumped by every query; older results are dropped.
+    generation: Cell<u64>,
+    /// The page title and hint, or "No results".
+    message: gtk::Box,
+    songs: gtk::Box,
+    list: TrackList,
+    artists: TileSection,
+    albums: TileSection,
+    lists: TileSection,
+}
+
+impl SearchPage {
+    fn set_query(self: &Rc<Self>, app: &Rc<App>, text: &str) {
+        *self.text.borrow_mut() = text.to_owned();
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        if Query::new(text).is_empty() {
+            self.show(app, text, None);
+            return;
+        }
+        let lib = app.store.library();
+        let playlists: Vec<Summary> = std::iter::once(app.store.liked_summary())
+            .chain(app.store.playlists())
+            .collect();
+        let (tx, rx) = async_channel::bounded(1);
+        let t = text.to_owned();
+        let lib2 = lib.clone();
+        std::thread::Builder::new()
+            .name("search".into())
+            .spawn(move || {
+                let _ = tx.send_blocking(find(&lib2, playlists, &t));
+            })
+            .expect("spawn search thread");
+        let (me, app, text) = (Rc::downgrade(self), app.clone(), text.to_owned());
+        glib::spawn_future_local(async move {
+            let Ok(found) = rx.recv().await else { return };
+            let Some(me) = me.upgrade() else { return };
+            if me.generation.get() == generation {
+                me.show(&app, &text, Some((&lib, found)));
+            }
+        });
+    }
+
+    fn show(&self, app: &Rc<App>, text: &str, found: Option<(&Arc<Library>, Found)>) {
+        while let Some(c) = self.message.first_child() {
+            self.message.remove(&c);
+        }
+        let Some((lib, found)) = found else {
+            self.message.append(&label("Search", &["tm-page-title"]));
+            self.message.append(&widgets::empty(
+                "Find songs, artists, albums and playlists in your library.",
+            ));
+            self.songs.set_visible(false);
+            self.list
+                .set_entries(app, Entries::Tracks(Vec::new()), None);
+            for s in [&self.artists, &self.albums, &self.lists] {
+                s.fill(0, false, |_, _| {});
+            }
+            return;
+        };
+        if found.nothing {
+            self.message
+                .append(&widgets::empty(&format!("No results found for “{text}”")));
+        }
+        self.songs.set_visible(!found.tracks.is_empty());
+        self.list.set_context(&format!("Search “{text}”"));
+        self.list
+            .set_entries(app, Entries::Tracks(found.tracks), None);
+        self.artists.fill(found.artists.len(), false, |k, t| {
+            artist_tile(app, lib, found.artists[k], t)
+        });
+        self.albums.fill(found.albums.len(), false, |k, t| {
+            album_tile(app, lib, found.albums[k], t, true)
+        });
+        self.lists
+            .fill(found.lists.len(), found.more_lists, |k, t| {
+                bind_playlist_tile(app, lib, &found.lists[k], t)
+            });
+    }
+}
+
+fn search(app: &Rc<App>, text: &str) -> Page {
+    let b = page_box();
+    let message = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    b.append(&message);
+    let songs = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    songs.append(&section_title("Songs"));
+    let list = tracklist::build(
+        app,
+        Spec {
+            // Set per query when played: see `connect_activate` below.
+            context: "Search".into(),
+            entries: Entries::Tracks(Vec::new()),
+            show_album: true,
+            show_cover: true,
+            playlist: None,
+            header: None,
+        },
+    );
+    list.view.add_css_class("tm-flush");
+    songs.append(&list.view);
+    b.append(&songs);
+    let tiles = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let artists = TileSection::new("Artists", true, None);
+    let albums = TileSection::new("Albums", false, None);
+    let lists = TileSection::new("Playlists", false, Some((app.clone(), Route::Playlists)));
+    for s in [&artists, &albums, &lists] {
+        tiles.append(&s.root);
+    }
+    b.append(&tiles);
+    let page = Rc::new(SearchPage {
+        text: RefCell::new(String::new()),
+        generation: Cell::new(0),
+        message,
+        songs,
+        list,
+        artists,
+        albums,
+        lists,
+    });
+    page.set_query(app, text);
+    let mut out = with_tiles(&b);
+    let p = page.clone();
+    out.retarget = Some(Rc::new(move |app, route| match route {
+        Route::Search(q) => {
+            p.set_query(app, q);
+            true
+        }
+        _ => false,
+    }));
+    let p = page.clone();
+    out.update = Some(Rc::new(move |app, _| {
+        let text = p.text.borrow().clone();
+        p.set_query(app, &text);
+        true
+    }));
+    out.drain = Some(Rc::new(move || page.list.drain_step()));
+    out
 }
 
 // ---- library grids --------------------------------------------------------
+
+/// Binds the tile at a position of a grid.
+type BindTile = Box<dyn Fn(&Rc<App>, usize, &Tile)>;
+
+/// What a grid shows: an identity per tile (what tells which tiles an
+/// update leaves alone) and how to bind tile `i`.
+struct GridData {
+    keys: Vec<String>,
+    bind: BindTile,
+}
+
+type GridSource = Rc<dyn Fn(&Rc<App>) -> GridData>;
+
+struct Grid {
+    rows: LazyRows,
+    view: gtk::GridView,
+    keys: RefCell<Vec<String>>,
+    bind: RefCell<BindTile>,
+    /// Every tile the view has made, with its list item.
+    tiles: RefCell<Vec<(glib::WeakRef<gtk::ListItem>, Tile)>>,
+}
+
+/// Tile rows a grid adds per frame while it fills.
+const GRID_CHUNK_ROWS: u32 = 4;
+
+impl Grid {
+    /// Sizes GTK's tile window to the columns that fit `width`: GTK makes
+    /// `max_columns` x 31 tiles whatever the width, 372 with 12 columns.
+    fn fit(&self, width: f64) {
+        let tile = self
+            .view
+            .first_child()
+            .map(|c| c.measure(gtk::Orientation::Horizontal, -1).0)
+            .filter(|w| *w > 0)
+            .unwrap_or(TILE_COVER + 24) as f64;
+        let cols = ((width / tile).floor() as u32).max(2);
+        if cols != self.view.max_columns() {
+            self.view.set_max_columns(cols);
+        }
+        self.rows.set_window(cols * 31, cols * GRID_CHUNK_ROWS);
+    }
+
+    fn update(&self, app: &Rc<App>, data: GridData) {
+        let (p, removed, added) = rows::diff(&self.keys.borrow(), &data.keys);
+        *self.keys.borrow_mut() = data.keys;
+        *self.bind.borrow_mut() = data.bind;
+        self.rows.replace(p as u32, removed as u32, added as u32);
+        // Tiles that stayed or were replaced in place show what changed in
+        // them (other albums, counts, covers).
+        let bound: Vec<(u32, Tile)> = self
+            .tiles
+            .borrow()
+            .iter()
+            .filter_map(|(li, t)| Some((rows::position(li)?, t.clone())))
+            .collect();
+        let bind = self.bind.borrow();
+        for (pos, tile) in bound {
+            bind(app, pos as usize, &tile);
+        }
+    }
+}
 
 fn grid_page(
     app: &Rc<App>,
     title: &str,
     action: Option<gtk::Widget>,
-    count: usize,
     round: bool,
-    bind: impl Fn(&Rc<App>, &Arc<Library>, usize, &Tile) + 'static,
+    source: GridSource,
 ) -> Page {
-    let lib = app.store.library();
+    let data = source(app);
     let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let head = gtk::Box::builder()
         .spacing(12)
@@ -477,64 +728,123 @@ fn grid_page(
     if let Some(w) = action {
         head.append(&w);
     }
-    if count == 0 {
-        outer.append(&head);
-        outer.append(&widgets::empty("Nothing here yet."));
-        return Page {
-            widget: outer.upcast(),
-            scroller: None,
-        };
-    }
     outer.append(&head);
-    let store = gio::ListStore::new::<glib::BoxedAnyObject>();
-    let items: Vec<glib::BoxedAnyObject> = (0..count).map(glib::BoxedAnyObject::new).collect();
-    store.extend_from_slice(&items);
+    if data.keys.is_empty() {
+        outer.append(&widgets::empty("Nothing here yet."));
+        let mut page = Page::plain(outer, None);
+        // Still empty: nothing to do; else the page is built again.
+        page.update = Some(Rc::new(move |app, _| source(app).keys.is_empty()));
+        return page;
+    }
     let factory = gtk::SignalListItemFactory::new();
-    factory.connect_setup(move |_, obj| {
-        let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
-        let tile = Tile::new(round);
-        li.set_child(Some(&tile.widget));
-    });
-    let app2 = app.clone();
-    factory.connect_bind(move |_, obj| {
-        let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
-        let tile = Tile::of(&li.child().expect("tile"));
-        let i = *li
-            .item()
-            .and_downcast::<glib::BoxedAnyObject>()
-            .expect("item")
-            .borrow::<usize>();
-        bind(&app2, &lib, i, &tile);
-    });
-    let grid = gtk::GridView::builder()
-        .model(&gtk::NoSelection::new(Some(store)))
+    let view = gtk::GridView::builder()
         .factory(&factory)
         .min_columns(2)
-        .max_columns(12)
         .css_classes(["tm-grid"])
         .margin_start(12)
         .margin_end(12)
         .build();
-    let s = scrolled(&grid);
-    outer.append(&s);
-    Page {
-        widget: outer.upcast(),
-        scroller: Some(s),
+    let grid = Rc::new(Grid {
+        rows: LazyRows::new(0, 1),
+        view: view.clone(),
+        keys: RefCell::new(Vec::new()),
+        bind: RefCell::new(data.bind),
+        tiles: RefCell::new(Vec::new()),
+    });
+    view.set_model(Some(&gtk::NoSelection::new(Some(grid.rows.clone()))));
+    let weak = Rc::downgrade(&grid);
+    factory.connect_setup(move |_, obj| {
+        let Some(grid) = weak.upgrade() else { return };
+        let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
+        // Clicks are the tile host's; the view selects nothing.
+        li.set_activatable(false);
+        li.set_selectable(false);
+        let tile = Tile::new(round);
+        li.set_child(Some(&tile.widget));
+        grid.rows.track(li);
+        grid.tiles.borrow_mut().push((li.downgrade(), tile));
+    });
+    let (weak, a) = (Rc::downgrade(&grid), app.clone());
+    factory.connect_bind(move |_, obj| {
+        let Some(grid) = weak.upgrade() else { return };
+        let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
+        let tile = Tile::of(&li.child().expect("tile"));
+        (grid.bind.borrow())(&a, li.position() as usize, &tile);
+    });
+    let weak = Rc::downgrade(&grid);
+    factory.connect_teardown(move |_, obj| {
+        let li = obj.downcast_ref::<gtk::ListItem>().expect("list item");
+        if let Some(grid) = weak.upgrade() {
+            grid.tiles
+                .borrow_mut()
+                .retain(|(l, _)| l.upgrade().is_some_and(|l| l != *li));
+        }
+    });
+    let s = scrolled(&view);
+    // Until the grid has a width: the window's, less the sidebar.
+    let width = match app.window.width() {
+        0 => app.window.default_width(),
+        w => w,
+    };
+    grid.fit((width - 340).max(400) as f64);
+    if let Some(adj) = view.hadjustment() {
+        let weak = Rc::downgrade(&grid);
+        adj.connect_page_size_notify(move |adj| {
+            if let Some(grid) = weak.upgrade()
+                && adj.page_size() > 0.0
+            {
+                grid.fit(adj.page_size());
+            }
+        });
     }
+    *grid.keys.borrow_mut() = data.keys;
+    grid.rows.reset(grid.keys.borrow().len() as u32, &view);
+    outer.append(&tile_host(&s));
+    let mut page = Page::plain(outer, Some(s));
+    let g = grid.clone();
+    page.update = Some(Rc::new(move |app, _| {
+        let data = source(app);
+        if data.keys.is_empty() {
+            return false;
+        }
+        g.update(app, data);
+        true
+    }));
+    page.drain = Some(Rc::new(move || grid.rows.drain_step()));
+    page
 }
 
 fn albums(app: &Rc<App>) -> Page {
-    let lib = app.store.library();
-    let order = Rc::new(lib.albums_by_name());
-    let n = order.len();
-    grid_page(app, "Albums", None, n, false, move |app, lib, i, tile| {
-        album_tile(app, lib, order[i], tile, true)
-    })
+    grid_page(
+        app,
+        "Albums",
+        None,
+        false,
+        Rc::new(|app| {
+            let lib = app.store.library();
+            let order = lib.albums_by_name();
+            GridData {
+                keys: order.iter().map(|&i| lib.albums[i].key()).collect(),
+                bind: Box::new(move |app, i, tile| album_tile(app, &lib, order[i], tile, true)),
+            }
+        }),
+    )
 }
 
 fn artists(app: &Rc<App>) -> Page {
-    let n = app.store.library().artists.len();
-    grid_page(app, "Artists", None, n, true, artist_tile)
+    grid_page(
+        app,
+        "Artists",
+        None,
+        true,
+        Rc::new(|app| {
+            let lib = app.store.library();
+            GridData {
+                keys: lib.artists.iter().map(|a| a.name.clone()).collect(),
+                bind: Box::new(move |app, i, tile| artist_tile(app, &lib, i, tile)),
+            }
+        }),
+    )
 }
 
 fn playlists(app: &Rc<App>) -> Page {
@@ -547,18 +857,21 @@ fn playlists(app: &Rc<App>) -> Page {
     create.connect_clicked(move |_| create_playlist_dialog(&a));
     // Liked Songs first; a grid of recycled tiles, as there may be
     // a thousand playlists.
-    let lists: Rc<Vec<Summary>> = Rc::new(
-        std::iter::once(app.store.liked_summary())
-            .chain(app.store.playlists())
-            .collect(),
-    );
     grid_page(
         app,
         "Playlists",
         Some(create.upcast()),
-        lists.len(),
         false,
-        move |app, lib, i, tile| bind_playlist_tile(app, lib, &lists[i], tile),
+        Rc::new(|app| {
+            let lib = app.store.library();
+            let lists: Vec<Summary> = std::iter::once(app.store.liked_summary())
+                .chain(app.store.playlists())
+                .collect();
+            GridData {
+                keys: lists.iter().map(|p| p.name.clone()).collect(),
+                bind: Box::new(move |app, i, tile| bind_playlist_tile(app, &lib, &lists[i], tile)),
+            }
+        }),
     )
 }
 
@@ -695,119 +1008,154 @@ fn actions(app: &Rc<App>, name: &str, paths: Vec<String>, more: Option<MoreMenu>
     b
 }
 
-fn detail_page(
-    app: &Rc<App>,
-    header: gtk::Box,
-    spec_entries: Entries,
-    context: &str,
-    show_album: bool,
-    show_cover: bool,
-    playlist: Option<String>,
-) -> Page {
-    if !spec_entries.is_empty() {
-        header.append(&tracklist::columns_header(show_album, show_cover));
-    }
+/// A detail page's header and songs, as `parts` makes them from the
+/// library: `None` once the album or artist is gone.
+type DetailParts = Box<dyn Fn(&Rc<App>) -> Option<(gtk::Box, Vec<String>)>>;
+
+/// An album or artist page: its header as row 0 of the track list. When
+/// the library changes, the header is made again and only the rows that
+/// changed are replaced.
+fn detail_page(app: &Rc<App>, context: &str, show_album: bool, parts: DetailParts) -> Page {
+    let Some((header, paths)) = parts(app) else {
+        return not_found();
+    };
     let list = tracklist::build(
         app,
         Spec {
             context: context.to_owned(),
-            entries: spec_entries,
+            entries: Entries::Tracks(paths),
             show_album,
-            show_cover,
-            playlist,
+            show_cover: show_album,
+            playlist: None,
             header: Some(header.upcast()),
         },
     );
-    list.set_margin_bottom(24);
-    let s = scrolled(&list);
-    Page {
-        widget: s.clone().upcast(),
-        scroller: Some(s),
-    }
+    list.view.set_margin_bottom(24);
+    let s = scrolled(&list.view);
+    let mut page = Page::plain(tile_host(&s), Some(s));
+    let list = Rc::new(list);
+    let l = list.clone();
+    page.update = Some(Rc::new(move |app, change| {
+        if change != StoreChange::Library {
+            return true;
+        }
+        match parts(app) {
+            Some((header, paths)) => {
+                l.set_entries(app, Entries::Tracks(paths), Some(header.upcast()));
+                true
+            }
+            None => false,
+        }
+    }));
+    page.drain = Some(Rc::new(move || list.drain_step()));
+    page
 }
 
 fn album(app: &Rc<App>, key: &str) -> Page {
-    let lib = app.store.library();
-    let Some(ai) = lib.album_index(key) else {
-        return not_found();
+    let name = {
+        let lib = app.store.library();
+        match lib.album_index(key) {
+            Some(i) => lib.albums[i].name.clone(),
+            None => return not_found(),
+        }
     };
-    let a = &lib.albums[ai];
-    let paths = album_paths(&lib, ai);
-    let mut parts = vec![artist_link(app, &a.artist)];
-    if let Some(y) = a.year {
-        parts.push(gtk::Label::new(Some(&y.to_string())).upcast());
-    }
-    parts.push(
-        gtk::Label::new(Some(&format!(
-            "{}, {}",
-            plural(a.tracks.len(), "song", "songs"),
-            fmt_total(a.duration_ms)
-        )))
-        .upcast(),
-    );
-    let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    header.append(&hero(
+    let key = key.to_owned();
+    detail_page(
         app,
-        HeroArt::Cover(Source::for_album(&lib, ai)),
-        "Album",
-        &a.name,
-        &meta_line(parts),
-    ));
-    header.append(&actions(app, &a.name, paths.clone(), None));
-    let entries = Entries::Tracks(paths);
-    detail_page(app, header, entries, &a.name, false, false, None)
+        &name,
+        false,
+        Box::new(move |app| {
+            let lib = app.store.library();
+            let ai = lib.album_index(&key)?;
+            let a = &lib.albums[ai];
+            let paths = album_paths(&lib, ai);
+            let mut parts = vec![artist_link(app, &a.artist)];
+            if let Some(y) = a.year {
+                parts.push(gtk::Label::new(Some(&y.to_string())).upcast());
+            }
+            parts.push(
+                gtk::Label::new(Some(&format!(
+                    "{}, {}",
+                    plural(a.tracks.len(), "song", "songs"),
+                    fmt_total(a.duration_ms)
+                )))
+                .upcast(),
+            );
+            let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            header.append(&hero(
+                app,
+                HeroArt::Cover(Source::for_album(&lib, ai)),
+                "Album",
+                &a.name,
+                &meta_line(parts),
+            ));
+            header.append(&actions(app, &a.name, paths.clone(), None));
+            if !paths.is_empty() {
+                header.append(&tracklist::columns_header(false, false));
+            }
+            Some((header, paths))
+        }),
+    )
 }
 
 fn artist(app: &Rc<App>, name: &str) -> Page {
-    let lib = app.store.library();
-    let Some(ari) = lib.artist_index(name) else {
-        return not_found();
-    };
-    let ar = &lib.artists[ari];
-    let paths: Vec<String> = ar
-        .tracks
-        .iter()
-        .map(|&t| lib.tracks[t].path.clone())
-        .collect();
-    let source = ar
-        .albums
-        .first()
-        .map(|&a| Source::for_album(&lib, a))
-        .unwrap_or(Source::Placeholder(ar.name.clone()));
-    let meta = meta_line(vec![
-        gtk::Label::new(Some(&plural(ar.tracks.len(), "song", "songs"))).upcast(),
-        gtk::Label::new(Some(&plural(ar.albums.len(), "album", "albums"))).upcast(),
-    ]);
-    let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    header.append(&hero(
+    let name = name.to_owned();
+    detail_page(
         app,
-        HeroArt::Round(source),
-        "Artist",
-        &ar.name,
-        &meta,
-    ));
-    header.append(&actions(app, &ar.name, paths.clone(), None));
-    let tiles: Vec<gtk::Widget> = ar
-        .albums
-        .iter()
-        .map(|&i| {
-            let t = Tile::new(false);
-            album_tile(app, &lib, i, &t, false);
-            t.widget.upcast()
-        })
-        .collect();
-    if let Some(s) = flow_section("Albums", tiles, None) {
-        s.set_margin_start(24);
-        s.set_margin_end(24);
-        header.append(&s);
-    }
-    let songs = section_title("Songs");
-    songs.set_margin_start(24);
-    songs.set_margin_top(12);
-    songs.set_margin_bottom(8);
-    header.append(&songs);
-    let entries = Entries::Tracks(paths);
-    detail_page(app, header, entries, &ar.name, true, true, None)
+        &name.clone(),
+        true,
+        Box::new(move |app| {
+            let lib = app.store.library();
+            let ari = lib.artist_index(&name)?;
+            let ar = &lib.artists[ari];
+            let paths: Vec<String> = ar
+                .tracks
+                .iter()
+                .map(|&t| lib.tracks[t].path.clone())
+                .collect();
+            let source = ar
+                .albums
+                .first()
+                .map(|&a| Source::for_album(&lib, a))
+                .unwrap_or(Source::Placeholder(ar.name.clone()));
+            let meta = meta_line(vec![
+                gtk::Label::new(Some(&plural(ar.tracks.len(), "song", "songs"))).upcast(),
+                gtk::Label::new(Some(&plural(ar.albums.len(), "album", "albums"))).upcast(),
+            ]);
+            let header = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            header.append(&hero(
+                app,
+                HeroArt::Round(source),
+                "Artist",
+                &ar.name,
+                &meta,
+            ));
+            header.append(&actions(app, &ar.name, paths.clone(), None));
+            let tiles: Vec<gtk::Widget> = ar
+                .albums
+                .iter()
+                .map(|&i| {
+                    let t = Tile::new(false);
+                    album_tile(app, &lib, i, &t, false);
+                    t.widget.upcast()
+                })
+                .collect();
+            if let Some(s) = flow_section("Albums", tiles, None) {
+                s.set_margin_start(24);
+                s.set_margin_end(24);
+                header.append(&s);
+            }
+            let songs = section_title("Songs");
+            songs.set_margin_start(24);
+            songs.set_margin_top(12);
+            songs.set_margin_bottom(8);
+            header.append(&songs);
+            if !paths.is_empty() {
+                header.append(&tracklist::columns_header(true, true));
+            }
+            Some((header, paths))
+        }),
+    )
 }
 
 /// What a playlist page shows, read off the main loop: a playlist may hold
@@ -819,69 +1167,139 @@ struct LoadedPlaylist {
     art: Source,
 }
 
-fn playlist(app: &Rc<App>, name: &str) -> Page {
-    if app.store.is_too_large(name) {
-        return too_large(name);
-    }
-    let lib = app.store.library();
-    let liked = name == LIKED_SONGS;
-    let read: Box<dyn FnOnce() -> Option<Playlist> + Send> = if liked {
-        let p = app.store.liked();
-        Box::new(move || Some(p))
-    } else if app.store.has_playlist(name) {
-        let (root, n) = (app.store.root(), name.to_owned());
-        Box::new(move || {
-            Playlist::read(&root, &n)
-                .inspect_err(|e| eprintln!("tunemesh: cannot read playlist {n:?}: {e}"))
-                .ok()
-        })
-    } else {
-        return not_found();
-    };
-    let (tx, rx) = async_channel::bounded::<Option<LoadedPlaylist>>(1);
-    let (n, thread_lib) = (name.to_owned(), lib.clone());
-    std::thread::Builder::new()
-        .name("playlist-page".into())
-        .spawn(move || {
-            let loaded = read().map(|p| {
-                let paths = available_paths(&thread_lib, &p);
-                let total_ms = paths
-                    .iter()
-                    .filter_map(|t| thread_lib.track(t))
-                    .map(|t| t.duration_ms)
-                    .sum();
-                let art =
-                    Source::for_paths(&thread_lib, p.entries.iter().filter_map(|e| e.track()), &n);
-                LoadedPlaylist {
-                    p,
-                    paths,
-                    total_ms,
-                    art,
-                }
-            });
-            let _ = tx.send_blocking(loaded);
-        })
-        .expect("spawn playlist thread");
+/// A playlist page: its entries are read on a thread, first and after
+/// every change to the playlist, and the list is updated in place.
+struct PlaylistPage {
+    name: String,
+    scroller: glib::WeakRef<gtk::ScrolledWindow>,
+    list: RefCell<Option<TrackList>>,
+    /// Bumped by every read; an older read's result is dropped.
+    generation: Cell<u64>,
+}
 
-    let s = scrolled(&gtk::Box::new(gtk::Orientation::Vertical, 0));
-    let (weak, app, name) = (s.downgrade(), app.clone(), name.to_owned());
-    glib::spawn_future_local(async move {
-        let Ok(loaded) = rx.recv().await else { return };
-        let Some(s) = weak.upgrade() else { return };
-        let child = match loaded {
-            Some(l) => playlist_list(&app, &name, l),
-            None => not_found().widget,
+impl PlaylistPage {
+    fn load(self: &Rc<Self>, app: &Rc<App>) {
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        let lib = app.store.library();
+        let name = &self.name;
+        let read: Box<dyn FnOnce() -> Option<Playlist> + Send> = if name == LIKED_SONGS {
+            let p = app.store.liked();
+            Box::new(move || Some(p))
+        } else if app.store.has_playlist(name) {
+            let (root, n) = (app.store.root(), name.clone());
+            Box::new(move || {
+                Playlist::read(&root, &n)
+                    .inspect_err(|e| eprintln!("tunemesh: cannot read playlist {n:?}: {e}"))
+                    .ok()
+            })
+        } else {
+            Box::new(|| None)
         };
-        s.set_child(Some(&child));
-    });
-    Page {
-        widget: s.clone().upcast(),
-        scroller: Some(s),
+        let (tx, rx) = async_channel::bounded::<Option<LoadedPlaylist>>(1);
+        let n = name.clone();
+        std::thread::Builder::new()
+            .name("playlist-page".into())
+            .spawn(move || {
+                let loaded = read().map(|p| {
+                    let paths = available_paths(&lib, &p);
+                    let total_ms = paths
+                        .iter()
+                        .filter_map(|t| lib.track(t))
+                        .map(|t| t.duration_ms)
+                        .sum();
+                    let art =
+                        Source::for_paths(&lib, p.entries.iter().filter_map(|e| e.track()), &n);
+                    LoadedPlaylist {
+                        p,
+                        paths,
+                        total_ms,
+                        art,
+                    }
+                });
+                let _ = tx.send_blocking(loaded);
+            })
+            .expect("spawn playlist thread");
+        let (me, app) = (Rc::downgrade(self), app.clone());
+        glib::spawn_future_local(async move {
+            let Ok(loaded) = rx.recv().await else { return };
+            let Some(me) = me.upgrade() else { return };
+            if me.generation.get() == generation {
+                me.show(&app, loaded);
+            }
+        });
+    }
+
+    fn show(&self, app: &Rc<App>, loaded: Option<LoadedPlaylist>) {
+        let Some(s) = self.scroller.upgrade() else {
+            return;
+        };
+        let Some(l) = loaded else {
+            self.list.borrow_mut().take();
+            s.set_child(Some(&not_found_widget()));
+            return;
+        };
+        let (header, entries) = playlist_parts(app, &self.name, l);
+        if let Some(list) = self.list.borrow().as_ref() {
+            list.set_entries(app, entries, Some(header.upcast()));
+            return;
+        }
+        let list = tracklist::build(
+            app,
+            Spec {
+                context: self.name.clone(),
+                entries,
+                show_album: true,
+                show_cover: true,
+                playlist: Some(self.name.clone()),
+                header: Some(header.upcast()),
+            },
+        );
+        list.view.set_margin_bottom(24);
+        s.set_child(Some(&list.view));
+        *self.list.borrow_mut() = Some(list);
     }
 }
 
+fn playlist(app: &Rc<App>, name: &str) -> Page {
+    if app.store.is_too_large(name) {
+        let mut page = too_large(name);
+        let n = name.to_owned();
+        page.update = Some(Rc::new(move |app, _| app.store.is_too_large(&n)));
+        return page;
+    }
+    if name != LIKED_SONGS && !app.store.has_playlist(name) {
+        return not_found();
+    }
+    let s = scrolled(&gtk::Box::new(gtk::Orientation::Vertical, 0));
+    let state = Rc::new(PlaylistPage {
+        name: name.to_owned(),
+        scroller: s.downgrade(),
+        list: RefCell::new(None),
+        generation: Cell::new(0),
+    });
+    state.load(app);
+    let mut page = Page::plain(tile_host(&s), Some(s));
+    let st = state.clone();
+    page.update = Some(Rc::new(move |app, _| {
+        if app.store.is_too_large(&st.name) {
+            return false;
+        }
+        st.load(app);
+        true
+    }));
+    page.drain = Some(Rc::new(move || {
+        state
+            .list
+            .borrow()
+            .as_ref()
+            .is_none_or(TrackList::drain_step)
+    }));
+    page
+}
+
 /// The playlist's header and entries, once read.
-fn playlist_list(app: &Rc<App>, name: &str, l: LoadedPlaylist) -> gtk::Widget {
+fn playlist_parts(app: &Rc<App>, name: &str, l: LoadedPlaylist) -> (gtk::Box, Entries) {
     let liked = name == LIKED_SONGS;
     let LoadedPlaylist {
         p,
@@ -916,19 +1334,7 @@ fn playlist_list(app: &Rc<App>, name: &str, l: LoadedPlaylist) -> gtk::Widget {
     } else {
         header.append(&tracklist::columns_header(true, true));
     }
-    let list = tracklist::build(
-        app,
-        Spec {
-            context: name.to_owned(),
-            entries: Entries::Playlist(p),
-            show_album: true,
-            show_cover: true,
-            playlist: Some(name.to_owned()),
-            header: Some(header.upcast()),
-        },
-    );
-    list.set_margin_bottom(24);
-    list.upcast()
+    (header, Entries::Playlist(p))
 }
 
 fn playlist_menu(app: &Rc<App>, btn: &gtk::Button, name: &str, paths: Vec<String>) {

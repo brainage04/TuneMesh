@@ -15,6 +15,8 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.github.brainage04.tunemesh.data.CoverProvider
 import io.github.brainage04.tunemesh.data.LibraryScanner
+import io.github.brainage04.tunemesh.data.LibraryState
+import io.github.brainage04.tunemesh.library.LibraryIndex
 import io.github.brainage04.tunemesh.library.Track
 import io.github.brainage04.tunemesh.playback.PlaybackService
 import io.github.brainage04.tunemesh.playback.QueueItems
@@ -22,6 +24,8 @@ import java.io.File
 import java.io.FileNotFoundException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.file.Files
+import java.nio.file.attribute.BasicFileAttributes
 import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -31,6 +35,7 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
@@ -86,11 +91,12 @@ class DeviceTest {
         writeWav(File(root, "Test Artist/Test Album/Two\nLines.wav"), seconds = 1)
         writeWav(File(root, "Test Artist/Test Album/Carriage\rReturn.wav"), seconds = 1)
         writeWav(File(root, "Broken\nArtist/Album/Inside.wav"), seconds = 1)
-        val cache = File(context.cacheDir, "test-tag-cache.json").apply { delete() }
+        val cacheDirectory = File(context.cacheDir, "test-tag-cache").apply { deleteRecursively() }
+        val cache = File(cacheDirectory, LibraryScanner.CACHE_FILE)
 
-        val result = LibraryScanner(cache).scan(root)
-        assertTrue(result.directories.none { '\n' in it.path })
-        val first = result.tracks
+        val result = LibraryScanner(cacheDirectory).scan(root, LibraryIndex.EMPTY)
+        assertTrue(result.directories.files.none { '\n' in it.path })
+        val first = result.index.tracks
         assertEquals(1, first.size)
         val track = first.single()
         assertEquals("Test Artist/Test Album/Tone [abc123].wav", track.path)
@@ -100,9 +106,16 @@ class DeviceTest {
         assertTrue("duration ${track.durationMs}", track.durationMs in 2_900..3_100)
         assertTrue(cache.isFile)
 
-        // A fresh scanner answers from the cache file without a scan.
-        assertEquals(first, LibraryScanner(cache).cachedTracks(root))
-        cache.delete()
+        // A fresh scanner answers from the cache file without a scan, and a scan of the unchanged library keeps that index.
+        val cached = LibraryScanner(cacheDirectory).cached(root)!!
+        assertEquals(first, cached.tracks)
+        assertSame(cached, LibraryScanner(cacheDirectory).scan(root, cached).index)
+        // A scan that starts before the saved index is shown (a refresh racing the start) keeps the saved one too: no tags are read again,
+        // so the cache file is not rewritten (a rewrite replaces it with a new file).
+        val saved = Files.readAttributes(cache.toPath(), BasicFileAttributes::class.java).fileKey()
+        assertEquals(first, LibraryScanner(cacheDirectory).scan(root, LibraryIndex.EMPTY).index.tracks)
+        assertEquals(saved, Files.readAttributes(cache.toPath(), BasicFileAttributes::class.java).fileKey())
+        cacheDirectory.deleteRecursively()
     }
 
     /** "Limits": folders deeper than 64 levels are not scanned; tag fields are cut and artists limited. */
@@ -118,9 +131,9 @@ class DeviceTest {
             .writeBytes(HostileLibrary.mp3("t".repeat(5000), artists, "a".repeat(5000), 1))
         // MediaMetadataRetriever itself drops a 1 MiB frame; either way nothing longer than the limit is kept.
         File(root, "Huge/Tags/big tag.mp3").writeBytes(HostileLibrary.mp3("t".repeat(1024 * 1024), "A", "a".repeat(1024 * 1024), 1))
-        val cache = File(context.cacheDir, "test-tag-cache.json").apply { delete() }
-        val tracks = LibraryScanner(cache).scan(root).tracks.associateBy { it.path }
-        cache.delete()
+        val cacheDirectory = File(context.cacheDir, "test-tag-cache").apply { deleteRecursively() }
+        val tracks = LibraryScanner(cacheDirectory).scan(root, LibraryIndex.EMPTY).index.tracks.associateBy { it.path }
+        cacheDirectory.deleteRecursively()
         assertEquals(setOf("$level64/ok.mp3", "Huge/Tags/long tag.mp3", "Huge/Tags/big tag.mp3"), tracks.keys)
         val long = tracks.getValue("Huge/Tags/long tag.mp3")
         assertEquals(1024, long.title.length)
@@ -144,6 +157,12 @@ class DeviceTest {
         }
         val small = track("S/A/small.mp3", HostileLibrary.mp3("s", "S", "A", 1, picture = HostileLibrary.smallJpeg()))
         assertNotNull(loader.diskFile(root, small))
+        // A loaded cover is in memory for its track and size; a changed file (another modification time) or another size is not.
+        val bitmap = loader.load(root, small, 160)
+        assertNotNull(bitmap)
+        assertSame(bitmap, loader.cached(small, 160))
+        assertNull(loader.cached(small, 400))
+        assertNull(loader.cached(small.copy(modifiedMs = small.modifiedMs + 1), 160))
         // Within 16 MiB but stated as 20,000 px a side.
         val wide = track("W/A/wide.mp3", HostileLibrary.mp3("w", "W", "A", 1, picture = HostileLibrary.hugeJpeg(64 * 1024)))
         assertNull(loader.diskFile(root, wide))
@@ -157,12 +176,51 @@ class DeviceTest {
         File(context.cacheDir, "test-covers").deleteRecursively()
     }
 
+    /**
+     * A scan of the previous library folder that ends after the folder changed is not shown under the new one, and the new folder's scan
+     * does not start from the old folder's tracks.
+     */
+    @Test
+    fun aScanOfThePreviousFolderIsNotShownUnderTheNewOne() {
+        InstrumentationRegistry.getInstrumentation()
+            .uiAutomation
+            .executeShellCommand("appops set --uid ${context.packageName} MANAGE_EXTERNAL_STORAGE allow")
+            .close()
+        repeat(OLD_TRACKS) { writeWav(File(root, "Old/Album/$it.wav"), seconds = 1) }
+        val next =
+            File(context.cacheDir, "test-library-next").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+        try {
+            writeWav(File(next, "New/Album/new.wav"), seconds = 1)
+            app.repository.setLibraryRoot(root.absolutePath)
+            val scanning = System.currentTimeMillis() + 10_000
+            while (System.currentTimeMillis() < scanning && !app.repository.state.value.scanning) Thread.sleep(1)
+            app.repository.setLibraryRoot(next.absolutePath)
+            var stale: String? = null
+            var settled = false
+            val end = System.currentTimeMillis() + 60_000
+            while (!settled && System.currentTimeMillis() < end) {
+                val state = app.repository.state.value
+                val shown = state.root == next
+                if (shown) stale = stale ?: state.index.tracks.firstOrNull { it.path.startsWith("Old/") }?.path
+                settled = shown && state.scanned()
+                Thread.sleep(2)
+            }
+            assertNull("shown under the new folder: ${stale.orEmpty()}", stale)
+            assertEquals(listOf("New/Album/new.wav"), app.repository.state.value.index.tracks.map { it.path })
+        } finally {
+            next.deleteRecursively()
+        }
+    }
+
     /** R2-opus-5: quick playlist changes run one after another, so none is lost. */
     @Test
     fun quickPlaylistChangesAreAllKept() {
         val tracks = (1..12).map { Track.fromTags("Quick/Album/$it.mp3", io.github.brainage04.tunemesh.library.RawTags(), 1, 1) }
         tracks.forEach { app.repository.setLiked(it, true) }
-        val store = io.github.brainage04.tunemesh.library.PlaylistStore(root) { null }
+        val store = io.github.brainage04.tunemesh.library.PlaylistStore(root)
         val end = System.currentTimeMillis() + 20_000
         while (System.currentTimeMillis() < end && store.likedPaths().size < tracks.size) Thread.sleep(100)
         Thread.sleep(500)
@@ -349,6 +407,13 @@ class DeviceTest {
         file.parentFile!!.mkdirs()
         val bitmap = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888).apply { eraseColor(0xFF1ED760.toInt()) }
         file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+    }
+
+    private fun LibraryState.scanned() = loaded && !scanning && index.tracks.isNotEmpty()
+
+    private companion object {
+        /** Enough files that their scan is still running when the folder changes. */
+        const val OLD_TRACKS = 200
     }
 
     private fun writeWav(file: File, seconds: Int) {

@@ -439,8 +439,8 @@ fun formatDuration(ms: Long): String {
     return if (hours > 0) "%d:%02d:%02d".format(Locale.ROOT, hours, minutes, seconds) else "%d:%02d".format(Locale.ROOT, minutes, seconds)
 }
 
-fun totalLength(tracks: List<Track>): String {
-    val minutes = tracks.sumOf { it.durationMs } / 60_000
+fun totalLength(durationMs: Long): String {
+    val minutes = durationMs / 60_000
     return if (minutes >= 60) "${minutes / 60} h ${minutes % 60} min" else "$minutes min"
 }
 

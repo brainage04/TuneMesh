@@ -4,8 +4,9 @@
 #
 #   leaks   every page, panel and dialog is freed once closed, and the
 #           user-visible checks in gui_tests::checks (debug build)
-#   stalls  the hostile-library walk stays under the main-loop stall budget
-#           (release build; generates a 1.5 GB library under /var/tmp)
+#   stalls  the typical and the hostile library walks stay under the
+#           main-loop stall budget (release build; generates about 2.4 GB
+#           of libraries under /var/tmp)
 #   all     both (the default)
 #
 # Run from the dev shell, with sway and dbus on PATH:
@@ -13,9 +14,11 @@
 #     linux/crates/tunemesh/scripts/gui-checks.sh [leaks|stalls|all]
 #
 # Extra arguments go to `cargo test`. Environment: TUNEMESH_STALL_BUDGET_MS
-# (default 100), TUNEMESH_STALL_ROUNDS (default 3), TUNEMESH_HOSTILE_LIBRARY
-# (reuse a generated library), TUNEMESH_STALL_REPORT (also write the stall
-# table to this file), GSK_RENDERER (default cairo).
+# (default 16.6), TUNEMESH_STALL_ROUNDS (default 20), TUNEMESH_TYPICAL_LIBRARY
+# and TUNEMESH_HOSTILE_LIBRARY (reuse a generated library),
+# TUNEMESH_STALL_REPORT (also write the stall tables next to this file),
+# GSK_RENDERER (default cairo). To draw on a GPU, give the compositor one:
+# WLR_RENDERER=gles2 WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 GSK_RENDERER=gl.
 set -euo pipefail
 
 what=${1:-all}
@@ -66,7 +69,7 @@ read -r bus_pid <&3
 export DBUS_SESSION_BUS_ADDRESS
 
 printf '%s\n' 'output HEADLESS-1 resolution 1920x1080' 'default_border none' >"$run/sway.cfg"
-WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_LIBINPUT_NO_DEVICES=1 \
+WLR_BACKENDS=headless WLR_RENDERER=${WLR_RENDERER:-pixman} WLR_LIBINPUT_NO_DEVICES=1 \
 	sway --config "$run/sway.cfg" >"$run/sway.log" 2>&1 &
 sway_pid=$!
 for _ in $(seq 100); do
@@ -85,8 +88,9 @@ done
 export WAYLAND_DISPLAY=wayland-1 GDK_BACKEND=wayland
 unset DISPLAY
 # None of the desktop's GTK settings or portals. Software rendering with
-# cairo: the headless compositor has no GPU, and GL through llvmpipe spends
-# most of a frame copying pixels.
+# cairo unless GSK_RENDERER says otherwise: the headless compositor has no
+# GPU unless WLR_RENDERER gives it one, and GL through llvmpipe spends most
+# of a frame copying pixels.
 export XDG_CONFIG_HOME=$run/config GDK_DEBUG=no-portals GSK_RENDERER=${GSK_RENDERER:-cairo}
 
 cd "$linux"
@@ -96,6 +100,7 @@ if [ "$what" != stalls ]; then
 	cargo test -p tunemesh "$@" -- --ignored gui_tests::checks::
 fi
 if [ "$what" != leaks ]; then
-	cargo test --release -p tunemesh "$@" -- --ignored --exact --nocapture \
-		gui_tests::stalls::hostile_walk_stays_responsive
+	# One walk at a time: each measures the machine it has to itself.
+	cargo test --release -p tunemesh "$@" -- --ignored --nocapture --test-threads=1 \
+		gui_tests::stalls::
 fi

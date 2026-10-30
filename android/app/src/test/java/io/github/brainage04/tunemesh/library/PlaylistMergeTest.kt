@@ -58,7 +58,7 @@ class PlaylistMergeTest {
     private inner class Device(name: String) {
         val root: File = temp.newFolder(name)
         val bases = File(temp.root, "$name-bases")
-        val store = PlaylistStore(root, bases = PlaylistBases(bases), lookup = tracks::get)
+        val store = PlaylistStore(root, bases = PlaylistBases(bases), library = LibraryIndex.of(tracks.values))
 
         fun file(playlist: String) = File(root, "Playlists/$playlist.m3u8")
 

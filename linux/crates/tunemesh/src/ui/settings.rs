@@ -1,6 +1,7 @@
 //! Settings: library folder, sync and downloads, library status, device
 //! info, shortcuts.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::gio;
@@ -140,19 +141,9 @@ pub fn page(app: &Rc<App>) -> Page {
     dl.append(&downloads::status_label(app));
     b.append(&dl);
 
-    let lib = app.store.library();
     let status = card("Library");
-    let mut text = format!(
-        "{}, {}, {}, {}",
-        plural(lib.tracks.len(), "song", "songs"),
-        plural(lib.albums.len(), "album", "albums"),
-        plural(lib.artists.len(), "artist", "artists"),
-        plural(app.store.playlists().len() + 1, "playlist", "playlists"),
-    );
-    if app.store.is_scanning() {
-        text.push_str(" • scanning…");
-    }
-    status.append(&dim(&text));
+    let counts = dim(&library_text(app));
+    status.append(&counts);
     let rescan = gtk::Button::builder()
         .label("Rescan now")
         .css_classes(["tm-pill-outline"])
@@ -210,8 +201,37 @@ pub fn page(app: &Rc<App>) -> Page {
         .vexpand(true)
         .child(&b)
         .build();
-    Page {
-        widget: scroller.clone().upcast(),
-        scroller: Some(scroller),
+    let mut page = Page::plain(scroller.clone(), Some(scroller));
+    // The page stays when left: what changes elsewhere (the setup
+    // assistant, a rescan) is set in place. The folder field keeps what is
+    // typed into it until the folder itself changes.
+    let shown_root = RefCell::new(app.store.root());
+    page.update = Some(Rc::new(move |app, _| {
+        let root = app.store.root();
+        if *shown_root.borrow() != root {
+            entry.set_text(&root.to_string_lossy());
+            *shown_root.borrow_mut() = root;
+        }
+        switch.set_active(app.config.borrow().downloader);
+        counts.set_text(&library_text(app));
+        true
+    }));
+    page
+}
+
+/// Songs, albums, artists and playlists in the library, and whether it is
+/// being scanned.
+fn library_text(app: &App) -> String {
+    let lib = app.store.library();
+    let mut text = format!(
+        "{}, {}, {}, {}",
+        plural(lib.tracks.len(), "song", "songs"),
+        plural(lib.albums.len(), "album", "albums"),
+        plural(lib.artists.len(), "artist", "artists"),
+        plural(app.store.playlists().len() + 1, "playlist", "playlists"),
+    );
+    if app.store.is_scanning() {
+        text.push_str(" • scanning…");
     }
+    text
 }

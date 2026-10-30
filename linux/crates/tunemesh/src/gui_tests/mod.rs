@@ -5,8 +5,8 @@
 //! - `checks`: user-visible fixes (queued edits written on quit, pending
 //!   downloads counted off the main loop, stale reloads, Downloads page
 //!   memory).
-//! - `stalls`: the longest main-loop stall per action on the hostile library
-//!   (release build).
+//! - `stalls`: the longest main-loop stall per action on a typical library
+//!   and on the hostile one (release build).
 //!
 //! All need a display and are `#[ignore]`d; `scripts/gui-checks.sh` starts a
 //! headless compositor and runs them. GTK may only be used from one thread,
@@ -15,6 +15,7 @@
 mod checks;
 mod leaks;
 mod stalls;
+mod typical;
 
 use std::cell::Cell;
 use std::panic::{self, AssertUnwindSafe};

@@ -21,9 +21,9 @@ class PlaylistStoreTest {
     private val a = track("Artist/Album/A [1].opus")
     private val b = track("Artist/Album/B [2].opus")
     private val c = track("Artist/Album/C [3].opus")
-    private val tracks = listOf(a, b, c).associateBy { it.path }
+    private val library = LibraryIndex.of(listOf(a, b, c))
 
-    private fun store(root: File = temp.root) = PlaylistStore(root, lookup = tracks::get)
+    private fun store(root: File = temp.root) = PlaylistStore(root, library = library)
 
     private fun liked(root: File = temp.root) = File(root, "Playlists/Liked Songs.m3u8").readText()
 
@@ -207,10 +207,9 @@ class PlaylistStoreTest {
         val mix = store.list().single()
         assertEquals(5, mix.size)
         assertEquals(listOf(c.path, b.path, a.path, c.path), mix.artPaths)
-        assertSame(tracks.getValue(c.path).path, mix.artPaths[0])
         assertNull(mix.problem)
         val many = (1..20).map { track("Artist/Album/T$it [$it].opus") }
-        val big = PlaylistStore(temp.root) { path -> many.firstOrNull { it.path == path } }
+        val big = PlaylistStore(temp.root, library = LibraryIndex.of(many))
         big.add("Big", many)
         assertEquals(PlaylistStore.ART_PATHS, big.list().first { it.name == "Big" }.artPaths.size)
     }
@@ -291,39 +290,35 @@ class PlaylistStoreTest {
         assertFalse(listed.any { it.name == "Zzz" })
     }
 
+    /** Rewrites [file] keeping its length and modification time, so only a re-read sees the change. */
+    private fun rewriteUnseen(file: File, text: String) {
+        val time = file.lastModified()
+        check(file.length() == text.toByteArray().size.toLong())
+        file.writeText(text)
+        file.setLastModified(time)
+    }
+
     @Test
     fun unchangedPlaylistsAreNotReadAgain() {
         val dir = File(temp.root, "Playlists").apply { mkdirs() }
         val file = File(dir, "Mix.m3u8").apply { writeText("../A.wav\n") }
         val summaries = PlaylistSummaries()
-        var reads = 0
-        val lookup: (String) -> Track? = {
-            reads++
-            null
-        }
-        val store = PlaylistStore(temp.root, summaries, lookup = lookup)
-        fun readsFor(block: () -> Unit): Int {
-            val before = reads
-            block()
-            return reads - before
-        }
-        assertTrue(readsFor { assertEquals(1, store.list().single().size) } > 0)
-        assertEquals(0, readsFor { assertEquals(1, store.list().single().size) })
-        file.writeText("../A.wav\n../B.wav\n")
-        assertTrue(readsFor { assertEquals(2, store.list().single().size) } > 0)
-        assertEquals(0, readsFor { store.list() })
-        // Another lookup (a new library index) reads again, and so does everything after clear().
-        assertTrue(
-            readsFor {
-                PlaylistStore(temp.root, summaries) {
-                        reads++
-                        null
-                    }
-                    .list()
-            } > 0
-        )
+        val tracks = listOf("A.wav", "B.wav", "C.wav").map(::track)
+        val store = PlaylistStore(temp.root, summaries, library = LibraryIndex.of(tracks))
+        fun art(of: PlaylistStore = store) = of.list().single().artPaths
+        assertEquals(listOf("A.wav"), art())
+        rewriteUnseen(file, "../B.wav\n")
+        assertEquals(listOf("A.wav"), art())
+        file.writeText("../B.wav\n../C.wav\n")
+        assertEquals(listOf("B.wav", "C.wav"), art())
+        rewriteUnseen(file, "../C.wav\n../B.wav\n")
+        assertEquals(listOf("B.wav", "C.wav"), art())
+        // Everything is read again after clear(), and with another library index.
         summaries.clear()
-        assertTrue(readsFor { store.list() } > 0)
+        assertEquals(listOf("C.wav", "B.wav"), art())
+        rewriteUnseen(file, "../B.wav\n../C.wav\n")
+        assertEquals(listOf("C.wav", "B.wav"), art())
+        assertEquals(listOf("B.wav", "C.wav"), art(PlaylistStore(temp.root, summaries, library = LibraryIndex.of(tracks))))
     }
 
     /** Round 3 trivial: a like re-read every listed playlist; now only the playlists the app changed are read again. */
@@ -332,17 +327,15 @@ class PlaylistStoreTest {
         val dir = File(temp.root, "Playlists").apply { mkdirs() }
         for (n in 0 until 10) File(dir, "p$n.m3u8").writeText("../p$n.wav\n")
         val summaries = PlaylistSummaries()
-        val read = ArrayList<String>()
-        val store =
-            PlaylistStore(temp.root, summaries) {
-                read += it
-                null
-            }
+        val tracks = (0 until 10).flatMap { listOf(track("p$it.wav"), track("q$it.wav")) }
+        val store = PlaylistStore(temp.root, summaries, library = LibraryIndex.of(tracks))
         store.list()
-        read.clear()
+        for (n in 0 until 10) rewriteUnseen(File(dir, "p$n.m3u8"), "../q$n.wav\n")
         summaries.forget(listOf("p3.m3u8"))
-        assertEquals(10, store.list().size)
-        assertEquals(setOf("p3.wav"), read.toSet())
+        assertEquals(
+            (0 until 10).associate { "p$it" to if (it == 3) "q3.wav" else "p$it.wav" },
+            store.list().associate { it.name to it.artPaths.single() },
+        )
     }
 
     private fun entries(vararg entries: PlaylistEntry): PlaylistEntries {
@@ -377,9 +370,12 @@ class PlaylistStoreTest {
         assertEquals(listOf(a.path, b.path, "Gone/Missing [x].opus", "/outside/Ünïcödé.mp3", a.path), (0 until read.size).map(read::key))
         assertEquals("#EXTINF:60,Artist - A", read.extinf(0))
         assertNull(shown.extinf(0))
-        // Library paths are the index's own strings, not copies.
-        assertSame(tracks.getValue(a.path).path, read.path(0))
-        assertSame(tracks.getValue(a.path).path, read[4].path)
+        // Library entries keep their track's ordinal in the index they were read with.
+        assertEquals(
+            listOf(library.indexOf(a.path), library.indexOf(b.path), -1, -1, library.indexOf(a.path)),
+            (0 until read.size).map(read::track),
+        )
+        assertTrue(read.library === library)
         assertEquals((0 until read.size).map { read[it] }, read.builder().addAll(read).build().toList())
         assertThrows(IndexOutOfBoundsException::class.java) { read.path(5) }
         // Writing it back changes nothing but the labels the library knows.

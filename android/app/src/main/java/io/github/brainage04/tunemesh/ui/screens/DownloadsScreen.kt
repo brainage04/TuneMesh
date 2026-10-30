@@ -31,6 +31,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -68,6 +69,13 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
     var playlist by rememberSaveable { mutableStateOf("") }
     var saveAsPlaylists by rememberSaveable { mutableStateOf<Boolean?>(null) }
     var submitting by remember { mutableStateOf(false) }
+    // The list is read, and polled, only while this screen is shown.
+    DisposableEffect(viewModel.repository) {
+        viewModel.repository.setDownloadsShown(true)
+        onDispose { viewModel.repository.setDownloadsShown(false) }
+    }
+    // Null until the list was first read: then neither "Nothing requested yet" nor stale cards show.
+    val downloads = library.downloads
     LazyColumn(Modifier.fillMaxSize(), contentPadding = contentPadding) {
         item { ScreenTitle("Downloads") }
         item { DownloaderBanner(library.downloader, Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) }
@@ -104,7 +112,7 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text("Requests", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                if (library.downloads.items.any { it.isFinal }) {
+                if (downloads != null && downloads.items.any { it.isFinal }) {
                     TextButton(onClick = { viewModel.repository.clearFinishedDownloads() }) { Text("Clear finished") }
                 }
             }
@@ -112,7 +120,7 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
         library.downloadsError?.let { error ->
             item { Text(error, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
         }
-        if (library.downloads.items.isEmpty()) {
+        if (downloads != null && downloads.items.isEmpty()) {
             item {
                 Text(
                     "Nothing requested yet. Paste YouTube, YouTube Music or Spotify links (one per line), or type what you " +
@@ -122,13 +130,15 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
                 )
             }
         }
-        items(library.downloads.items, key = { it.id }) { item ->
-            DownloadCard(item, onCancel = { viewModel.repository.cancelDownload(item.id) })
+        if (downloads != null) {
+            items(downloads.items, key = { it.id }) { item ->
+                DownloadCard(item, onCancel = { viewModel.repository.cancelDownload(item.id) })
+            }
         }
-        if (library.downloads.older > 0) {
+        if (downloads != null && downloads.older > 0) {
             item {
                 Text(
-                    "and ${library.downloads.older} older ${if (library.downloads.older == 1) "request" else "requests"}",
+                    "and ${downloads.older} older ${if (downloads.older == 1) "request" else "requests"}",
                     color = TextSecondary,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

@@ -46,21 +46,32 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
 - `leaks` (debug build, about a minute, also in CI): opens every page three
   times on a small generated library, with the keyboard focus inside it, and
   checks through weak references that each page's widgets, list models and
-  items are freed once it is left; likewise the queue panel's rows, the
-  now-playing bar and the setup assistant. A failure lists what is still
-  alive by type and page.
-- `stalls` (release build, about 5 minutes plus the build): generates the
-  hostile library of `docs/library-format.md` "Limits" (1.5 GB under
-  `/var/tmp`), walks every page and action three times and prints the longest
-  main-loop stall each caused. It fails when an action exceeds
-  `TUNEMESH_STALL_BUDGET_MS` (100 ms) in more than one round (a single late
-  round is the machine, not the app). The script draws with
-  `GSK_RENDERER=cairo`, so stalls include software rendering; in perf
-  profiles most of the 40-50 ms on the grid pages is cairo drawing.
-  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuses a library made with
-  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`,
-  `TUNEMESH_STALL_ROUNDS=1` shortens the walk and `TUNEMESH_STALL_REPORT=<file>`
-  writes the table to a file.
+  items are freed once the window lets it go (it keeps Home, Settings, the
+  last library grid, the last album, artist or playlist page and the search
+  page for going back, and the check counts those); likewise the queue
+  panel's rows, the now-playing bar and the setup assistant. A failure
+  lists what is still alive by type and page.
+- `stalls` (release build, about an hour plus the build): generates a
+  typical library (5,000 tracks with covers) and the hostile library of
+  `docs/library-format.md` "Limits" (together about 2.4 GB under
+  `/var/tmp`), walks every page and action twenty times on each and prints
+  the median, 90th and 95th percentiles and worst of the longest main-loop
+  stall each caused, with the GTK thread's CPU time in the worst. It fails
+  when an action's 95th percentile (interpolated between ranks) exceeds
+  `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one frame at 60 Hz): a late round
+  now and then is the machine, not the app. Start-up until the first frame
+  (loading the GPU driver, compiling the first shaders) is listed as
+  platform time and not held to the budget. The script draws with
+  `GSK_RENDERER=cairo` on a compositor without a GPU; to measure on one,
+  give the compositor a render node: `WLR_RENDERER=gles2
+  WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 GSK_RENDERER=gl`.
+  `TUNEMESH_TYPICAL_LIBRARY=<dir>` and
+  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuse (or generate once into) a library
+  directory (the hostile one can also be made with
+  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`),
+  `TUNEMESH_STALL_ROUNDS=1` shortens the walks and
+  `TUNEMESH_STALL_REPORT=<file>.md` writes the tables to
+  `<file>-typical.md` and `<file>-hostile.md`.
 
 On a shared machine run them through `heavy` (`--mem 4G` for `leaks`, `--mem
 8G` for `stalls`). To profile a slow action, record with perf enabled only
@@ -68,12 +79,17 @@ around it:
 
 ```sh
 mkfifo /var/tmp/ctl /var/tmp/ack
-CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -g --call-graph dwarf \
+CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -k CLOCK_MONOTONIC -g --call-graph dwarf \
   --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
 TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
 CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
   linux/crates/tunemesh/scripts/gui-checks.sh stalls
 ```
+
+Each round's line in the output ends with its longest gap on
+`CLOCK_MONOTONIC` (`gap <start>,<end>`); `perf report --time <start>,<end>`
+shows what the main loop did in that gap alone, so a slow round can be told
+apart from the usual ones.
 
 The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`

@@ -340,4 +340,42 @@ class DownloadStoreTest {
         assertEquals(Limits.MAX_TIMESTAMP_BYTES, info.heartbeatAt.length)
         assertEquals(Downloader.None, Downloader.of(info, now))
     }
+
+    /** The Downloads poll: a store reads a request's files again only when one of them changed (replaced, rewritten, created or gone). */
+    @Test
+    fun unchangedFilesAreNotReadAgain() {
+        val store = DownloadStore(temp.root)
+        val first = store.submit("first", null, false, "x", Instant.ofEpochMilli(1000))
+        val second = store.submit("second", null, false, "x", Instant.ofEpochMilli(2000))
+        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        fun status(id: String, state: String) =
+            AtomicFiles.write(File(statuses, "$id.json"), """{"version":1,"id":"$id","state":"$state"}""")
+        status(second.id, "queued")
+        val before = store.list().items.associateBy { it.id }
+        val again = store.list().items.associateBy { it.id }
+        assertTrue(before.keys.all { before[it] === again[it] })
+
+        status(second.id, "downloading")
+        val changed = store.list().items.associateBy { it.id }
+        assertEquals("downloading", changed.getValue(second.id).state)
+        assertTrue(changed[first.id] === before[first.id])
+
+        status(first.id, "done")
+        File(requests(), "${first.id}.json").delete()
+        val finished = store.list().items.associateBy { it.id }
+        assertEquals("done", finished.getValue(first.id).state)
+        assertFalse(finished.getValue(first.id).hasRequest)
+        assertTrue(finished[second.id] === changed[second.id])
+
+        // worker.json too.
+        val worker = File(temp.root, ".tunemesh/worker.json")
+        AtomicFiles.write(worker, """{"version":1,"device":"pc","heartbeatAt":"2026-10-06T05:00:00Z"}""")
+        assertEquals("pc", store.worker()?.device)
+        AtomicFiles.write(worker, """{"version":1,"device":"laptop","heartbeatAt":"2026-10-06T05:00:00Z"}""")
+        assertEquals("laptop", store.worker()?.device)
+        worker.delete()
+        assertEquals(null, store.worker())
+    }
+
+    private fun requests() = File(temp.root, ".tunemesh/requests")
 }

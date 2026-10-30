@@ -45,11 +45,19 @@ class M3u8FuzzTest {
         val maxBytes = data.consumeLong(0, 4096)
         val share = data.consumeBoolean()
         val bytes = data.consumeRemainingAsBytes()
-        val builder = PlaylistEntries.Builder(ROOT, keepExtinf = true)
+        // Shared: every path inside the library is a library track, so entries keep ordinals instead of lines.
+        val library =
+            if (!share) null
+            else
+                LibraryIndex.of(
+                    runCatching { M3u8.parse(String(bytes, Charsets.UTF_8), ROOT) }
+                        .getOrDefault(emptyList())
+                        .mapNotNull { it.path }
+                        .map { Track.fromTags(it, RawTags(), 0, 0) }
+                )
+        val builder = PlaylistEntries.Builder(ROOT, keepExtinf = true, library = library)
         try {
-            M3u8.read(ByteArrayInputStream(bytes), ROOT, keepExtinf = true, maxBytes, maxEntries, canonical = { if (share) it else null }) {
-                builder.add(it)
-            }
+            M3u8.read(ByteArrayInputStream(bytes), ROOT, keepExtinf = true, maxBytes, maxEntries, library = library) { builder.add(it) }
         } catch (_: PlaylistTooLargeException) {
             return
         }

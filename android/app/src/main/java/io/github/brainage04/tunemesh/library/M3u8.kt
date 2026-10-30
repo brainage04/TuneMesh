@@ -28,9 +28,9 @@ object M3u8 {
     /**
      * Streams the entries of a playlist file to [onEntry], one line at a time, without holding the file in memory. Lines are read as
      * tunemesh-core's `parse` reads them: a leading BOM goes, LF ends a line, trailing CRs go, blank lines (Unicode White_Space only) and
-     * `#` lines are skipped, and an entry line is resolved exactly as written. [canonical] may return an existing string equal to a
-     * resolved path (the library index's), so entries share it instead of holding a copy. `#EXTINF` lines are kept only with [keepExtinf]:
-     * a writer needs them for entries whose track is missing, a screen does not.
+     * `#` lines are skipped, and an entry line is resolved exactly as written. A resolved path is looked up in [library], so the entries
+     * can keep its track's ordinal instead of the path. `#EXTINF` lines are kept only with [keepExtinf]: a writer needs them for entries
+     * whose track is missing, a screen does not.
      *
      * Throws [PlaylistTooLargeException] past [maxBytes], [maxEntries] or [Limits.MAX_PLAYLIST_LINE_BYTES] (counted in bytes, without the
      * line ending: LF and any CRs before it); nothing is truncated.
@@ -41,7 +41,7 @@ object M3u8 {
         keepExtinf: Boolean,
         maxBytes: Long = Limits.MAX_PLAYLIST_BYTES,
         maxEntries: Int = Limits.MAX_PLAYLIST_ENTRIES,
-        canonical: (String) -> String? = { null },
+        library: LibraryIndex? = null,
         onEntry: (PlaylistEntry) -> Unit,
     ) {
         val buffer = ByteArray(64 * 1024)
@@ -68,8 +68,8 @@ object M3u8 {
             }
             if (++entries > maxEntries) throw PlaylistTooLargeException("more than $maxEntries entries")
             val resolved = resolve(text, root)
-            val shared = resolved?.let(canonical)
-            onEntry(PlaylistEntry.read(shared ?: resolved, text, pendingExtinf, shared = shared != null))
+            val track = if (resolved != null && library != null) library.indexOf(resolved) else LibraryIndex.NONE
+            onEntry(PlaylistEntry.read(resolved, text, pendingExtinf, library, track))
             pendingExtinf = null
         }
 

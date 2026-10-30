@@ -61,15 +61,28 @@ impl Source {
     }
 }
 
+/// The outline drawn into a cover's pixels. With a GPU, covers are square
+/// and CSS rounds them; drawn on the CPU, clipping every cover of a grid to
+/// a rounded rectangle at each redraw took most of a frame, so the corners
+/// are made transparent once, when the cover is decoded.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum Shape {
+    Square,
+    /// Corners of this radius, in pixels.
+    Rounded(u32),
+    Round,
+}
+
+/// What a cached cover is: a source drawn at a size and shape.
+type Key = (Source, u32, Shape);
+
 struct Job {
-    source: Source,
-    size: u32,
+    key: Key,
     root: PathBuf,
 }
 
 struct Done {
-    source: Source,
-    size: u32,
+    key: Key,
     pixels: Vec<u8>,
 }
 
@@ -77,11 +90,51 @@ type Callback = Box<dyn FnOnce(&gdk::Texture)>;
 
 pub struct Covers {
     root: RefCell<PathBuf>,
-    cache: RefCell<HashMap<(Source, u32), (gdk::Texture, u64)>>,
+    cache: RefCell<HashMap<Key, (gdk::Texture, u64)>>,
+    /// Every texture made that may still be on screen, also after the
+    /// cache let go of it: a cover shown again (a page kept, a grid
+    /// scrolled back) gets the same texture instead of a second copy, and
+    /// the GPU renderer keeps its upload.
+    alive: RefCell<HashMap<Key, glib::WeakRef<gdk::Texture>>>,
     cache_bytes: Cell<usize>,
     clock: Cell<u64>,
-    pending: RefCell<HashMap<(Source, u32), Vec<Callback>>>,
+    pending: RefCell<HashMap<Key, Vec<Callback>>>,
     jobs: async_channel::Sender<Job>,
+    /// Drawn on the CPU: covers come with their outline (see `Shape`).
+    software: Cell<bool>,
+    /// The library the cached covers were read from.
+    library: RefCell<Option<std::sync::Arc<Library>>>,
+}
+
+/// Bytes per pixel of a cover drawn in `shape`.
+fn bytes_per_pixel(shape: Shape) -> usize {
+    if shape == Shape::Square { 3 } else { 4 }
+}
+
+/// `rgb` (`size` x `size`) with the corners outside `shape` transparent,
+/// edges smoothed over one pixel.
+fn cut_out(rgb: &[u8], size: u32, shape: Shape) -> Vec<u8> {
+    let n = size as f32;
+    let r = match shape {
+        Shape::Square => return rgb.to_vec(),
+        Shape::Rounded(r) => (r as f32).min(n / 2.0),
+        Shape::Round => n / 2.0,
+    };
+    let mut out = Vec::with_capacity(rgb.len() / 3 * 4);
+    for y in 0..size {
+        for x in 0..size {
+            // Distance outside the rounded square, from the pixel's centre.
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = (r - px).max(px - (n - r)).max(0.0);
+            let dy = (r - py).max(py - (n - r)).max(0.0);
+            let outside = (dx * dx + dy * dy).sqrt() - r;
+            let alpha = (0.5 - outside).clamp(0.0, 1.0);
+            let i = ((y * size + x) * 3) as usize;
+            out.extend_from_slice(&rgb[i..i + 3]);
+            out.push((alpha * 255.0).round() as u8);
+        }
+    }
+    out
 }
 
 fn hash_of(s: &str) -> u64 {
@@ -154,9 +207,14 @@ fn read_cover(root: &Path, source: &Source) -> Option<Vec<u8>> {
 }
 
 fn decode(job: &Job) -> Vec<u8> {
-    let bytes = match &job.source {
-        Source::Placeholder(seed) => return placeholder(seed, job.size),
-        source => read_cover(&job.root, source),
+    let (source, size, shape) = &job.key;
+    cut_out(&decode_rgb(source, *size, &job.root), *size, *shape)
+}
+
+fn decode_rgb(source: &Source, size: u32, root: &Path) -> Vec<u8> {
+    let bytes = match source {
+        Source::Placeholder(seed) => return placeholder(seed, size),
+        source => read_cover(root, source),
     };
     // A synced picture is untrusted input: a decoder panic leaves this
     // cover as a placeholder instead of ending the cover thread.
@@ -167,18 +225,19 @@ fn decode(job: &Job) -> Vec<u8> {
             .flatten()
     });
     let Some(img) = image else {
-        let seed = match &job.source {
+        let seed = match source {
             Source::Embedded(s) | Source::File(s) | Source::Placeholder(s) => s,
         };
-        return placeholder(seed, job.size);
+        return placeholder(seed, size);
     };
     let (w, h) = (img.width(), img.height());
     let side = w.min(h);
     let square = img.crop_imm((w - side) / 2, (h - side) / 2, side, side);
-    square
-        .thumbnail_exact(job.size, job.size)
-        .into_rgb8()
-        .into_raw()
+    square.thumbnail_exact(size, size).into_rgb8().into_raw()
+}
+
+fn key_bytes(key: &Key) -> usize {
+    (key.1 as usize).pow(2) * bytes_per_pixel(key.2)
 }
 
 impl Covers {
@@ -195,8 +254,7 @@ impl Covers {
                         let pixels = decode(&job);
                         if tx
                             .send_blocking(Done {
-                                source: job.source,
-                                size: job.size,
+                                key: job.key,
                                 pixels,
                             })
                             .is_err()
@@ -210,10 +268,13 @@ impl Covers {
         let covers = Rc::new(Self {
             root: RefCell::new(root),
             cache: RefCell::new(HashMap::new()),
+            alive: RefCell::new(HashMap::new()),
             cache_bytes: Cell::new(0),
             clock: Cell::new(0),
             pending: RefCell::new(HashMap::new()),
             jobs: jobs_tx,
+            software: Cell::new(false),
+            library: RefCell::new(None),
         });
         let weak = Rc::downgrade(&covers);
         glib::spawn_future_local(async move {
@@ -227,47 +288,83 @@ impl Covers {
 
     pub fn set_root(&self, root: PathBuf) {
         *self.root.borrow_mut() = root;
+        self.library.borrow_mut().take();
         self.cache.borrow_mut().clear();
+        self.alive.borrow_mut().clear();
         self.cache_bytes.set(0);
     }
 
-    /// Drops cached thumbnails of files that changed on disk.
-    pub fn invalidate(&self) {
-        self.cache
-            .borrow_mut()
-            .retain(|(s, _), _| matches!(s, Source::Placeholder(_)));
-        let bytes = self
-            .cache
-            .borrow()
-            .keys()
-            .map(|(_, size)| (*size as usize).pow(2) * 3)
-            .sum();
+    /// Drops every cached cover (the stall walk's heap accounting).
+    #[cfg(test)]
+    pub fn forget_all(&self) {
+        self.cache.borrow_mut().clear();
+        self.alive.borrow_mut().clear();
+        self.cache_bytes.set(0);
+    }
+
+    /// Covers drawn on the CPU come with their outline (see `Shape`).
+    pub fn set_software(&self, on: bool) {
+        self.software.set(on);
+    }
+
+    /// Drops cached covers of files that changed on disk: a track whose
+    /// file is unchanged since the cover was read keeps it, so a synced
+    /// file arriving does not decode every cover on screen again.
+    pub fn invalidate(&self, lib: &std::sync::Arc<Library>) {
+        let old = self.library.replace(Some(lib.clone()));
+        let unchanged = |path: &str| {
+            let (Some(old), Some(new)) =
+                (old.as_ref().and_then(|o| o.track(path)), lib.track(path))
+            else {
+                return false;
+            };
+            (old.mtime, old.mtime_nsec, &old.cover) == (new.mtime, new.mtime_nsec, &new.cover)
+        };
+        let keep = |(s, _, _): &Key| match s {
+            Source::Placeholder(_) => true,
+            Source::Embedded(p) => unchanged(p),
+            Source::File(_) => false,
+        };
+        self.cache.borrow_mut().retain(|k, _| keep(k));
+        self.alive.borrow_mut().retain(|k, _| keep(k));
+        let bytes = self.cache.borrow().keys().map(key_bytes).sum();
         self.cache_bytes.set(bytes);
     }
 
     fn finish(&self, done: Done) {
-        let size = done.size as usize;
+        let size = done.key.1 as usize;
+        let (format, bpp) = match bytes_per_pixel(done.key.2) {
+            3 => (gdk::MemoryFormat::R8g8b8, 3),
+            _ => (gdk::MemoryFormat::R8g8b8a8, 4),
+        };
         let texture: gdk::Texture = gdk::MemoryTexture::new(
             size as i32,
             size as i32,
-            gdk::MemoryFormat::R8g8b8,
+            format,
             &glib::Bytes::from_owned(done.pixels),
-            size * 3,
+            size * bpp,
         )
         .upcast();
-        let key = (done.source, done.size);
-        self.insert(key.clone(), texture.clone());
-        if let Some(cbs) = self.pending.borrow_mut().remove(&key) {
+        self.insert(done.key.clone(), texture.clone());
+        if let Some(cbs) = self.pending.borrow_mut().remove(&done.key) {
             for cb in cbs {
                 cb(&texture);
             }
         }
     }
 
-    fn insert(&self, key: (Source, u32), texture: gdk::Texture) {
-        let bytes = (key.1 as usize).pow(2) * 3;
+    fn insert(&self, key: Key, texture: gdk::Texture) {
+        let bytes = key_bytes(&key);
         let tick = self.clock.get() + 1;
         self.clock.set(tick);
+        {
+            let mut alive = self.alive.borrow_mut();
+            // Forget textures no longer shown anywhere, now and then.
+            if alive.len() > 4096 {
+                alive.retain(|_, w| w.upgrade().is_some());
+            }
+            alive.insert(key.clone(), texture.downgrade());
+        }
         let mut cache = self.cache.borrow_mut();
         if cache.insert(key, (texture, tick)).is_none() {
             self.cache_bytes.set(self.cache_bytes.get() + bytes);
@@ -279,14 +376,12 @@ impl Covers {
                 .map(|(k, _)| k.clone());
             let Some(k) = oldest else { break };
             cache.remove(&k);
-            self.cache_bytes
-                .set(self.cache_bytes.get() - (k.1 as usize).pow(2) * 3);
+            self.cache_bytes.set(self.cache_bytes.get() - key_bytes(&k));
         }
     }
 
-    /// Calls `cb` with the cover at `size` pixels, immediately when cached.
-    pub fn load(&self, source: Source, size: u32, cb: impl FnOnce(&gdk::Texture) + 'static) {
-        let key = (source, size);
+    /// Calls `cb` with the cover, immediately when cached.
+    fn load(&self, key: Key, cb: impl FnOnce(&gdk::Texture) + 'static) {
         if let Some((tex, used)) = self.cache.borrow_mut().get_mut(&key) {
             let tick = self.clock.get() + 1;
             self.clock.set(tick);
@@ -295,16 +390,28 @@ impl Covers {
             cb(&tex);
             return;
         }
+        let shown = self.alive.borrow().get(&key).and_then(|w| w.upgrade());
+        if let Some(tex) = shown {
+            self.insert(key, tex.clone());
+            cb(&tex);
+            return;
+        }
         let mut pending = self.pending.borrow_mut();
         let first = !pending.contains_key(&key);
         pending.entry(key.clone()).or_default().push(Box::new(cb));
         if first {
             let _ = self.jobs.send_blocking(Job {
-                source: key.0,
-                size,
+                key,
                 root: self.root.borrow().clone(),
             });
         }
+    }
+
+    /// Whether `picture` shows (or waits for) the cover of `source`.
+    pub fn shows(&self, picture: &gtk::Image, source: &Source) -> bool {
+        // SAFETY: only ever stored as a String, in `apply`.
+        unsafe { picture.data::<String>("tm-cover-source") }
+            .is_some_and(|d| *unsafe { d.as_ref() } == format!("{source:?}"))
     }
 
     /// Sets `picture`'s paintable to the cover once loaded (if the image
@@ -314,15 +421,26 @@ impl Covers {
         // SAFETY: the stored value is only ever read back as a String.
         unsafe { picture.set_data("tm-cover-source", tag.clone()) };
         let weak = picture.downgrade();
-        let scaled = size * picture.scale_factor().max(1) as u32;
-        self.load(source, scaled, move |tex| {
+        let scale = picture.scale_factor().max(1) as u32;
+        let scaled = size * scale;
+        let shape = match (self.software.get(), picture.has_css_class("round")) {
+            (false, _) => Shape::Square,
+            (true, true) => Shape::Round,
+            // `.tm-cover`'s border-radius.
+            (true, false) => Shape::Rounded(6 * scale),
+        };
+        self.load((source, scaled, shape), move |tex| {
             if let Some(p) = weak.upgrade() {
                 // SAFETY: see above.
                 let current = unsafe {
                     p.data::<String>("tm-cover-source")
                         .map(|d| d.as_ref().clone())
                 };
-                if current.as_deref() == Some(tag.as_str()) {
+                // Setting the same texture again still clears the image and
+                // redraws it: every row of every list, at each like.
+                if current.as_deref() == Some(tag.as_str())
+                    && p.paintable().as_ref() != Some(tex.upcast_ref())
+                {
                     p.set_paintable(Some(tex));
                 }
             }
@@ -364,6 +482,30 @@ pub fn art_file(root: &Path, track: &Track) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Covers drawn on the CPU have their outline in their pixels.
+    #[test]
+    fn software_covers_have_transparent_corners() {
+        let size = 40;
+        let rgb = vec![200u8; (size * size * 3) as usize];
+        let alpha = |px: &[u8], x: u32, y: u32| px[((y * size + x) * 4 + 3) as usize];
+        assert_eq!(cut_out(&rgb, size, Shape::Square), rgb);
+        for shape in [Shape::Rounded(6), Shape::Round] {
+            let px = cut_out(&rgb, size, shape);
+            assert_eq!(px.len(), (size * size * 4) as usize);
+            for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
+                assert_eq!(alpha(&px, x, y), 0, "{shape:?} corner {x},{y}");
+            }
+            assert_eq!(alpha(&px, size / 2, size / 2), 255);
+            assert!(alpha(&px, size / 2, 0) > 240, "{shape:?} edge middle");
+            assert_eq!(px[0], 200);
+        }
+        // Rounded keeps the sides straight past its radius; round does not.
+        let rounded = cut_out(&rgb, size, Shape::Rounded(6));
+        let round = cut_out(&rgb, size, Shape::Round);
+        assert_eq!(alpha(&rounded, 0, 10), 255);
+        assert_eq!(alpha(&round, 0, 10), 0);
+    }
 
     #[test]
     fn covers_are_never_read_through_a_symlink() {

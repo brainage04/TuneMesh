@@ -2,10 +2,14 @@ package io.github.brainage04.tunemesh.data
 
 import android.media.MediaMetadataRetriever
 import io.github.brainage04.tunemesh.library.AtomicFiles
+import io.github.brainage04.tunemesh.library.DirectoryStamps
+import io.github.brainage04.tunemesh.library.FoundFiles
 import io.github.brainage04.tunemesh.library.LibraryFormat
+import io.github.brainage04.tunemesh.library.LibraryIndex
+import io.github.brainage04.tunemesh.library.LibraryIndexFile
+import io.github.brainage04.tunemesh.library.LibraryScan
 import io.github.brainage04.tunemesh.library.Limits
 import io.github.brainage04.tunemesh.library.RawTags
-import io.github.brainage04.tunemesh.library.Track
 import java.io.File
 import java.io.IOException
 import java.nio.file.FileVisitResult
@@ -13,38 +17,63 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.SimpleFileVisitor
 import java.nio.file.attribute.BasicFileAttributes
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
-@Serializable private data class CachedTrack(val size: Long, val modifiedMs: Long, val tags: RawTags)
-
-@Serializable private data class TagCacheFile(val root: String, val entries: Map<String, CachedTrack>)
-
-class ScanResult(val tracks: List<Track>, val directories: List<File>)
+/** A scan's [index], and the [directories] it walked with their modification times (what the periodic check compares). */
+class ScanResult(val index: LibraryIndex, val directories: DirectoryStamps)
 
 /**
- * Walks the library and reads tags for new or changed files only. Tags are cached in app storage keyed by path, size and modification time.
+ * Walks the library and reads tags for new or changed files only: a file whose path, size and modification time are those of a track of the
+ * index it is given keeps that track. The index of the last scan is saved in app storage ([LibraryIndexFile], in [directory]), so a start
+ * shows it at once; it is the only copy of the tags the app keeps.
  */
-class LibraryScanner(private val cacheFile: File) {
-    private val json = Json { ignoreUnknownKeys = true }
-    private var cacheRoot: String? = null
-    private val cache = HashMap<String, CachedTrack>()
+class LibraryScanner(private val directory: File) {
+    private val cacheFile = File(directory, CACHE_FILE)
 
+    /** What [cacheFile] holds. */
+    private var saved: LibraryIndex? = null
+
+    /**
+     * The index the last scan of [root] saved, or null. With none saved yet, the JSON tag cache of earlier versions is converted once (and
+     * deleted), so an update does not read every file's tags again.
+     */
     @Synchronized
-    fun cachedTracks(root: File): List<Track> {
-        load(root)
-        // Filtered like a scan, so a cache from an older version with laxer rules shows nothing a scan would drop.
-        return cache.filterKeys(LibraryFormat::isAudioPath).map { (path, entry) ->
-            Track.fromTags(path, entry.tags, entry.size, entry.modifiedMs)
-        }
+    fun cached(root: File): LibraryIndex? {
+        val rootPath = root.absolutePath
+        val legacy = File(directory, LEGACY_CACHE_FILE)
+        val index =
+            readSaved(rootPath)
+                ?: legacy
+                    .takeIf { it.isFile }
+                    ?.let { file ->
+                        val migrated =
+                            try {
+                                LibraryScan.fromJsonTagCache(file.readText(), rootPath)
+                            } catch (_: IOException) {
+                                null
+                            }
+                        migrated?.also { save(it, rootPath) }
+                    }
+        legacy.delete()
+        return index
     }
 
+    private fun readSaved(root: String): LibraryIndex? =
+        try {
+            cacheFile.inputStream().use { LibraryIndexFile.read(it, root, cacheFile.length()) }?.also { saved = it }
+        } catch (_: IOException) {
+            null
+        }
+
+    /**
+     * Scans [root]. [previous] is the index shown for it: its tracks whose files did not change are kept without reading their tags, and
+     * when nothing changed the result is [previous] itself. With nothing shown yet (an empty [previous]: a scan that starts before the
+     * saved index is shown), the saved index takes its place, so a start never reads every file's tags again.
+     */
     @Synchronized
-    fun scan(root: File): ScanResult {
-        load(root)
+    fun scan(root: File, previous: LibraryIndex): ScanResult {
         val rootPath = root.toPath()
-        val found = HashMap<String, Pair<Long, Long>>()
-        val directories = mutableListOf<File>()
+        val found = FoundFiles()
+        val directories = DirectoryStamps()
         if (root.isDirectory) {
             // Entries seen so far in each open directory, innermost last (Limits.MAX_FOLDER_ENTRIES).
             val seen = ArrayDeque<IntArray>()
@@ -64,7 +93,7 @@ class LibraryScanner(private val cacheFile: File) {
                         val relative = relativePath.toString()
                         if (relative.isNotEmpty() && LibraryFormat.isExcludedDirectory(relative)) return FileVisitResult.SKIP_SUBTREE
                         if (relative.isNotEmpty() && relativePath.nameCount > Limits.MAX_DEPTH) return FileVisitResult.SKIP_SUBTREE
-                        directories += dir.toFile()
+                        directories.add(dir, attrs.lastModifiedTime().toMillis())
                         seen.addLast(IntArray(1))
                         return FileVisitResult.CONTINUE
                     }
@@ -79,7 +108,7 @@ class LibraryScanner(private val cacheFile: File) {
                         if (attrs.isRegularFile) {
                             val relative = rootPath.relativize(file).toString()
                             if (LibraryFormat.isAudioPath(relative)) {
-                                found[relative] = attrs.size() to attrs.lastModifiedTime().toMillis()
+                                found.add(relative, attrs.size(), attrs.lastModifiedTime().toMillis())
                                 if (found.size >= Limits.MAX_AUDIO_FILES) return FileVisitResult.TERMINATE
                             }
                         }
@@ -92,47 +121,28 @@ class LibraryScanner(private val cacheFile: File) {
             )
         }
 
-        var changed = cache.keys.retainAll(found.keys)
-        val tracks = ArrayList<Track>(found.size)
-        for ((path, stat) in found) {
-            val (size, modified) = stat
-            val cached = cache[path]
-            val entry =
-                if (cached != null && cached.size == size && cached.modifiedMs == modified) {
-                    cached
-                } else {
-                    changed = true
-                    CachedTrack(size, modified, readTags(File(root, path))).also { cache[path] = it }
-                }
-            tracks += Track.fromTags(path, entry.tags, size, modified)
-        }
-        if (changed) save()
-        return ScanResult(tracks, directories)
+        val base = if (previous.size > 0) previous else readSaved(root.absolutePath) ?: previous
+        val index = LibraryScan.index(base, found) { path -> readTags(File(root, path)) }
+        if (index !== saved) save(index, root.absolutePath)
+        return ScanResult(index, directories)
     }
 
-    private fun load(root: File) {
-        val rootPath = root.absolutePath
-        if (cacheRoot == rootPath) return
-        cacheRoot = rootPath
-        cache.clear()
+    private fun save(index: LibraryIndex, root: String) {
         try {
-            val file = json.decodeFromString<TagCacheFile>(cacheFile.readText())
-            if (file.root == rootPath) cache.putAll(file.entries)
-        } catch (_: Exception) {
-            // No cache yet, or an unreadable one: the scan reads every file's tags again.
-        }
-    }
-
-    private fun save() {
-        val root = cacheRoot ?: return
-        try {
-            AtomicFiles.write(cacheFile, json.encodeToString(TagCacheFile(root, cache)))
+            AtomicFiles.write(cacheFile) { LibraryIndexFile.write(index, root, it) }
+            saved = index
         } catch (_: IOException) {
-            // The cache is an optimisation; the next scan rebuilds it.
+            // The cache is an optimisation; the next scan saves it again.
         }
     }
 
     companion object {
+        /** The saved index's file name in the app's files directory. */
+        const val CACHE_FILE = "library-index.bin"
+
+        /** The JSON tag cache of earlier versions. */
+        private const val LEGACY_CACHE_FILE = "tag-cache.json"
+
         fun readTags(file: File): RawTags =
             MediaMetadataRetriever().use { retriever ->
                 try {

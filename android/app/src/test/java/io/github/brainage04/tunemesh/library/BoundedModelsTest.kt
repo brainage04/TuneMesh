@@ -4,9 +4,6 @@ import java.io.File
 import java.lang.reflect.Modifier
 import java.time.Instant
 import java.util.jar.JarFile
-import kotlinx.serialization.descriptors.PrimitiveKind
-import kotlinx.serialization.descriptors.SerialDescriptor
-import kotlinx.serialization.serializer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,9 +75,6 @@ class BoundedModelsTest {
                     "warnings" to Rows(Limits.MAX_STATUS_WARNINGS, text),
                 ),
             DownloadFailure::class.java to mapOf("item" to text, "error" to text),
-            // What DownloadStore.clearFinished reads of a status: compared with the final states, not kept.
-            Class.forName("io.github.brainage04.tunemesh.library.DownloadStore\$Companion\$StatusState") to
-                mapOf("state" to Elsewhere("compared, not kept")),
             WorkerInfo::class.java to
                 mapOf(
                     "version" to Scalar,
@@ -125,14 +119,21 @@ class BoundedModelsTest {
             PlaylistEntries::class.java to
                 mapOf(
                     "root" to Elsewhere("this app's setting"),
-                    "shared" to Elsewhere("the library index's strings, at most 250,000"),
+                    "library" to Elsewhere("the library index, held by the app state anyway"),
+                    "tracks" to Elsewhere("one int per entry, at most 250,000"),
                     "ends" to Elsewhere("one per entry, at most 250,000"),
                     "bytes" to Elsewhere("the lines, within the 32 MiB file"),
                     "extinfs" to Elsewhere("one bounded #EXTINF line per entry (see PlaylistEntry.extinf)"),
                     "size" to Scalar,
                 ),
             PlaylistEntry::class.java to
-                mapOf("path" to path, "line" to path, "extinf" to Bytes(Limits.MAX_LABEL_BYTES + 32), "isShared" to Scalar),
+                mapOf(
+                    "path" to path,
+                    "line" to path,
+                    "extinf" to Bytes(Limits.MAX_LABEL_BYTES + 32),
+                    "library" to Elsewhere("the library index, held by the app state anyway"),
+                    "ordinal" to Scalar,
+                ),
             // Audio tags.
             RawTags::class.java to
                 mapOf(
@@ -144,6 +145,11 @@ class BoundedModelsTest {
                     "discNumber" to Scalar,
                     "durationMs" to Scalar,
                 ),
+            // The JSON tag cache of earlier versions, converted once (LibraryScan.fromJsonTagCache) and deleted.
+            LibraryScan.JsonTagCache::class.java to
+                mapOf("root" to Elsewhere("compared, not kept"), "entries" to Elsewhere("converted into the library index")),
+            LibraryScan.JsonTagCacheEntry::class.java to
+                mapOf("size" to Scalar, "modifiedMs" to Scalar, "tags" to Elsewhere("bounded in Track.fromTags")),
             Track::class.java to
                 mapOf(
                     "path" to Elsewhere("a path within the folder depth limit"),
@@ -183,35 +189,30 @@ class BoundedModelsTest {
                 .map { Class.forName(it.removeSuffix("\$\$serializer.class").replace('/', '.')) }
         val unlisted = serializable.filter { it !in limits }
         assertTrue("serializable models without limits: $unlisted", unlisted.isEmpty())
-        assertTrue(DownloadStatus::class.java in serializable && WorkerInfo::class.java in serializable)
+        assertTrue(DownloadRequest::class.java in serializable && WorkerInfo::class.java in serializable)
     }
 
-    /** A JSON value for [descriptor] with every string past its limit and every list past its length ([Limit]s of [type]). */
-    private fun hostile(descriptor: SerialDescriptor, type: Class<*>): String {
-        val fields = limits.getValue(type)
-        return (0 until descriptor.elementsCount).joinToString(",", "{", "}") { i ->
-            val name = descriptor.getElementName(i)
-            val limit = fields[name] ?: fields.getValue(FIELD_OF.getValue(name))
-            val element = descriptor.getElementDescriptor(i)
-            "\"$name\":" + value(limit, element, type)
+    /** A JSON object of [type] with every string past its limit and every list past its length ([Limit]s of [type]). */
+    private fun hostile(type: Class<*>): String =
+        limits.getValue(type).entries.joinToString(",", "{", "}") { (name, limit) ->
+            "\"${SERIAL_NAMES[name] ?: name}\":" + value(limit, type.getDeclaredField(name).type, type)
         }
-    }
 
-    private fun value(limit: Limit, element: SerialDescriptor, owner: Class<*>): String =
+    private fun value(limit: Limit, type: Class<*>, owner: Class<*>): String =
         when (limit) {
             is Bytes -> "\"" + "a" + "é".repeat(limit.max) + "\""
             is OneOf -> "\"" + limit.values.first() + "\""
             is Count -> List(limit.max + 100) { "\"t\"" }.joinToString(",", "[", "]")
             is Rows -> {
-                val each = element.getElementDescriptor(0)
-                val one = if (limit.each == Nested) hostile(each, NESTED.getValue(owner)) else value(limit.each, each, owner)
+                val one = if (limit.each == Nested) hostile(NESTED.getValue(owner)) else value(limit.each, String::class.java, owner)
                 List(limit.max + 10) { one }.joinToString(",", "[", "]")
             }
             Scalar ->
-                when (element.kind) {
-                    PrimitiveKind.BOOLEAN -> "true"
-                    PrimitiveKind.DOUBLE,
-                    PrimitiveKind.FLOAT -> "0.5"
+                when (type) {
+                    Boolean::class.javaPrimitiveType,
+                    Boolean::class.javaObjectType -> "true"
+                    Double::class.javaPrimitiveType,
+                    Double::class.javaObjectType -> "0.5"
                     else -> "4294967295"
                 }
             is Chars,
@@ -246,14 +247,14 @@ class BoundedModelsTest {
 
     @Test
     fun boundedReadsCutEveryField() {
-        val request = DownloadStore.parseRequest(hostile(serializer<DownloadRequest>().descriptor, DownloadRequest::class.java))!!
+        val request = DownloadStore.parseRequest(hostile(DownloadRequest::class.java))!!
         check(request)
         assertEquals(Limits.MAX_REQUEST_INPUT_BYTES - 1L, Limits.utf8Length(request.input)) // "a" then 2-byte characters
-        val status = DownloadStore.parseStatus(hostile(serializer<DownloadStatus>().descriptor, DownloadStatus::class.java))!!
+        val status = DownloadStore.parseStatus(hostile(DownloadStatus::class.java))!!
         check(status)
         assertEquals(Limits.MAX_STATUS_TRACKS, status.trackCount)
         assertEquals(Limits.MAX_STATUS_FAILURES, status.failures.size)
-        val worker = DownloadStore.parseWorker(hostile(serializer<WorkerInfo>().descriptor, WorkerInfo::class.java))!!
+        val worker = DownloadStore.parseWorker(hostile(WorkerInfo::class.java))!!
         check(worker)
 
         val item = DownloadItem.of("1-a", request, status)
@@ -268,8 +269,8 @@ class BoundedModelsTest {
     }
 
     companion object {
-        /** Serial names that differ from the property name. */
-        private val FIELD_OF = mapOf("tracks" to "trackCount")
+        /** File field names that differ from the property name. */
+        private val SERIAL_NAMES = mapOf("trackCount" to "tracks")
 
         /** The element class of a list of objects, by its owner. */
         private val NESTED = mapOf<Class<*>, Class<*>>(DownloadStatus::class.java to DownloadFailure::class.java)

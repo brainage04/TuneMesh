@@ -132,7 +132,11 @@ class CoverLoader(private val directory: File) {
         return sample
     }
 
-    private fun memoryKey(track: Track, sizePx: Int) = "${diskKey(track)}@$sizePx"
+    /**
+     * The memory cache's key: [cached] runs on the main thread for every cover a screen composes, so it is made without hashing (the disk
+     * cache's file name, [diskKey], is worked out when a cover is loaded, off the main thread).
+     */
+    private fun memoryKey(track: Track, sizePx: Int) = "${track.path}\u0000${track.size}\u0000${track.modifiedMs}@$sizePx"
 
     private fun diskKey(track: Track): String {
         val digest =

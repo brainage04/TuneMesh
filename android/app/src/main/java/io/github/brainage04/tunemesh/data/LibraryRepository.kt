@@ -3,6 +3,7 @@ package io.github.brainage04.tunemesh.data
 import android.os.Environment
 import android.os.FileObserver
 import android.util.Log
+import io.github.brainage04.tunemesh.library.DirectoryStamps
 import io.github.brainage04.tunemesh.library.DownloadList
 import io.github.brainage04.tunemesh.library.DownloadStore
 import io.github.brainage04.tunemesh.library.Downloader
@@ -21,6 +22,7 @@ import io.github.brainage04.tunemesh.library.Track
 import java.io.File
 import java.io.IOException
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -47,7 +49,8 @@ data class LibraryState(
     val liked: Set<String> = emptySet(),
     /** Entries of the playlist screen that is open (see [LibraryRepository.openPlaylist]); only that one is held. */
     val openPlaylist: PlaylistContents? = null,
-    val downloads: DownloadList = DownloadList.EMPTY,
+    /** Read while the Downloads screen is shown ([LibraryRepository.setDownloadsShown]); null until it first was. */
+    val downloads: DownloadList? = null,
     /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
     /** Why the last downloads refresh failed, shown on the Downloads tab; null after one that worked. */
@@ -79,6 +82,8 @@ class LibraryRepository(
     private var observedDirectories: Set<File> = emptySet()
     private var foregroundJob: Job? = null
     @Volatile private var foreground = false
+    /** How many Downloads screens are shown; the downloads list is read and polled only while one is. */
+    private val downloadsShown = AtomicInteger()
     private var pendingRefresh: Job? = null
     private val refreshGate = RefreshGate(scanMutex)
     private val openSlot = OpenPlaylistSlot()
@@ -107,15 +112,24 @@ class LibraryRepository(
                     return it
                 }
             val index = state.index
-            return PlaylistStore(state.root, summaries, PlaylistBases(File(playlistBases, libraryKey(state.root)))) { index.byPath[it] }
-                .also {
-                    store = it
-                    storeFor = key
-                }
+            return PlaylistStore(state.root, summaries, PlaylistBases(File(playlistBases, libraryKey(state.root))), index).also {
+                store = it
+                storeFor = key
+            }
         }
 
-    private val downloadStore
-        get() = DownloadStore(root)
+    /** The library folder the last full scan walked, and its folders' stamps then; null until one worked. */
+    @Volatile private var scanned: Pair<File, DirectoryStamps>? = null
+
+    private var downloadStoreFor: DownloadStore? = null
+
+    /** One store per root, so it can keep what it read of unchanged request and status files. */
+    private val downloadStore: DownloadStore
+        @Synchronized
+        get() {
+            val root = root
+            return downloadStoreFor?.takeIf { it.root == root } ?: DownloadStore(root).also { downloadStoreFor = it }
+        }
 
     fun hasAccess(): Boolean = Environment.isExternalStorageManager()
 
@@ -126,7 +140,7 @@ class LibraryRepository(
     fun track(path: String): Track? {
         val root = root
         val resolved = LibraryUris.resolvePath(path, root) ?: return null
-        _state.value.index.byPath[resolved]?.let {
+        _state.value.index.track(resolved)?.let {
             return it
         }
         val file = File(root, resolved)
@@ -137,15 +151,17 @@ class LibraryRepository(
     /** Shows cached tags immediately, then rescans. */
     fun start() {
         scope.launch {
-            val cached = scanner.cachedTracks(root)
-            if (cached.isNotEmpty() && !_state.value.loaded) {
-                _state.update { it.copy(index = LibraryIndex(cached), loaded = true) }
+            // The folder this start is for: the property reads the state's, which a later folder change replaces.
+            val root = root
+            val cached = scanner.cached(root)
+            if (cached != null && cached.size > 0 && !_state.value.loaded) {
+                _state.update { state -> if (state.root == root) state.copy(index = cached, loaded = true) else state }
             }
             refresh()
         }
     }
 
-    /** Called while an activity is visible: observes the tree and polls as a safety net. */
+    /** Called while an activity is visible: observes the tree and polls as a safety net (the downloads only while they are shown). */
     fun setForeground(foreground: Boolean) {
         foregroundJob?.cancel()
         this.foreground = foreground
@@ -159,9 +175,32 @@ class LibraryRepository(
             while (isActive) {
                 delay(DOWNLOAD_POLL_MS)
                 ticks++
-                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) refresh() else refreshDownloads()
+                if (ticks % (LIBRARY_POLL_MS / DOWNLOAD_POLL_MS) == 0L) checkLibrary() else if (downloadsShown.get() > 0) refreshDownloads()
             }
         }
+    }
+
+    /**
+     * Called while the Downloads screen is shown ([shown] true) and when it goes away. Its list is read when it appears and polled while it
+     * is shown; other screens only need `worker.json`, read on every refresh.
+     */
+    fun setDownloadsShown(shown: Boolean) {
+        if (shown) {
+            downloadsShown.incrementAndGet()
+            scope.launch { refreshDownloads() }
+        } else {
+            downloadsShown.decrementAndGet()
+        }
+    }
+
+    /**
+     * The periodic safety net: a full rescan only when a folder of the library changed since the last one ([DirectoryStamps]: one `stat`
+     * per folder, nothing allocated), else just `worker.json` and the shown downloads. Walking 100,000 unchanged files allocated 60-160 MB
+     * a minute.
+     */
+    private suspend fun checkLibrary() {
+        val last = scanned
+        if (last == null || last.first != root || last.second.changed()) refresh() else refreshDownloads()
     }
 
     fun refreshAsync() {
@@ -179,20 +218,28 @@ class LibraryRepository(
     private fun refreshLocked() {
         val access = hasAccess()
         val root = settings.libraryRoot
-        if (!access) {
-            _state.update { it.copy(root = root, hasAccess = false) }
-            return
-        }
-        _state.update { it.copy(root = root, hasAccess = true, scanning = true) }
+        // An unchanged library keeps its index (the scan returns the one it was given): a new one would make every screen showing it
+        // recompose (and an open playlist look its entries up again) after each periodic rescan.
+        var previous = LibraryIndex.EMPTY
+        // The state is that of another folder when the library folder changed after [root] was read: that change starts a refresh of its
+        // own, so this one does nothing.
+        val current =
+            updateIfRoot(root) {
+                previous = it.index
+                if (access) it.copy(hasAccess = true, scanning = true) else it.copy(hasAccess = false)
+            }
+        if (!current || !access) return
         try {
             ensureRoot(root)
-            val result = scanner.scan(root)
-            // An unchanged library keeps its index: a new one would make every screen showing it recompose (and an open
-            // playlist look its entries up again) after each periodic rescan.
-            val current = _state.value.index
-            val index = if (result.tracks == current.tracks) current else LibraryIndex(result.tracks)
-            _state.update { it.copy(index = index, loaded = true, error = null) }
-            reloadPlaylists()
+            val result = scanner.scan(root, previous)
+            // The library folder changed during the scan: the old folder's tracks are not shown under the new one (the change starts a
+            // scan of its own, which also must not take them as its previous index).
+            if (!updateIfRoot(root) { it.copy(index = result.index, loaded = true, error = null) }) return
+            // Playlists/ is not walked; its stamp is taken before the playlists are read, so a change while they are read is seen.
+            val playlistsDirectory = File(root, LibraryFormat.PLAYLISTS_DIR).toPath()
+            result.directories.add(playlistsDirectory, DirectoryStamps.modifiedMs(playlistsDirectory))
+            // A new index: playlist entries hold track ordinals of the index they were read with, so the open one is read again.
+            reloadPlaylists(changed = if (result.index === previous) emptySet() else null)
             // Conflict copies are merged with the playlist changes, one at a time; listing their names costs nothing.
             if (playlistStore.hasConflictCopies()) {
                 mutate {
@@ -204,12 +251,24 @@ class LibraryRepository(
                 }
             }
             reloadDownloads()
-            observe(result.directories)
+            observe(result.directories.files)
+            scanned = root to result.directories
         } catch (error: IOException) {
-            _state.update { it.copy(loaded = true, error = error.message ?: "Cannot read $root") }
+            scanned = null
+            updateIfRoot(root) { it.copy(loaded = true, error = error.message ?: "Cannot read $root") }
         } finally {
-            _state.update { it.copy(scanning = false) }
+            updateIfRoot(root) { it.copy(scanning = false) }
         }
+    }
+
+    /** Applies [change] while the state is still that of library [root]; false when the library folder changed meanwhile. */
+    private fun updateIfRoot(root: File, change: (LibraryState) -> LibraryState): Boolean {
+        var applied = false
+        _state.update { state ->
+            applied = state.root == root
+            if (applied) change(state) else state
+        }
+        return applied
     }
 
     private fun ensureRoot(root: File) {
@@ -296,16 +355,23 @@ class LibraryRepository(
     }
 
     /**
-     * Reads the Downloads list and `worker.json`. A failure is shown on the Downloads tab instead of ending the app; running out of memory
-     * also drops the list held so far (the reads are bounded, so that takes a much smaller heap than the limits plan for).
+     * Reads `worker.json`, and the Downloads list while the Downloads screen is shown ([setDownloadsShown]). A failure is shown on the
+     * Downloads tab instead of ending the app; running out of memory also drops the list held so far (the reads are bounded, so that takes
+     * a much smaller heap than the limits plan for).
      */
     @Suppress("TooGenericExceptionCaught") // anything a synced file makes the reader throw is reported, never fatal
     private fun reloadDownloads() {
         try {
             val store = downloadStore
-            val downloads = store.list()
+            val downloads = if (downloadsShown.get() > 0) store.list() else null
             val downloader = Downloader.of(store.worker())
-            _state.update { it.copy(downloads = downloads, downloader = downloader, downloadsError = null) }
+            _state.update {
+                it.copy(
+                    downloads = downloads ?: it.downloads,
+                    downloader = downloader,
+                    downloadsError = it.downloadsError.takeIf { downloads == null },
+                )
+            }
         } catch (error: RuntimeException) {
             Log.w(TAG, "Cannot read the downloads", error)
             _state.update { it.copy(downloadsError = "Cannot read the downloads: ${error.message ?: error.javaClass.simpleName}") }
@@ -364,7 +430,8 @@ class LibraryRepository(
     }
 
     fun setLibraryRoot(path: String) {
-        val file = File(path.trim())
+        // Absolute, as the settings keep it: a refresh applies its scan only while the state's root is the one it read from the settings.
+        val file = File(path.trim()).absoluteFile
         settings.libraryRoot = file
         _state.update { LibraryState(file, hasAccess()) }
         stopObserving()

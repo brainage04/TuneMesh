@@ -18,8 +18,9 @@ import org.junit.runner.RunWith
 
 /**
  * The hostile-library flows on the minified benchmark build (`benchmarkRelease`): start, search, the 40,000-track album, a 250,000-entry
- * playlist, the Downloads tab and scrolling Your Library. Each reports [MainThreadStallMetric] (budget: no main-thread stall or frame over
- * 100 ms) and the frame timings; every iteration leaves a Perfetto trace in the test output. Run on the emulator only:
+ * playlist, the Downloads tab and scrolling Your Library. Each reports [MainThreadStallMetric] (budget: no main-thread stall or frame
+ * longer than one 60 Hz frame, 16.6 ms) and the frame timings; every iteration leaves a Perfetto trace in the test output. Run on the
+ * emulator only:
  * ```sh
  * ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :baselineprofile:connectedBenchmarkReleaseAndroidTest
  * ```

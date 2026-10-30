@@ -81,30 +81,29 @@ listview.tm-sidebar-list > row:focus { padding: 0 0 2px 0; background: transpare
 .dim, .tm-dim { color: #b3b3b3; }
 .tm-small { font-size: 12px; }
 
-/* Cover tiles */
+/* Cover tiles. The page's tile host marks the tile under the pointer
+   (`tm-hovered`) and moves its one play button onto that cover. */
 .tm-tile {
   background: transparent;
   border-radius: 8px;
   padding: 12px;
   transition: background 120ms ease;
 }
-.tm-tile:hover { background: #1f1f1f; }
+.tm-tile.tm-hovered { background: #1f1f1f; }
 .tm-tile .title { font-weight: 700; color: #ffffff; }
 .tm-tile .subtitle { color: #b3b3b3; font-size: 13px; }
 .tm-cover { border-radius: 6px; background: #282828; }
 .tm-cover.round { border-radius: 999px; }
 .tm-cover-shadow { box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); }
 /* Drawn on the CPU, every blurred shadow is blurred again at each redraw:
-   the covers of a grid took most of a frame. */
+   the covers of a grid took most of a frame. Covers come with their
+   rounded corners drawn in (covers.rs, `Shape`), so they are not clipped
+   at each redraw either, and no CSS transition runs. */
 .tm-software .tm-cover-shadow,
 .tm-software button.tm-play-big,
 .tm-software button.tm-play-small { box-shadow: none; }
-.tm-tile-play {
-  opacity: 0;
-  transition: opacity 150ms ease, margin 150ms ease;
-  margin: 0 8px 0 0;
-}
-.tm-tile:hover .tm-tile-play { opacity: 1; margin: 0 8px 8px 0; }
+.tm-software image.tm-cover { border-radius: 0; background: none; }
+.tm-software * { transition: none; }
 
 gridview.tm-grid, flowbox.tm-grid { background: transparent; }
 gridview.tm-grid > child { padding: 0; background: transparent; }
@@ -145,7 +144,15 @@ button.tm-icon-btn {
 button.tm-icon-btn:hover { color: #ffffff; background: none; }
 button.tm-icon-btn.on { color: #1ed760; }
 button.tm-icon-btn.big image { -gtk-icon-size: 24px; }
-button.tm-heart.liked { color: #1ed760; }
+/* A row's heart and the queue's ×: images, clicked through the list. */
+image.tm-heart, image.tm-remove {
+  color: #b3b3b3;
+  min-width: 32px;
+  min-height: 32px;
+  padding: 4px;
+}
+image.tm-heart:hover, image.tm-remove:hover { color: #ffffff; }
+.tm-heart.liked { color: #1ed760; }
 button.tm-pill {
   border-radius: 999px;
   padding: 6px 18px;
