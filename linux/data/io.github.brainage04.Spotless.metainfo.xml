@@ -83,7 +83,9 @@
   <content_rating type="oars-1.1"/>
 
   <releases>
-    <release version="0.1.0" date="2026-10-19">
+    <!-- The date must be the day v0.1.0 is tagged; set it at tagging
+         (release plan step 1). 2026-10-30 is the placeholder. -->
+    <release version="0.1.0" date="2026-10-30">
       <description>
         <p>First public release.</p>
       </description>

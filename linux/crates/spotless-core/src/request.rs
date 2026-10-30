@@ -1011,7 +1011,7 @@ mod tests {
     /// R3-Opus-2 / R3Deepseek-1 / R3Deepseek-2: the worker's sweep marks
     /// orphaned unfinished statuses cancelled and deletes orphaned final
     /// ones past the newest 200 status ids (its memory is measured in
-    /// `tests/memory.rs`).
+    /// `memory_tests.rs`).
     #[test]
     #[cfg_attr(miri, ignore = "file system")]
     fn sweep_cancels_and_prunes_orphans() {
