@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds TuneMesh-<version>-<arch>.AppImage (plus its .zsync update file) on
+# Builds Spotless-<version>-<arch>.AppImage (plus its .zsync update file) on
 # Ubuntu 24.04, the oldest supported base, bundling GTK 4, libadwaita, libmpv,
 # ffmpeg and ffprobe:
 #
@@ -10,7 +10,7 @@
 # sound libraries (Mesa/libGL/EGL, X11/xcb, Wayland, fontconfig, freetype,
 # HarfBuzz, FriBidi, ALSA, PipeWire, shared-mime-info), which any desktop
 # installation has.
-# JACK is bundled, since desktops often lack it. TUNEMESH_VERSION overrides
+# JACK is bundled, since desktops often lack it. SPOTLESS_VERSION overrides
 # the version.
 set -euo pipefail
 # shellcheck source=packaging/linux/common.sh
@@ -33,7 +33,7 @@ if $deps; then
 fi
 
 ensure_rust
-version=${TUNEMESH_VERSION:-$(tunemesh_version)}
+version=${SPOTLESS_VERSION:-$(spotless_version)}
 arch=$(uname -m)
 build_binaries
 
@@ -92,12 +92,12 @@ export DEPLOY_GTK_VERSION=4
 cd "$out"
 # Deploy first, then add the licence notices, then package.
 linuxdeploy --appdir "$appdir" --plugin gtk \
-    --executable "$appdir/usr/bin/tunemesh" \
-    --executable "$appdir/usr/bin/tunemesh-worker" \
+    --executable "$appdir/usr/bin/spotless" \
+    --executable "$appdir/usr/bin/spotless-worker" \
     --executable "$appdir/usr/bin/ffmpeg" \
     --executable "$appdir/usr/bin/ffprobe" \
-    --desktop-file "$appdir/usr/share/applications/io.github.brainage04.TuneMesh.desktop" \
-    --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg" \
+    --desktop-file "$appdir/usr/share/applications/io.github.brainage04.Spotless.desktop" \
+    --icon-file "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.Spotless.svg" \
     --custom-apprun "$repo/packaging/appimage/AppRun" \
     --library "$(/sbin/ldconfig -p | awk '/libjack\.so\.0 / { print $NF; exit }')"
 
@@ -115,7 +115,7 @@ grep -q 'apprun-hooks/"linuxdeploy-plugin-gtk.sh"' "$appdir/AppRun"
 # comes from (linuxdeploy copies most of their copyright files already).
 packages=$(
     find "$appdir/usr/bin" "$appdir/usr/lib" "$appdir/usr/share/glib-2.0" -type f \
-        ! -name 'tunemesh*' ! -name '*.cache' ! -name '*.compiled' -printf '%f\n' |
+        ! -name 'spotless*' ! -name '*.cache' ! -name '*.compiled' -printf '%f\n' |
         sort -u | while IFS= read -r name; do
             # "pkg[:arch][, pkg2[:arch]]: /path", keeping only the system
             # locations linuxdeploy copies from: the runner has unrelated
@@ -127,7 +127,7 @@ packages=$(
 )
 # shellcheck disable=SC2086 # one package name per word
 packages=$(printf '%s\n' $packages | sort -u)
-licences=$appdir/usr/share/licenses/tunemesh
+licences=$appdir/usr/share/licenses/spotless
 sources=$licences/THIRD-PARTY-SOURCES.md
 {
     "$repo/packaging/licenses/sources-header.sh" "AppImage ($arch)" "$version"
@@ -168,7 +168,7 @@ install -Dm644 "$appdir/sources.tmp" "$sources"
 rm "$appdir/sources.tmp"
 cp "$sources" "$out/THIRD-PARTY-SOURCES-AppImage-$arch.md"
 
-export LDAI_OUTPUT="$out/TuneMesh-$version-$arch.AppImage"
-export LDAI_UPDATE_INFORMATION="gh-releases-zsync|brainage04|TuneMesh|latest|TuneMesh-*-$arch.AppImage.zsync"
+export LDAI_OUTPUT="$out/Spotless-$version-$arch.AppImage"
+export LDAI_UPDATE_INFORMATION="gh-releases-zsync|brainage04|TuneMesh|latest|Spotless-*-$arch.AppImage.zsync"
 linuxdeploy --appdir "$appdir" --output appimage
 ls -l "$out"

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Checks that an installed or unpacked package carries its licence notices:
-# TuneMesh's licence, the Rust crate licences and, for formats that bundle
+# Spotless's licence, the Rust crate licences and, for formats that bundle
 # third-party software, those components' licences and THIRD-PARTY-SOURCES.md.
 #
 #   check-licences.sh <format> <root>
@@ -44,16 +44,16 @@ all_debian_copyrights() {
 
 case $format in
     deb)
-        need usr/share/doc/tunemesh/copyright
-        contains usr/share/doc/tunemesh/copyright '^MIT License'
-        rust=usr/share/doc/tunemesh/copyright
+        need usr/share/doc/spotless/copyright
+        contains usr/share/doc/spotless/copyright '^MIT License'
+        rust=usr/share/doc/spotless/copyright
         ;;
     rpm | arch)
-        need usr/share/licenses/tunemesh/LICENSE usr/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
-        rust=usr/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
+        need usr/share/licenses/spotless/LICENSE usr/share/licenses/spotless/THIRD-PARTY-RUST.txt
+        rust=usr/share/licenses/spotless/THIRD-PARTY-RUST.txt
         ;;
     appimage | snap)
-        lic=usr/share/licenses/tunemesh
+        lic=usr/share/licenses/spotless
         need $lic/LICENSE $lic/THIRD-PARTY-RUST.txt $lic/THIRD-PARTY-SOURCES.md \
             usr/share/doc/libmpv2/copyright usr/share/doc/ffmpeg/copyright
         if [ "$format" = appimage ]; then
@@ -72,15 +72,15 @@ case $format in
     flatpak)
         # flatpak-builder records each module's licence files in
         # share/licenses/<app id>/<module>/.
-        lic=share/licenses/io.github.brainage04.TuneMesh
-        need $lic/THIRD-PARTY-SOURCES.md $lic/tunemesh/LICENSE $lic/tunemesh/THIRD-PARTY-RUST.txt \
+        lic=share/licenses/io.github.brainage04.Spotless
+        need $lic/THIRD-PARTY-SOURCES.md $lic/spotless/LICENSE $lic/spotless/THIRD-PARTY-RUST.txt \
             $lic/libass/COPYING $lic/libplacebo/LICENSE \
             $lic/mpv/LICENSE.GPL $lic/mpv/LICENSE.LGPL $lic/mpv/Copyright \
             $lic/ffmpeg-cli/LICENSE.md $lic/ffmpeg-cli/COPYING.LGPLv2.1
         for module in libass libplacebo mpv ffmpeg-cli; do
             contains $lic/THIRD-PARTY-SOURCES.md "^### $module\$"
         done
-        rust=$lic/tunemesh/THIRD-PARTY-RUST.txt
+        rust=$lic/spotless/THIRD-PARTY-RUST.txt
         ;;
     *)
         echo "check-licences: unknown format $format" >&2

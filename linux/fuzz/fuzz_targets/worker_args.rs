@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_worker::config::{Parsed, parse_args, parse_size};
+use spotless_worker::config::{Parsed, parse_args, parse_size};
 
 fuzz_target!(|s: &str| {
     let args: Vec<String> = s.split('\n').map(str::to_owned).collect();

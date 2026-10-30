@@ -7,7 +7,7 @@ use std::path::Path;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::playlist::{Playlist, parse};
+use spotless_core::playlist::{Playlist, parse};
 
 #[derive(Arbitrary, Debug)]
 enum Op {

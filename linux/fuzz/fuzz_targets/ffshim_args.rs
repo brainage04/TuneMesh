@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tunemesh_worker::ffshim::{FORMATS, rewrite};
+use spotless_worker::ffshim::{FORMATS, rewrite};
 
 /// Options with whether they take a value: the shim's list
 /// (`ffshim::OPTIONS`), the confinement options, and a few it refuses.
@@ -82,7 +82,7 @@ fn find(arg: &[u8]) -> Option<(&'static str, bool)> {
 
 /// The job directory: a file, a subdirectory and a symlink out of it.
 static ROOT: LazyLock<PathBuf> = LazyLock::new(|| {
-    let dir = std::env::temp_dir().join(format!("tunemesh-fuzz-ffshim-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("spotless-fuzz-ffshim-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("d")).unwrap();
     std::fs::write(dir.join("a.m4a"), b"").unwrap();

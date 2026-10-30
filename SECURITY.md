@@ -10,9 +10,9 @@ Only the latest release is supported.
 
 ## Threat model
 
-TuneMesh devices share one Syncthing folder and nothing else. Every device that
+Spotless devices share one Syncthing folder and nothing else. Every device that
 can write to that folder can already add, change or delete any song or
-playlist, so TuneMesh does not try to protect the library from them. It does
+playlist, so Spotless does not try to protect the library from them. It does
 try to stop such a device from reaching anything outside the library:
 
 - **Files outside the library.** Symlinks below the library root are never
@@ -20,7 +20,7 @@ try to stop such a device from reaching anything outside the library:
   into are opened relative to the root with `O_NOFOLLOW`; symlinked audio
   files and directories are not part of the library.
 - **The downloader's network.** Download requests are URLs or search text
-  written by any device. `tunemesh-worker` sends all of yt-dlp's traffic, and
+  written by any device. `spotless-worker` sends all of yt-dlp's traffic, and
   its own, through a proxy inside the worker that refuses loopback, private,
   link-local, CGNAT/Tailscale, unique-local and other not globally reachable
   addresses (IPv6 forms of IPv4 addresses such as NAT64 and 6to4 count as
@@ -35,7 +35,7 @@ try to stop such a device from reaching anything outside the library:
   (behind another router or a VPN).
 - **Resource use.** Requests are limited in items, file size, duration, run
   time, number of pending requests and free disk space (see
-  `tunemesh-worker --help`). Every synced file has a size limit, and readers
+  `spotless-worker --help`). Every synced file has a size limit, and readers
   keep only a bounded, cut copy of each field and list
   (`docs/library-format.md`, "Limits"), so what an app or the worker holds
   in memory does not grow with what a sharing device writes: the worker's

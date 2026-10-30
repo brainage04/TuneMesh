@@ -5,10 +5,10 @@
 use std::path::Path;
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::limits::{
+use spotless_core::limits::{
     MAX_LABEL_BYTES, MAX_PLAYLIST_BYTES, MAX_PLAYLIST_ENTRIES, MAX_PLAYLIST_LINE_BYTES,
 };
-use tunemesh_core::playlist::{parse, parse_bytes, serialize};
+use spotless_core::playlist::{parse, parse_bytes, serialize};
 
 fn has_line_break(s: &str) -> bool {
     s.contains(['\n', '\r'])

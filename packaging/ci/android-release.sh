@@ -5,12 +5,12 @@
 #
 #   VERSION=<v> packaging/ci/android-release.sh build
 #       Builds the unsigned release APK (no signing secrets needed or read)
-#       into dist/TuneMesh-<v>-unsigned.apk, with dist/TuneMesh-<v>-android-NOTICE.txt.
+#       into dist/Spotless-<v>-unsigned.apk, with dist/Spotless-<v>-android-NOTICE.txt.
 #
 #   VERSION=<v> ANDROID_KEYSTORE_B64=... ANDROID_STORE_PASSWORD=... \
 #   ANDROID_KEY_ALIAS=... ANDROID_KEY_PASSWORD=... [ANDROID_LINEAGE_B64=...] \
 #       packaging/ci/android-release.sh sign
-#       Signs that APK with apksigner into dist/TuneMesh-<v>.apk and removes
+#       Signs that APK with apksigner into dist/Spotless-<v>.apk and removes
 #       the unsigned one. Fails when a required secret is missing. apksigner
 #       comes from Android build-tools downloaded from Google and checked
 #       against the SHA-256 pinned below (APKSIGNER=<path> uses another one,
@@ -23,14 +23,14 @@ set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 dist=$repo/dist
 [ "${1:-}" = build-tools ] || : "${VERSION:?VERSION is not set}"
-unsigned=$dist/TuneMesh-$VERSION-unsigned.apk
+unsigned=$dist/Spotless-$VERSION-unsigned.apk
 
 build() {
     (cd "$repo/android" && ./gradlew --no-daemon :app:assembleRelease)
     mkdir -p "$dist"
     cp "$repo/android/app/build/outputs/apk/release/app-release-unsigned.apk" "$unsigned"
     # Licence notices of the libraries in the APK (also its assets/NOTICE.txt).
-    cp "$repo/android/app/build/generated/notice/NOTICE.txt" "$dist/TuneMesh-$VERSION-android-NOTICE.txt"
+    cp "$repo/android/app/build/generated/notice/NOTICE.txt" "$dist/Spotless-$VERSION-android-NOTICE.txt"
     unzip -l "$unsigned" | grep -q ' assets/NOTICE.txt$'
     check_version "$unsigned"
 }
@@ -84,7 +84,7 @@ sign() {
     fi
     [ -f "$unsigned" ] || { echo "android-release: $unsigned is missing; run build first" >&2; exit 1; }
 
-    keys=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/tunemesh-signing.XXXXXX")
+    keys=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/spotless-signing.XXXXXX")
     trap 'rm -rf "$keys"' EXIT
     apksigner=${APKSIGNER:-}
     if [ -z "$apksigner" ]; then
@@ -98,7 +98,7 @@ sign() {
             printf '%s' "$ANDROID_LINEAGE_B64" | base64 -d >"$keys/lineage"
         fi
     )
-    signed=$dist/TuneMesh-$VERSION.apk
+    signed=$dist/Spotless-$VERSION.apk
     set -- --ks "$keys/release.jks" --ks-key-alias "$ANDROID_KEY_ALIAS" \
         --ks-pass env:ANDROID_STORE_PASSWORD --key-pass env:ANDROID_KEY_PASSWORD \
         --v1-signing-enabled false --v4-signing-enabled false

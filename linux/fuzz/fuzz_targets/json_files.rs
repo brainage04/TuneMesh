@@ -6,13 +6,13 @@
 use std::time::{Duration, UNIX_EPOCH};
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::limits::{
+use spotless_core::limits::{
     MAX_DEVICE_BYTES, MAX_FAILURES, MAX_INPUT_BYTES, MAX_JSON_BYTES, MAX_LISTED_WARNINGS,
     MAX_MESSAGE_BYTES, MAX_REQUEST_PLAYLIST_BYTES, MAX_STATUS_TRACKS, MAX_TEXT_BYTES,
     MAX_TIMESTAMP_BYTES, MAX_TRACK_PATH_BYTES, MAX_WARNINGS, MAX_WORKER_ID_BYTES,
 };
-use tunemesh_core::request::{Status, parse_request, parse_status, parse_status_row};
-use tunemesh_core::worker;
+use spotless_core::request::{Status, parse_request, parse_status, parse_status_row};
+use spotless_core::worker;
 
 const ID: &str = "1791265297123-3f9c2a1b";
 

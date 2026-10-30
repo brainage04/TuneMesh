@@ -4,8 +4,8 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_worker::spotify::{Kind, next_data, parse_embed};
-use tunemesh_worker::ytdlp::{parse_listing, parse_progress};
+use spotless_worker::spotify::{Kind, next_data, parse_embed};
+use spotless_worker::ytdlp::{parse_listing, parse_progress};
 
 const ID: &str = "4uLU6hMCjMI75M1A2tKUQC";
 

@@ -3,12 +3,12 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::library::{has_line_break, source_id_from_file_name, title_from_file_name};
-use tunemesh_core::limits::{
+use spotless_core::library::{has_line_break, source_id_from_file_name, title_from_file_name};
+use spotless_core::limits::{
     MAX_COVER_SIDE, MAX_LINE_CHARS, MAX_TEXT_CHARS, MAX_TEXT_LINES, clip_line, clip_text, cover_ok,
     cut, cut_in_place, image_size,
 };
-use tunemesh_core::search::{Query, fold};
+use spotless_core::search::{Query, fold};
 
 fuzz_target!(|data: &[u8]| {
     if let Some((w, h)) = image_size(data) {

@@ -5,7 +5,7 @@
 #   podman run --rm -v "$PWD:/src" -w /src fedora:latest packaging/rpm/build-rpm.sh --deps dist
 #
 # --deps installs the build dependencies with dnf first (needs root).
-# TUNEMESH_VERSION overrides the version taken from linux/Cargo.toml.
+# SPOTLESS_VERSION overrides the version taken from linux/Cargo.toml.
 set -eu
 # shellcheck source=packaging/linux/common.sh
 . "$(dirname "$0")/../linux/common.sh"
@@ -20,21 +20,21 @@ if $deps; then
         'pkgconfig(gtk4)' 'pkgconfig(libadwaita-1)' 'pkgconfig(mpv)' /usr/bin/glib-compile-resources
 fi
 
-version=${TUNEMESH_VERSION:-$(tunemesh_version)}
+version=${SPOTLESS_VERSION:-$(spotless_version)}
 top=$(mktemp -d)
 trap 'rm -rf "$top"' EXIT
 mkdir -p "$top/SOURCES" "$top/SPECS"
 
-make_source_tarball "$top/SOURCES/tunemesh-$version.tar.gz" "$version"
+make_source_tarball "$top/SOURCES/spotless-$version.tar.gz" "$version"
 
 # Vendored crates, so the spec builds without network access (mock, COPR, OBS).
 vendor=$(mktemp -d)
 (cd "$vendor" && cargo vendor --locked --manifest-path "$repo/linux/Cargo.toml" vendor >/dev/null)
-tar -C "$vendor" -cJf "$top/SOURCES/tunemesh-$version-vendor.tar.xz" vendor
+tar -C "$vendor" -cJf "$top/SOURCES/spotless-$version-vendor.tar.xz" vendor
 rm -rf "$vendor"
 
-sed "s/^Version:.*/Version:        $version/" "$repo/packaging/rpm/tunemesh.spec" >"$top/SPECS/tunemesh.spec"
-rpmbuild --define "_topdir $top" -bb "$top/SPECS/tunemesh.spec"
+sed "s/^Version:.*/Version:        $version/" "$repo/packaging/rpm/spotless.spec" >"$top/SPECS/spotless.spec"
+rpmbuild --define "_topdir $top" -bb "$top/SPECS/spotless.spec"
 find "$top/RPMS" -name '*.rpm' -exec cp {} "$out/" \;
-cp "$top/SOURCES/tunemesh-$version.tar.gz" "$top/SOURCES/tunemesh-$version-vendor.tar.xz" "$out/"
+cp "$top/SOURCES/spotless-$version.tar.gz" "$top/SOURCES/spotless-$version-vendor.tar.xz" "$out/"
 ls "$out"

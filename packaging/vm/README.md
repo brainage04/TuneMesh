@@ -12,7 +12,7 @@ PipeWire audio, snapd, Flatpak, and the NixOS module.
 | `ubuntu-26.04` | `.deb`, AppImage, Snap (built on 24.04) |
 | `debian-13` | `.deb` |
 | `fedora` (newest stable release) | `.rpm`, Flatpak |
-| `arch` | `tunemesh`, `tunemesh-bin` |
+| `arch` | `spotless`, `spotless-bin` |
 | NixOS | the `worker-module` nixosTest in `flake.nix` |
 
 ## What a run checks
@@ -30,29 +30,29 @@ logind session:
      after installing the desktop libraries it expects from the system, which
      a server cloud image lacks) and prints both `--version`s;
    - copies a generated library (two tagged sine-tone Opus files made with
-     ffmpeg and a playlist) to `~/Music/TuneMesh` and writes the app's
+     ffmpeg and a playlist) to `~/Music/Spotless` and writes the app's
      `config.toml` where that format keeps it;
-   - starts `tunemesh-worker` as a systemd user service (the packaged unit
+   - starts `spotless-worker` as a systemd user service (the packaged unit
      for `.deb`, `.rpm` and Arch; a transient `systemd-run --user` unit with
      the same command for AppImage, Snap and Flatpak, which ship no unit),
-     checks `systemctl --user is-active` and a running `tunemesh-worker`
-     process after 15 s with no restarts, runs `tunemesh-worker --self-test`,
+     checks `systemctl --user is-active` and a running `spotless-worker`
+     process after 15 s with no restarts, runs `spotless-worker --self-test`,
      and stops it (with the `flatpak run`/`snap run` scope the program moves
      into, which stopping the unit alone does not reach);
    - starts headless sway and the app on it, waits for
-     `io.github.brainage04.TuneMesh` and `org.mpris.MediaPlayer2.tunemesh`
+     `io.github.brainage04.Spotless` and `org.mpris.MediaPlayer2.spotless`
      on the session bus, activates `app.play-route` (`home`: the whole
      library) through `org.gtk.Actions`, and requires MPRIS
      `PlaybackStatus` `Playing`, the `Position` advancing by at least 3 s in
-     5 s, the generated track in `Metadata`, and a running TuneMesh stream
+     5 s, the generated track in `Metadata`, and a running Spotless stream
      linked to `tm-null` in `pw-dump`; then `app.play-pause` must pause;
    - takes a screenshot, then sends the app process SIGTERM: it must exit
      within 15 s, cleanly, and log no missing icons, GSettings schemas or GTK
      criticals;
    - uninstalls it and checks that no file of the package is left
      (`packaging/ci/check-removed.sh`), that systemd no longer knows the unit,
-     that `~/snap/tunemesh` or `~/.var/app/<id>` are gone, and that no
-     `tunemesh` or `tunemesh-worker` process is left.
+     that `~/snap/spotless` or `~/.var/app/<id>` are gone, and that no
+     `spotless` or `spotless-worker` process is left.
 
 Logs (system and user journal, per-package worker, app and sway logs, MPRIS
 metadata, `pw-dump`, screenshot, the serial console) end up in
@@ -93,18 +93,18 @@ One VM at a time, always through `heavy`, which waits for memory and a slot:
 
 ```sh
 setsid --fork --wait heavy --mem 4G --label vm -- \
-    packaging/vm/run.sh ubuntu-24.04 dist/tunemesh_0.1.0-1_amd64.deb
+    packaging/vm/run.sh ubuntu-24.04 dist/spotless_0.1.0-1_amd64.deb
 ```
 
 - `run.sh` refuses to start outside `heavy` on machines that have it, and
-  refuses while another `run.sh` VM holds the lock (`/tmp/tunemesh-vm.lock`,
+  refuses while another `run.sh` VM holds the lock (`/tmp/spotless-vm.lock`,
   `TM_VM_LOCK`). It never starts more than one VM; test several packages by
   passing them to the same run, and distributions one run after the other.
 - Needs `qemu-system-x86_64`, `qemu-img`, `ssh`, `curl`, `ffmpeg`, `python3`,
   `flock`, `tar`, `gpg`, `gpgv` and one of `cloud-localds`, `xorriso`, `genisoimage` or
   `mkisofs` (on NixOS: `nix shell nixpkgs#xorriso -c packaging/vm/run.sh ...`).
 - Images (300 MB to 700 MB each) are kept in `TM_VM_CACHE` (default
-  `~/.cache/tunemesh-vm`), one per distribution; a download is tried twice at
+  `~/.cache/spotless-vm`), one per distribution; a download is tried twice at
   most. Delete the directory when done.
 - Each VM gets a fresh copy-on-write disk, SSH client key and host key in a temporary
   directory that is removed afterwards (`TM_VM_KEEP=1` keeps it).

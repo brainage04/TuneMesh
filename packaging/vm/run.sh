@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Boots ONE throwaway VM of a distribution from its official cloud image and
-# tests TuneMesh packages in it over SSH (see packaging/vm/README.md):
+# tests Spotless packages in it over SSH (see packaging/vm/README.md):
 #
 #   packaging/vm/run.sh <distro> <package-file>...
 #
@@ -18,9 +18,9 @@
 # is held. No part of this script starts a second VM.
 #
 # Environment:
-#   TM_VM_CACHE  downloaded images (default ${XDG_CACHE_HOME:-~/.cache}/tunemesh-vm)
+#   TM_VM_CACHE  downloaded images (default ${XDG_CACHE_HOME:-~/.cache}/spotless-vm)
 #   TM_VM_LOGS   where logs are copied (default ./vm-logs-<distro>)
-#   TM_VM_LOCK   lock file (default /tmp/tunemesh-vm.lock)
+#   TM_VM_LOCK   lock file (default /tmp/spotless-vm.lock)
 #   TM_VM_ACCEL  kvm or tcg (default kvm when /dev/kvm is usable, else tcg)
 #   TM_VM_KEEP=1 keep the VM's work directory (disk overlay, SSH key)
 #   TM_VM_HOLD=1 after a failure, keep the VM running for inspection over SSH
@@ -68,17 +68,17 @@ if [ -z "${GITHUB_ACTIONS:-}" ] && command -v heavy >/dev/null && ! grep -q 'hea
 fi
 
 # ---------------------------------------------------------------- one VM only
-lock=${TM_VM_LOCK:-/tmp/tunemesh-vm.lock}
+lock=${TM_VM_LOCK:-/tmp/spotless-vm.lock}
 exec 9>>"$lock"
 if ! flock -n 9; then
     die "another packaging/vm/run.sh VM is running (lock $lock held); run one VM at a time"
 fi
 
-cache=${TM_VM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/tunemesh-vm}
+cache=${TM_VM_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/spotless-vm}
 logs=${TM_VM_LOGS:-$PWD/vm-logs-$distro}
 mkdir -p "$cache" "$logs"
 logs=$(cd "$logs" && pwd)
-work=$(mktemp -d "${TMPDIR:-/tmp}/tunemesh-vm.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/spotless-vm.XXXXXX")
 qemu_pid=
 
 # shellcheck disable=SC2329 # run by the EXIT trap
@@ -123,20 +123,20 @@ else
 fi
 
 # ---------------------------------------------------------------- seed + disk
-ssh-keygen -q -t ed25519 -N '' -C tunemesh-vm -f "$work/id"
+ssh-keygen -q -t ed25519 -N '' -C spotless-vm -f "$work/id"
 # The guest's SSH host key is made here and handed over in the seed, so the
 # host can pin it (known_hosts) instead of trusting whatever answers on the port.
-ssh-keygen -q -t ed25519 -N '' -C tunemesh-vm-host -f "$work/host"
-printf 'tunemesh-vm %s\n' "$(cut -d' ' -f1-2 "$work/host.pub")" >"$work/known_hosts"
+ssh-keygen -q -t ed25519 -N '' -C spotless-vm-host -f "$work/host"
+printf 'spotless-vm %s\n' "$(cut -d' ' -f1-2 "$work/host.pub")" >"$work/known_hosts"
 cat >"$work/meta-data" <<EOF
-instance-id: tunemesh-vm-$$
-local-hostname: tunemesh-vm
+instance-id: spotless-vm-$$
+local-hostname: spotless-vm
 EOF
 cat >"$work/user-data" <<EOF
 #cloud-config
 users:
   - name: tm
-    gecos: TuneMesh test user
+    gecos: Spotless test user
     shell: /bin/bash
     lock_passwd: true
     sudo: ALL=(ALL) NOPASSWD:ALL
@@ -163,14 +163,14 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$work/disk.qcow2" 24G
 
 # A generated library: tagged tones, never real music (AGENTS.md).
 lib=$work/payload/library
-mkdir -p "$lib/TuneMesh Test Artist/Tone Album" "$lib/Playlists" "$lib/.tunemesh/requests"
+mkdir -p "$lib/Spotless Test Artist/Tone Album" "$lib/Playlists" "$lib/.tunemesh/requests"
 for n in 1 2; do
     ffmpeg -nostdin -loglevel error -f lavfi -i "sine=frequency=$((330 * n)):duration=60" \
-        -c:a libopus -b:a 48k -metadata title="Tone $n" -metadata artist="TuneMesh Test Artist" \
+        -c:a libopus -b:a 48k -metadata title="Tone $n" -metadata artist="Spotless Test Artist" \
         -metadata album="Tone Album" -metadata track="$n" \
-        "$lib/TuneMesh Test Artist/Tone Album/Tone $n.opus"
+        "$lib/Spotless Test Artist/Tone Album/Tone $n.opus"
 done
-printf '#EXTM3U\n../TuneMesh Test Artist/Tone Album/Tone 1.opus\n' >"$lib/Playlists/Test.m3u8"
+printf '#EXTM3U\n../Spotless Test Artist/Tone Album/Tone 1.opus\n' >"$lib/Playlists/Test.m3u8"
 cp "$here/guest.sh" "$repo/packaging/ci/check-removed.sh" "$work/payload/"
 
 # ---------------------------------------------------------------- boot
@@ -220,7 +220,7 @@ for attempt in 1 2 3 4 5; do
     log "port $port was taken; retrying with another"
 done
 
-ssh_opts=(-i "$work/id" -o HostKeyAlias=tunemesh-vm -o UserKnownHostsFile="$work/known_hosts"
+ssh_opts=(-i "$work/id" -o HostKeyAlias=spotless-vm -o UserKnownHostsFile="$work/known_hosts"
     -o StrictHostKeyChecking=yes -o HostKeyAlgorithms=ssh-ed25519 -o LogLevel=ERROR
     -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=8)
 vm() { ssh "${ssh_opts[@]}" -p "$port" tm@127.0.0.1 "$@"; }
@@ -269,7 +269,7 @@ collect
 if [ "${TM_VM_HOLD:-}" = 1 ] && [ $result -ne 0 ]; then
     touch "$work/hold"
     log "TM_VM_HOLD: VM kept running; log in with"
-    log "  ssh -i $work/id -p $port -o HostKeyAlias=tunemesh-vm -o UserKnownHostsFile=$work/known_hosts tm@127.0.0.1"
+    log "  ssh -i $work/id -p $port -o HostKeyAlias=spotless-vm -o UserKnownHostsFile=$work/known_hosts tm@127.0.0.1"
     log "  and rm $work/hold to shut it down"
     while [ -e "$work/hold" ] && kill -0 "$qemu_pid" 2>/dev/null; do sleep 5; done
 fi

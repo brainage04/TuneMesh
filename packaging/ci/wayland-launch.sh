@@ -2,12 +2,12 @@
 # Starts the app in a Wayland-only session (headless sway, no X server) and
 # requires it to be still running 10 s later.
 #
-# APP is the command that runs the app (default `tunemesh`). Needs sway and
+# APP is the command that runs the app (default `spotless`). Needs sway and
 # dbus-run-session.
 set -eu
 
-APP=${APP:-tunemesh}
-work=$(mktemp -d "${TMPDIR:-/tmp}/tunemesh-wayland.XXXXXX")
+APP=${APP:-spotless}
+work=$(mktemp -d "${TMPDIR:-/tmp}/spotless-wayland.XXXXXX")
 sway_pid=
 cleanup() {
     [ -n "$sway_pid" ] && kill "$sway_pid" 2>/dev/null

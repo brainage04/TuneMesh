@@ -1,7 +1,7 @@
 #!/bin/sh
-# Smoke test for an installed TuneMesh package:
-#   1. `tunemesh --version` and `tunemesh-worker --version` print a version;
-#   2. `tunemesh-worker --self-test` passes: the worker finds the package's
+# Smoke test for an installed Spotless package:
+#   1. `spotless --version` and `spotless-worker --version` print a version;
+#   2. `spotless-worker --self-test` passes: the worker finds the package's
 #      ffmpeg and runs it through its confining ffmpeg/ffprobe shim;
 #   3. the worker starts on an empty library and keeps running;
 #   4. if xvfb-run is available (and dbus-run-session, unless SESSION_BUS=user),
@@ -9,19 +9,19 @@
 #      later.
 #
 # APP and WORKER are the commands that run the two binaries (default
-# `tunemesh` and `tunemesh-worker`; e.g. APP="flatpak run io.github.brainage04.TuneMesh").
+# `spotless` and `spotless-worker`; e.g. APP="flatpak run io.github.brainage04.Spotless").
 # LIB_PARENT is where the test library is created (default a temp dir; sandboxed
 # formats need a folder they can see, such as ~/Music).
 # SESSION_BUS=user runs the app on the existing user session bus instead of a
 # private one; snaps need it, since snap run asks the user's systemd for a scope.
 set -eu
 
-APP=${APP:-tunemesh}
-WORKER=${WORKER:-tunemesh-worker}
+APP=${APP:-spotless}
+WORKER=${WORKER:-spotless-worker}
 parent=${LIB_PARENT:-${TMPDIR:-/tmp}}
 mkdir -p "$parent"
-lib=$(mktemp -d "$parent/tunemesh-smoke.XXXXXX")
-work=$(mktemp -d "${TMPDIR:-/tmp}/tunemesh-work.XXXXXX")
+lib=$(mktemp -d "$parent/spotless-smoke.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/spotless-work.XXXXXX")
 trap 'rm -rf "$lib" "$work"' EXIT
 mkdir -p "$lib/.tunemesh/requests" "$lib/Playlists"
 
@@ -35,12 +35,12 @@ check_version() {
     fail "$1 --version printed an unexpected line"
 }
 
-check_version tunemesh "$APP" tunemesh
-check_version tunemesh-worker "$WORKER" tunemesh-worker
+check_version spotless "$APP" spotless
+check_version spotless-worker "$WORKER" spotless-worker
 
 # APP and WORKER are commands with arguments: split them on purpose.
 # shellcheck disable=SC2086
-$WORKER --self-test --work-dir "$work/self-test" || fail "tunemesh-worker --self-test failed"
+$WORKER --self-test --work-dir "$work/self-test" || fail "spotless-worker --self-test failed"
 
 # Exit status 124 means timeout had to stop it: it was still running.
 set +e

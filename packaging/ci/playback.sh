@@ -1,5 +1,5 @@
 #!/bin/sh
-# Playback test for an installed TuneMesh package: starts the app headless on a
+# Playback test for an installed Spotless package: starts the app headless on a
 # one-track library, plays the album over D-Bus and requires the MPRIS
 # position to advance, which only happens when libmpv really plays the file
 # into a sound server (a PulseAudio null sink started here when none runs).
@@ -9,17 +9,17 @@
 # the user's bus where the format needs that (snaps). Needs xvfb-run, gdbus
 # (libglib2.0-bin) and, when no sound server runs yet, pulseaudio.
 #
-# APP is the command that runs the app (default `tunemesh`). LIB_PARENT is
+# APP is the command that runs the app (default `spotless`). LIB_PARENT is
 # where the test library is created (default a temp dir). CONFIG_HOME is the
 # app's config directory (default a temp dir exported as XDG_CONFIG_HOME;
-# set it for formats that choose their own, such as ~/snap/tunemesh/current/.config).
+# set it for formats that choose their own, such as ~/snap/spotless/current/.config).
 set -eu
 
-APP=${APP:-tunemesh}
+APP=${APP:-spotless}
 parent=${LIB_PARENT:-${TMPDIR:-/tmp}}
 mkdir -p "$parent"
-lib=$(mktemp -d "$parent/tunemesh-play.XXXXXX")
-work=$(mktemp -d "${TMPDIR:-/tmp}/tunemesh-play-work.XXXXXX")
+lib=$(mktemp -d "$parent/spotless-play.XXXXXX")
+work=$(mktemp -d "${TMPDIR:-/tmp}/spotless-play-work.XXXXXX")
 app_pid=
 pulse_pid=
 cleanup() {
@@ -58,9 +58,9 @@ if [ -z "${CONFIG_HOME:-}" ]; then
     CONFIG_HOME=$work/config
     export XDG_CONFIG_HOME="$CONFIG_HOME"
 fi
-mkdir -p "$CONFIG_HOME/tunemesh"
+mkdir -p "$CONFIG_HOME/spotless"
 # setup_done skips the first-run assistant.
-printf 'library_path = "%s"\nsetup_done = true\n' "$lib" >"$CONFIG_HOME/tunemesh/config.toml"
+printf 'library_path = "%s"\nsetup_done = true\n' "$lib" >"$CONFIG_HOME/spotless/config.toml"
 
 if [ -z "${XDG_RUNTIME_DIR:-}" ]; then
     XDG_RUNTIME_DIR=$work/run
@@ -86,14 +86,14 @@ xvfb-run -a env GDK_BACKEND=x11 GSK_RENDERER=cairo NO_AT_BRIDGE=1 \
     $APP --library "$lib" >"$work/app.log" 2>&1 &
 app_pid=$!
 
-app_bus=io.github.brainage04.TuneMesh
-mpris=org.mpris.MediaPlayer2.tunemesh
+app_bus=io.github.brainage04.Spotless
+mpris=org.mpris.MediaPlayer2.spotless
 has_owner() {
     gdbus call --session --dest org.freedesktop.DBus --object-path /org/freedesktop/DBus \
         --method org.freedesktop.DBus.NameHasOwner "$1" 2>/dev/null | grep -q true
 }
 activate() {
-    gdbus call --session --dest "$app_bus" --object-path /io/github/brainage04/TuneMesh \
+    gdbus call --session --dest "$app_bus" --object-path /io/github/brainage04/Spotless \
         --method org.gtk.Actions.Activate "$1" "$2" '{}' >/dev/null
 }
 player_prop() {

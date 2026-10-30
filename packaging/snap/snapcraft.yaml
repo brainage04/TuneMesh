@@ -1,34 +1,34 @@
-# Snap for TuneMesh. It packages the binaries of the Ubuntu 24.04 build (the
+# Snap for Spotless. It packages the binaries of the Ubuntu 24.04 build (the
 # generic tarball from packaging/deb/build-deb.sh, the same base as core24),
 # so they link against the gnome extension's GTK 4.14 and libadwaita 1.5.
 # snapcraft expects this file at snap/snapcraft.yaml in the project root:
 #
 #   packaging/deb/build-deb.sh dist        # on Ubuntu 24.04
-#   cp dist/tunemesh-*-linux-$(uname -m).tar.gz packaging/snap/tunemesh-linux.tar.gz
+#   cp dist/spotless-*-linux-$(uname -m).tar.gz packaging/snap/spotless-linux.tar.gz
 #   mkdir -p snap && cp packaging/snap/snapcraft.yaml snap/ && snapcraft pack
 #
 # Install a local build:
-#   sudo snap install --dangerous ./tunemesh_<version>_amd64.snap
-#   sudo snap connect tunemesh:syncthing-config     # optional, see below
-name: tunemesh
-title: TuneMesh
+#   sudo snap install --dangerous ./spotless_<version>_amd64.snap
+#   sudo snap connect spotless:syncthing-config     # optional, see below
+name: spotless
+title: Spotless
 summary: Music player for a Syncthing-shared library
 description: |
-  TuneMesh plays a music library that lives in one Syncthing folder shared
+  Spotless plays a music library that lives in one Syncthing folder shared
   between your devices, and downloads new songs into it with yt-dlp.
 
-  The library lives in your home folder (default ~/Music/TuneMesh). For a
+  The library lives in your home folder (default ~/Music/Spotless). For a
   library on a removable drive, connect removable-media:
-  sudo snap connect tunemesh:removable-media
-  To let TuneMesh read Syncthing's API key, connect syncthing-config:
-  sudo snap connect tunemesh:syncthing-config
-  The download worker also runs on its own as tunemesh.worker.
-adopt-info: tunemesh
+  sudo snap connect spotless:removable-media
+  To let Spotless read Syncthing's API key, connect syncthing-config:
+  sudo snap connect spotless:syncthing-config
+  The download worker also runs on its own as spotless.worker.
+adopt-info: spotless
 license: MIT
 base: core24
 grade: stable
 confinement: strict
-icon: linux/data/io.github.brainage04.TuneMesh.svg
+icon: linux/data/io.github.brainage04.Spotless.svg
 website: https://github.com/brainage04/TuneMesh
 source-code: https://github.com/brainage04/TuneMesh
 platforms:
@@ -44,24 +44,24 @@ plugs:
 
 slots:
   # GApplication's unique name, used for single-instance and its D-Bus actions.
-  tunemesh-dbus:
+  spotless-dbus:
     interface: dbus
     bus: session
-    name: io.github.brainage04.TuneMesh
-  # org.mpris.MediaPlayer2.tunemesh: media keys and desktop media controls.
-  tunemesh-mpris:
+    name: io.github.brainage04.Spotless
+  # org.mpris.MediaPlayer2.spotless: media keys and desktop media controls.
+  spotless-mpris:
     interface: mpris
-    name: tunemesh
+    name: spotless
 
 environment:
   LD_LIBRARY_PATH: $SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/pulseaudio:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/blas:$SNAP/usr/lib/$CRAFT_ARCH_TRIPLET_BUILD_FOR/lapack
-  TUNEMESH_FFMPEG_DIR: $SNAP/usr/bin
+  SPOTLESS_FFMPEG_DIR: $SNAP/usr/bin
 
 apps:
-  tunemesh:
-    command: usr/bin/tunemesh
-    desktop: usr/share/applications/io.github.brainage04.TuneMesh.desktop
-    common-id: io.github.brainage04.TuneMesh
+  spotless:
+    command: usr/bin/spotless
+    desktop: usr/share/applications/io.github.brainage04.Spotless.desktop
+    common-id: io.github.brainage04.Spotless
     extensions: [gnome]
     plugs:
       - home
@@ -72,10 +72,10 @@ apps:
       - removable-media
       - syncthing-config
     slots:
-      - tunemesh-dbus
-      - tunemesh-mpris
+      - spotless-dbus
+      - spotless-mpris
   worker:
-    command: usr/bin/tunemesh-worker
+    command: usr/bin/spotless-worker
     # For the GNOME runtime's libraries, which ffmpeg needs as well.
     extensions: [gnome]
     plugs:
@@ -85,7 +85,7 @@ apps:
       - removable-media
 
 parts:
-  tunemesh:
+  spotless:
     # Unpacked by hand: snapcraft's tar source would strip the single top-level
     # usr/ directory.
     plugin: nil
@@ -94,12 +94,12 @@ parts:
       - ffmpeg
     override-build: |
       craftctl default
-      tar -xzf "$CRAFT_PROJECT_DIR/packaging/snap/tunemesh-linux.tar.gz" -C "$CRAFT_PART_INSTALL"
+      tar -xzf "$CRAFT_PROJECT_DIR/packaging/snap/spotless-linux.tar.gz" -C "$CRAFT_PART_INSTALL"
       craftctl set version="$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$CRAFT_PROJECT_DIR/linux/Cargo.toml")"
-      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg|' \
-        "$CRAFT_PART_INSTALL/usr/share/applications/io.github.brainage04.TuneMesh.desktop"
+      sed -i 's|^Icon=.*|Icon=${SNAP}/usr/share/icons/hicolor/scalable/apps/io.github.brainage04.Spotless.svg|' \
+        "$CRAFT_PART_INSTALL/usr/share/applications/io.github.brainage04.Spotless.desktop"
     stage:
-      # No systemd user units in a snap; the worker runs as tunemesh.worker.
+      # No systemd user units in a snap; the worker runs as spotless.worker.
       - -usr/lib/systemd
     prime:
       # usr/share/doc stays: it holds the staged packages' copyright files.
@@ -110,7 +110,7 @@ parts:
   # shadow theirs and break GTK. Then list the source of every Ubuntu package
   # that still ships files in the snap.
   cleanup:
-    after: [tunemesh]
+    after: [spotless]
     plugin: nil
     build-snaps: [core24, gnome-46-2404, mesa-2404]
     override-prime: |
@@ -125,7 +125,7 @@ parts:
           -exec rm -f "$CRAFT_PRIME/{}" \;
       done
 
-      debs=$CRAFT_PART_SRC/../../tunemesh/stage_packages
+      debs=$CRAFT_PART_SRC/../../spotless/stage_packages
       ls "$debs"/*.deb
       bundled=
       for deb in "$debs"/*.deb; do
@@ -141,7 +141,7 @@ parts:
       apt-get update -q || true
       project=$CRAFT_PROJECT_DIR
       version=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' "$project/linux/Cargo.toml")
-      sources=$CRAFT_PRIME/usr/share/licenses/tunemesh/THIRD-PARTY-SOURCES.md
+      sources=$CRAFT_PRIME/usr/share/licenses/spotless/THIRD-PARTY-SOURCES.md
       mkdir -p "$(dirname "$sources")"
       {
         "$project/packaging/licenses/sources-header.sh" "snap ($CRAFT_ARCH_BUILD_FOR)" "$version"

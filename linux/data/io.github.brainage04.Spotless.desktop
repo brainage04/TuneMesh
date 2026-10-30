@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Spotless
+GenericName=Music Player
+Comment=Play and download music in your synced Spotless library
+Exec=spotless
+Icon=io.github.brainage04.Spotless
+Terminal=false
+Categories=AudioVideo;Audio;Player;GTK;
+Keywords=music;player;playlist;syncthing;download;
+StartupNotify=true
+StartupWMClass=io.github.brainage04.Spotless
+DBusActivatable=false
+X-GNOME-UsesNotifications=true

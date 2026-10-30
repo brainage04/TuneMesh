@@ -1,7 +1,7 @@
-Third-party Rust crates in tunemesh and tunemesh-worker
+Third-party Rust crates in spotless and spotless-worker
 =========================================================
 
-Both programs are statically linked with the Rust crates below. TuneMesh
+Both programs are statically linked with the Rust crates below. Spotless
 itself is MIT licensed (see LICENSE). This file is generated from
 linux/Cargo.lock by packaging/licenses/update-rust-licenses.sh.
 

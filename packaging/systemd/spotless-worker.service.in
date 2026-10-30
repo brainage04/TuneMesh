@@ -1,0 +1,38 @@
+# Spotless download worker as a systemd user service, for a device that
+# downloads for the whole library without the desktop app running:
+#
+#   systemctl --user enable --now spotless-worker
+#   journalctl --user -u spotless-worker -f
+#
+# The library is library_path in ~/.config/spotless/config.toml (the desktop
+# app's setting; default ~/Music/Spotless) and the work directory is
+# ~/.cache/spotless/worker. To use another folder:
+#
+#   systemctl --user edit spotless-worker
+#     [Service]
+#     ExecStart=
+#     ExecStart=@bindir@/spotless-worker --library /path/to/Spotless
+#
+# To keep it running while you are logged out: loginctl enable-linger
+[Unit]
+Description=Spotless download worker
+Documentation=https://github.com/brainage04/TuneMesh
+
+[Service]
+Type=simple
+ExecStart=@bindir@/spotless-worker
+Restart=on-failure
+RestartSec=30
+# Exit status 2 is a configuration error (bad options, library folder
+# missing, unreadable config.toml, refused work directory): fix it, then
+# `systemctl --user restart spotless-worker`.
+RestartPreventExitStatus=2
+# Files placed in the Syncthing folder stay readable like the user's own.
+UMask=0022
+Nice=10
+IOSchedulingClass=idle
+MemoryMax=2G
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target

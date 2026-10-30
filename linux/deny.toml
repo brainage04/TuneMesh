@@ -26,7 +26,7 @@ ignore = [
 [licenses]
 # The licences packaging/licenses/about.toml accepts for the crates linked
 # into the binaries (their texts are bundled in THIRD-PARTY-RUST.txt), so
-# both tools agree on what may be shipped next to TuneMesh's MIT licence.
+# both tools agree on what may be shipped next to Spotless's MIT licence.
 allow = [
     "MIT",
     "Apache-2.0",
@@ -49,7 +49,7 @@ confidence-threshold = 0.93
 unused-allowed-license = "allow"
 
 [licenses.private]
-# TuneMesh's own crates (MIT, `publish = false`).
+# Spotless's own crates (MIT, `publish = false`).
 ignore = true
 
 [bans]

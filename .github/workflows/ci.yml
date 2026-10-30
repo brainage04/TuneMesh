@@ -60,7 +60,7 @@ jobs:
       # Every page, panel and dialog is freed once closed (src/gui_tests/leaks.rs).
       - run: |
           nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus \
-            -c linux/crates/tunemesh/scripts/gui-checks.sh leaks --locked
+            -c linux/crates/spotless/scripts/gui-checks.sh leaks --locked
 
   nix:
     name: nix flake check
@@ -79,7 +79,7 @@ jobs:
       - name: tests/ffmpeg_confinement.rs against the distribution's ffmpeg
         run: |
           ffmpeg -hide_banner -version | sed -n 1p
-          cargo test --locked --manifest-path linux/Cargo.toml -p tunemesh-worker \
+          cargo test --locked --manifest-path linux/Cargo.toml -p spotless-worker \
             --test ffmpeg_confinement -- --nocapture 2>&1 | tee test.log
           if grep -q '^skipped' test.log; then echo "::error::the test skipped"; exit 1; fi
 
@@ -130,14 +130,14 @@ jobs:
       - run: nix shell --inputs-from . nixpkgs#cargo-deny nixpkgs#cargo -c cargo deny --manifest-path linux/Cargo.toml --locked check
 
   miri:
-    name: Miri (tunemesh-core)
+    name: Miri (spotless-core)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702 # v31.11.2
       # Undefined behaviour in the pure logic (file-system tests are ignored
       # under Miri). Nightly comes from the flake's `nightly` dev shell.
-      - run: nix develop .#nightly -c bash -c 'cd linux && cargo miri test --locked -p tunemesh-core --lib'
+      - run: nix develop .#nightly -c bash -c 'cd linux && cargo miri test --locked -p spotless-core --lib'
 
   fuzz:
     name: Fuzz smoke (60 s per target)
@@ -166,7 +166,7 @@ jobs:
           nix develop .#nightly -c bash -c 'cd linux &&
             RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address ASAN_OPTIONS=detect_leaks=1 \
             cargo test --locked -Zbuild-std --target x86_64-unknown-linux-gnu \
-              -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
+              -p spotless-core -p spotless-worker --lib --bins --tests -- \
               --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
 
   android:
@@ -187,7 +187,7 @@ jobs:
         run: unzip -l app/build/outputs/apk/debug/*.apk | grep ' assets/NOTICE.txt$'
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: tunemesh-debug-apk
+          name: spotless-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
           retention-days: 7
 

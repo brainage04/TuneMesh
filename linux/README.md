@@ -1,20 +1,20 @@
-# TuneMesh for Linux
+# Spotless for Linux
 
 A Cargo workspace with three crates:
 
 | Crate | What |
 | --- | --- |
-| `crates/tunemesh-core` | The library format from `../docs/library-format.md`: scanning (tags and covers via `lofty`), metadata fallbacks, playlists, atomic writes, request/status JSON, file-name sanitising, search folding |
-| `crates/tunemesh` | The desktop app: GTK 4 + libadwaita, playback through libmpv in-process, MPRIS |
-| `crates/tunemesh-worker` | The headless download worker (yt-dlp, Spotify metadata from Spotify's public pages) |
+| `crates/spotless-core` | The library format from `../docs/library-format.md`: scanning (tags and covers via `lofty`), metadata fallbacks, playlists, atomic writes, request/status JSON, file-name sanitising, search folding |
+| `crates/spotless` | The desktop app: GTK 4 + libadwaita, playback through libmpv in-process, MPRIS |
+| `crates/spotless-worker` | The headless download worker (yt-dlp, Spotify metadata from Spotify's public pages) |
 
 ## Build
 
 Everything builds through the flake in the repository root.
 
 ```sh
-nix build .#tunemesh          # the app (default package)
-nix build .#tunemesh-worker   # the worker, wrapped with nixpkgs' yt-dlp, deno and ffmpeg
+nix build .#spotless          # the app (default package)
+nix build .#spotless-worker   # the worker, wrapped with nixpkgs' yt-dlp, deno and ffmpeg
 nix flake check               # builds both and runs the unit tests
 ```
 
@@ -25,22 +25,22 @@ yt-dlp and ffmpeg:
 nix develop
 cd linux
 cargo test
-cargo run -p tunemesh
-cargo run -p tunemesh-worker -- --library ~/Music/TuneMesh   # work dir: ~/.cache/tunemesh/worker
+cargo run -p spotless
+cargo run -p spotless-worker -- --library ~/Music/Spotless   # work dir: ~/.cache/spotless/worker
 ```
 
 ### Desktop GUI checks
 
-Two tests in `crates/tunemesh/src/gui_tests` drive the real window from inside
+Two tests in `crates/spotless/src/gui_tests` drive the real window from inside
 the test process. Both need a display, so they are `#[ignore]`d in a plain
-`cargo test`; `crates/tunemesh/scripts/gui-checks.sh` runs them in a private
+`cargo test`; `crates/spotless/scripts/gui-checks.sh` runs them in a private
 headless sway with a session bus of its own (no portals, none of the
 desktop's GTK settings):
 
 ```sh
 # from the repository root
 nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
-  linux/crates/tunemesh/scripts/gui-checks.sh leaks    # or: stalls, all
+  linux/crates/spotless/scripts/gui-checks.sh leaks    # or: stalls, all
 ```
 
 - `leaks` (debug build, about a minute, also in CI): opens every page three
@@ -58,19 +58,19 @@ nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
   the median, 90th and 95th percentiles and worst of the longest main-loop
   stall each caused, with the GTK thread's CPU time in the worst. It fails
   when an action's 95th percentile (interpolated between ranks) exceeds
-  `TUNEMESH_STALL_BUDGET_MS` (16.6 ms, one frame at 60 Hz): a late round
+  `SPOTLESS_STALL_BUDGET_MS` (16.6 ms, one frame at 60 Hz): a late round
   now and then is the machine, not the app. Start-up until the first frame
   (loading the GPU driver, compiling the first shaders) is listed as
   platform time and not held to the budget. The script draws with
   `GSK_RENDERER=cairo` on a compositor without a GPU; to measure on one,
   give the compositor a render node: `WLR_RENDERER=gles2
   WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 GSK_RENDERER=gl`.
-  `TUNEMESH_TYPICAL_LIBRARY=<dir>` and
-  `TUNEMESH_HOSTILE_LIBRARY=<dir>` reuse (or generate once into) a library
+  `SPOTLESS_TYPICAL_LIBRARY=<dir>` and
+  `SPOTLESS_HOSTILE_LIBRARY=<dir>` reuse (or generate once into) a library
   directory (the hostile one can also be made with
-  `cargo run --release -p tunemesh-core --features hostile --example hostile_library -- <dir>`),
-  `TUNEMESH_STALL_ROUNDS=1` shortens the walks and
-  `TUNEMESH_STALL_REPORT=<file>.md` writes the tables to
+  `cargo run --release -p spotless-core --features hostile --example hostile_library -- <dir>`),
+  `SPOTLESS_STALL_ROUNDS=1` shortens the walks and
+  `SPOTLESS_STALL_REPORT=<file>.md` writes the tables to
   `<file>-typical.md` and `<file>-hostile.md`.
 
 On a shared machine run them through `heavy` (`--mem 4G` for `leaks`, `--mem
@@ -81,9 +81,9 @@ around it:
 mkfifo /var/tmp/ctl /var/tmp/ack
 CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="perf record -k CLOCK_MONOTONIC -g --call-graph dwarf \
   --control fifo:/var/tmp/ctl,/var/tmp/ack --delay=-1 --" \
-TUNEMESH_PERF_CTL=/var/tmp/ctl,/var/tmp/ack TUNEMESH_STALL_PROFILE='downloads,search' \
+SPOTLESS_PERF_CTL=/var/tmp/ctl,/var/tmp/ack SPOTLESS_STALL_PROFILE='downloads,search' \
 CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
-  linux/crates/tunemesh/scripts/gui-checks.sh stalls
+  linux/crates/spotless/scripts/gui-checks.sh stalls
 ```
 
 Each round's line in the output ends with its longest gap on
@@ -93,7 +93,7 @@ apart from the usual ones.
 
 The same runner variable takes heaptrack (`nix shell nixpkgs#heaptrack`):
 `CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER="heaptrack --record-only -o /var/tmp/walk"`
-with `TUNEMESH_STALL_BUDGET_MS=1000000`, as heaptrack slows the walk down
+with `SPOTLESS_STALL_BUDGET_MS=1000000`, as heaptrack slows the walk down
 (without `--record-only` it opens heaptrack_gui inside the headless session
 and waits there). Read the result with `heaptrack_print -f /var/tmp/walk.zst`.
 The heap in use after each round, printed under the table, should stay
@@ -106,20 +106,20 @@ Both checks also run under AddressSanitizer with a nightly toolchain
 PATH=$(rustup +nightly which rustc | xargs dirname):$PATH \
 RUSTFLAGS=-Zsanitizer=address CARGO_TARGET_DIR=/var/tmp/target-asan \
 ASAN_OPTIONS=detect_leaks=1:log_path=/var/tmp/asan \
-  linux/crates/tunemesh/scripts/gui-checks.sh leaks --target x86_64-unknown-linux-gnu
+  linux/crates/spotless/scripts/gui-checks.sh leaks --target x86_64-unknown-linux-gnu
 ```
 
 `--target` keeps the sanitizer out of build scripts and proc macros.
 LeakSanitizer then lists about 0.9 MB that fontconfig keeps for pango's
-font map until exit; anything with a `tunemesh` frame in its stack is a
+font map until exit; anything with a `spotless` frame in its stack is a
 real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
 `llvm-symbolizer` (`nixpkgs#llvm`).
 
 ## The app
 
 ```sh
-tunemesh [--library <folder>] [--setup]
-tunemesh --version
+spotless [--library <folder>] [--setup]
+spotless --version
 ```
 
 `--library` uses another folder for this session without changing the saved
@@ -127,22 +127,22 @@ setting. `--setup` opens the setup assistant, which also opens by itself on
 the first start and from Settings.
 
 Requirements: GTK 4.14 and libadwaita 1.5 or newer, and libmpv. The built-in
-downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
+downloader needs `spotless-worker` in the same directory as `spotless` (or on
 `PATH`) and ffmpeg.
 
-- Config: `~/.config/tunemesh/config.toml`
+- Config: `~/.config/spotless/config.toml`
 
   ```toml
-  library_path = "/home/user/Music/TuneMesh"
+  library_path = "/home/user/Music/Spotless"
   downloader = false   # Settings: "This device downloads songs"
   setup_done = true    # the setup assistant was finished or skipped
   ```
 
-  The default library is `~/Music/TuneMesh`. The Settings page changes it.
+  The default library is `~/Music/Spotless`. The Settings page changes it.
 - Per-device state (queue, position, shuffle/repeat, volume):
-  `~/.local/state/tunemesh/state.json`. The queue comes back paused at the
+  `~/.local/state/spotless/state.json`. The queue comes back paused at the
   saved position on the next launch.
-- Playlist bases: `~/.local/state/tunemesh/playlist-base/`, this device's
+- Playlist bases: `~/.local/state/spotless/playlist-base/`, this device's
   copy of each playlist as it was before its own latest edits, shared with a
   worker of the same user and never synced. When two devices change a
   playlist before Syncthing syncs either change, Syncthing keeps one version
@@ -156,23 +156,23 @@ downloader needs `tunemesh-worker` in the same directory as `tunemesh` (or on
   for the next pass.
 - Playlist edits are written on a background thread; quitting or closing
   the window waits up to 5 seconds for the ones still queued.
-- Cache (library scan, MPRIS cover art): `~/.cache/tunemesh/`. The scan cache
+- Cache (library scan, MPRIS cover art): `~/.cache/spotless/`. The scan cache
   makes startup instant; a background rescan follows, and file changes (for
   example songs arriving through Syncthing) are picked up within a second.
-- The built-in downloader's work directory: `~/.cache/tunemesh/worker/`
+- The built-in downloader's work directory: `~/.cache/spotless/worker/`
   (mode 0700, scratch and caches only). Final statuses it could not write
-  into the library yet are kept in `~/.local/state/tunemesh/unwritten/`, next
+  into the library yet are kept in `~/.local/state/spotless/unwritten/`, next
   to the playlist bases, so their requests are not run again.
 - The desktop file, icon and AppStream metainfo install as
-  `io.github.brainage04.TuneMesh`.
+  `io.github.brainage04.Spotless`.
 
 ### Setup assistant
 
-1. Library folder: `~/Music/TuneMesh` by default; created if missing.
+1. Library folder: `~/Music/Spotless` by default; created if missing.
 2. Syncthing: the app reads the GUI address and API key from Syncthing's
    `config.xml` (`~/.config/syncthing/` or `~/.local/state/syncthing/`), or
    asks for them (Syncthing web interface, Actions → Settings → General).
-   It then adds the folder with ID `tunemesh` at the library path (or offers
+   It then adds the folder with ID `spotless` at the library path (or offers
    to use the folder Syncthing already has under that ID), writes the
    library's `.stignore` when missing, shows this device's ID with a QR code,
    and shares the folder with other device IDs you enter. When Syncthing is
@@ -186,17 +186,17 @@ Every step can be skipped.
 The Downloads page takes links or search text, one per line: songs, albums
 and playlists from YouTube, YouTube Music and Spotify, and other sites
 yt-dlp supports. Each line becomes one request. When a line is a playlist
-link, "Save playlists and albums as TuneMesh playlists" turns on by default.
+link, "Save playlists and albums as Spotless playlists" turns on by default.
 Each request shows its progress (songs done of the total), failed songs and
 warnings. A line longer than 8 KiB is refused and stays in the box.
 
 One device per library downloads. The page and Settings show which device
 that is (from `.tunemesh/worker.json`). With "This device downloads songs"
-on, the app runs `tunemesh-worker --library <library> --work-dir
-~/.cache/tunemesh/worker` as a child process while it is open, restarts it
+on, the app runs `spotless-worker --library <library> --work-dir
+~/.cache/spotless/worker` as a child process while it is open, restarts it
 with a growing delay (up to a minute) if it stops unexpectedly, and stops it
 when the app quits. Closing the window while this device still has requests
-asks whether to keep downloading in the background; TuneMesh then quits once
+asks whether to keep downloading in the background; Spotless then quits once
 the queue is empty (a notification offers "Stop and Quit").
 
 ### Playback
@@ -215,16 +215,16 @@ playlist, remove from playlist, like, go to album/artist, delete from
 library). Playlist tracks and queue entries reorder by drag and drop.
 Ctrl+Enter in the Downloads box requests the downloads.
 
-MPRIS: the app registers `org.mpris.MediaPlayer2.tunemesh`, so media keys and
+MPRIS: the app registers `org.mpris.MediaPlayer2.spotless`, so media keys and
 desktop media controls work and show title, artist, cover and position.
 
 Memory: GTK draws with the GPU (Vulkan) by default; while playing, the app
 uses about 130 MiB PSS on an NVIDIA desktop, most of it the GPU driver.
-`GSK_RENDERER=cairo tunemesh` draws in software instead: about 80 MiB PSS,
+`GSK_RENDERER=cairo spotless` draws in software instead: about 80 MiB PSS,
 at roughly twice the CPU time for redraws.
 
 The application also exports its actions on D-Bus
-(`io.github.brainage04.TuneMesh`, object `/io/github/brainage04/TuneMesh`,
+(`io.github.brainage04.Spotless`, object `/io/github/brainage04/Spotless`,
 interface `org.gtk.Actions`): `play-pause`, `next`, `previous`,
 `toggle-queue`, `setup`, `quit`, `navigate` (`home`, `search:<text>`,
 `albums`, `artists`, `playlists`, `liked`, `downloads`, `settings`,
@@ -232,16 +232,16 @@ interface `org.gtk.Actions`): `play-pause`, `next`, `previous`,
 strings) and `seek` (seconds). For example:
 
 ```sh
-gdbus call --session --dest io.github.brainage04.TuneMesh \
-  --object-path /io/github/brainage04/TuneMesh \
+gdbus call --session --dest io.github.brainage04.Spotless \
+  --object-path /io/github/brainage04/Spotless \
   --method org.gtk.Actions.Activate navigate "[<'album:Pure Tones'>]" "{}"
 ```
 
 ## The worker
 
 ```sh
-tunemesh-worker [--library <root>] [--work-dir <dir>] [--yt-dlp <path>] [options]
-tunemesh-worker --help | --version
+spotless-worker [--library <root>] [--work-dir <dir>] [--yt-dlp <path>] [options]
+spotless-worker --help | --version
 ```
 
 The desktop app runs it as a child process; it also runs as a service. It
@@ -250,9 +250,9 @@ implements "One downloader per library" and "Worker behaviour" from
 
 | Option | Default |
 | --- | --- |
-| `--library <dir>` | `library_path` from `$XDG_CONFIG_HOME/tunemesh/config.toml`, else `~/Music/TuneMesh` |
-| `--work-dir <dir>` | `$XDG_CACHE_HOME/tunemesh/worker`, created with mode 0700 |
-| `--yt-dlp <path>` | `$TUNEMESH_YTDLP`, else a managed copy (below) |
+| `--library <dir>` | `library_path` from `$XDG_CONFIG_HOME/spotless/config.toml`, else `~/Music/Spotless` |
+| `--work-dir <dir>` | `$XDG_CACHE_HOME/spotless/worker`, created with mode 0700 |
+| `--yt-dlp <path>` | `$SPOTLESS_YTDLP`, else a managed copy (below) |
 | `--device <name>` | the host name; shown to other devices in `worker.json` |
 | `--max-items <n>` | 5000 items per request |
 | `--max-file-size <size>` | `500M` per download |
@@ -269,20 +269,20 @@ other fatal errors.
 
 Programs it runs:
 
-- yt-dlp: `--yt-dlp`, else `$TUNEMESH_YTDLP`, else a managed copy in
-  `$XDG_DATA_HOME/tunemesh/yt-dlp/` (`yt-dlp`, `version`, `checked`): the
+- yt-dlp: `--yt-dlp`, else `$SPOTLESS_YTDLP`, else a managed copy in
+  `$XDG_DATA_HOME/spotless/yt-dlp/` (`yt-dlp`, `version`, `checked`): the
   official standalone release for x86_64 or aarch64 (glibc or musl), verified
   against the release's `SHA2-256SUMS`, checked for a new release at most once
-  a day and replaced atomically. Other CPUs need `TUNEMESH_YTDLP`.
-- deno, yt-dlp's JavaScript runtime for YouTube: `$TUNEMESH_DENO`, else `deno`
-  on `PATH`, else a managed copy in `$XDG_DATA_HOME/tunemesh/deno/` from the
+  a day and replaced atomically. Other CPUs need `SPOTLESS_YTDLP`.
+- deno, yt-dlp's JavaScript runtime for YouTube: `$SPOTLESS_DENO`, else `deno`
+  on `PATH`, else a managed copy in `$XDG_DATA_HOME/spotless/deno/` from the
   official release zip (x86_64 or aarch64, glibc), verified against its
   `.sha256sum` and checked weekly. Without deno, YouTube downloads may fail.
-- ffmpeg and ffprobe: `$TUNEMESH_FFMPEG_DIR`, else `PATH`. Required.
+- ffmpeg and ffprobe: `$SPOTLESS_FFMPEG_DIR`, else `PATH`. Required.
 
 Files it creates: in the work directory `jobs/<request id>/` (scratch, removed
 after each request), `tmp/`, `cache/yt-dlp/` and `spotify-queries.json`; in
-`$XDG_STATE_HOME/tunemesh/` (default `~/.local/state/tunemesh/`) the playlist
+`$XDG_STATE_HOME/spotless/` (default `~/.local/state/spotless/`) the playlist
 bases and `unwritten/` (final statuses it could not write into the library
 yet, so their requests are not run again); in the library the downloaded
 tracks, playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
@@ -298,7 +298,7 @@ How it works:
   `<Artist>/<Album or Singles>/<Title> [<id>].<ext>`, re-sanitised to the
   contract's naming rules, never replacing an existing file. When the work
   directory is on another filesystem the move goes through a
-  `.~tunemesh-*.tmp` file next to the target.
+  `.~spotless-*.tmp` file next to the target.
 - Never follows a symlink below the library root: artist and album
   directories, `Playlists/`, `.tunemesh/` and the files in them are opened with
   `O_NOFOLLOW` relative to the root, and anything else is refused.
@@ -357,24 +357,24 @@ The flake exports `nixosModules.worker`:
 
 ```nix
 {
-  inputs.tunemesh.url = "github:brainage04/TuneMesh";
-  inputs.tunemesh.inputs.nixpkgs.follows = "nixpkgs";
+  inputs.spotless.url = "github:brainage04/TuneMesh";
+  inputs.spotless.inputs.nixpkgs.follows = "nixpkgs";
 
   # in the host configuration:
-  imports = [ inputs.tunemesh.nixosModules.worker ];
-  services.tunemesh-worker = {
+  imports = [ inputs.spotless.nixosModules.worker ];
+  services.spotless-worker = {
     enable = true;
     user = "alice";
-    libraryPath = "/home/alice/Music/TuneMesh";
-    workDir = "/var/cache/tunemesh-worker"; # default; scratch and caches
-    stateDir = "/var/lib/tunemesh-worker"; # default; bases, unwritten statuses
+    libraryPath = "/home/alice/Music/Spotless";
+    workDir = "/var/cache/spotless-worker"; # default; scratch and caches
+    stateDir = "/var/lib/spotless-worker"; # default; bases, unwritten statuses
     # extraArgs = [ "--max-items" "1000" ];
   };
 }
 ```
 
-This runs `tunemesh-worker.service` as `user` with `Restart=on-failure`
-(except after exit code 2); `journalctl -u tunemesh-worker` shows its log.
+This runs `spotless-worker.service` as `user` with `Restart=on-failure`
+(except after exit code 2); `journalctl -u spotless-worker` shows its log.
 The unit adds systemd sandboxing on top of the worker's own checks: the
 filesystem is read-only except the library, the work directory and the
 state directory, and `IPAddressDeny` blocks private ranges for the whole
@@ -383,7 +383,7 @@ resolvers in `allowedAddresses` (systemd cannot restrict these to one
 port). The worker's caches (`XDG_CACHE_HOME` and the other XDG directories)
 are in the work directory, which can be cleared. Its playlist bases and the
 final statuses it could not write yet are in the state directory
-(`XDG_STATE_HOME`), `<stateDir>/tunemesh/`, which must persist: without the
+(`XDG_STATE_HOME`), `<stateDir>/spotless/`, which must persist: without the
 bases the next merge of each playlist is a union (a removal can come back
 once), and a request whose status was kept runs again. Both directories are
 created 0700 for `user`, not in the user's home.
@@ -391,7 +391,7 @@ created 0700 for `user`, not in the user's home.
 ## Development checks
 
 Besides `cargo fmt`, `cargo clippy --all-targets -- -D warnings` and
-`cargo test`, CI runs these on `tunemesh-core` and `tunemesh-worker`. The
+`cargo test`, CI runs these on `spotless-core` and `spotless-worker`. The
 nightly ones use the flake's `nightly` dev shell (a pinned nightly Rust with
 Miri, plus cargo-fuzz). Run them from the repository root:
 
@@ -400,13 +400,13 @@ Miri, plus cargo-fuzz). Run them from the repository root:
 nix develop -c bash -c 'cd linux && cargo deny check'
 
 # Miri: undefined behaviour in the pure logic
-nix develop .#nightly -c bash -c 'cd linux && cargo miri test -p tunemesh-core --lib'
+nix develop .#nightly -c bash -c 'cd linux && cargo miri test -p spotless-core --lib'
 
 # AddressSanitizer and LeakSanitizer over the core and worker tests
 nix develop .#nightly -c bash -c 'cd linux &&
   RUSTFLAGS=-Zsanitizer=address RUSTDOCFLAGS=-Zsanitizer=address \
   cargo test -Zbuild-std --target x86_64-unknown-linux-gnu \
-    -p tunemesh-core -p tunemesh-worker --lib --bins --tests -- \
+    -p spotless-core -p spotless-worker --lib --bins --tests -- \
     --skip huge_album_builds_quickly --skip hostile_library_stays_bounded'
 
 # Every fuzz target for 60 s (CI), or one target for longer
@@ -414,7 +414,7 @@ nix develop .#nightly -c linux/fuzz/smoke.sh 60
 nix develop .#nightly -c bash -c 'cd linux/fuzz && cargo fuzz run -O playlist_parse -- -max_total_time=900'
 
 # Mutation testing (slow): tests that would not notice a changed line
-nix develop -c bash -c 'cd linux && cargo mutants -p tunemesh-core -f src/limits.rs -f src/playlist.rs'
+nix develop -c bash -c 'cd linux && cargo mutants -p spotless-core -f src/limits.rs -f src/playlist.rs'
 ```
 
 Tests that use the file system or child processes are marked

@@ -8,6 +8,6 @@
         tools:ignore="ScopedStorage" />
 
     <queries>
-        <package android:name="io.github.brainage04.tunemesh" />
+        <package android:name="io.github.brainage04.spotless" />
     </queries>
 </manifest>

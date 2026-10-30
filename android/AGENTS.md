@@ -1,9 +1,9 @@
-# TuneMesh Android
+# Spotless Android
 
 Project-specific notes for agents working on the Android app. The root `AGENTS.md`, and `AGENTS.local.md` when
 it exists, apply as well.
 
-- Module `app`, variant `debug`, application ID `io.github.brainage04.tunemesh`, launcher activity
+- Module `app`, variant `debug`, application ID `io.github.brainage04.spotless`, launcher activity
   `.MainActivity`. A second exported activity, `.ShareActivity`, is the `ACTION_SEND text/plain` share target.
 - Build and test with the checked-in Gradle wrapper from this directory. Set the SDK explicitly: if the shell's
   `ANDROID_HOME` and `ANDROID_SDK_ROOT` point at two different SDKs (for example a Nix store SDK), Gradle refuses
@@ -22,14 +22,14 @@ it exists, apply as well.
 - Instrumentation tests (`connectedDebugAndroidTest`) uninstall the app from the device when they finish.
   Reinstall the built APK before manual checks.
 - On an emulator, grant all-files access without the settings UI:
-  `adb -s emulator-5554 shell appops set --uid io.github.brainage04.tunemesh MANAGE_EXTERNAL_STORAGE allow`.
+  `adb -s emulator-5554 shell appops set --uid io.github.brainage04.spotless MANAGE_EXTERNAL_STORAGE allow`.
   On a real phone the user grants it through the onboarding screen; never change app ops there.
 - Test libraries are generated with ffmpeg (sine/noise audio, `-metadata` tags, embedded covers; Opus covers
-  as a `METADATA_BLOCK_PICTURE` tag) under `/tmp` and pushed to `/sdcard/Music/TuneMesh` on the emulator only.
+  as a `METADATA_BLOCK_PICTURE` tag) under `/tmp` and pushed to `/sdcard/Music/Spotless` on the emulator only.
   Never commit audio fixtures.
 - JVM unit tests cover the library contract (`app/src/test`): playlists, Liked Songs, sanitising, metadata
-  fallbacks, request/status/worker JSON, pasted download input. Keep the `io.github.brainage04.tunemesh.library`
-  package (`app/src/main/java/io/github/brainage04/tunemesh/library/`) free of Android imports so they stay
+  fallbacks, request/status/worker JSON, pasted download input. Keep the `io.github.brainage04.spotless.library`
+  package (`app/src/main/java/io/github/brainage04/spotless/library/`) free of Android imports so they stay
   JVM tests.
 - Limits on everything read from the synced folder live in one object, `library/Limits.kt`, row for row with
   `docs/library-format.md` "Limits". A new synced input gets a row there and a constant here. Each synced format
@@ -110,14 +110,14 @@ Run these from this directory before committing (they also run in CI):
   an album and the share sheet, and recreates them as a rotation does. Give a new instrumented test class the same rule.
 - Stalls: `baselineprofile/` holds the macrobenchmarks (`HostileLibraryBenchmark`: start, search, the 40,000-track
   album, a 250,000-entry playlist, Downloads, scrolling Your Library) and the baseline profile generator. Both run on
-  the hostile library, which `HostileSetup` generates once in the emulator's `/sdcard/Music/TuneMesh` (it refuses a
+  the hostile library, which `HostileSetup` generates once in the emulator's `/sdcard/Music/Spotless` (it refuses a
   folder holding anything else), against the minified `benchmarkRelease` build. Emulator only, through `heavy`; the
   first run generates the library and scans it, about 45 minutes in all:
 
   ```sh
   ANDROID_SERIAL=emulator-5554 ./gradlew --no-daemon :baselineprofile:connectedBenchmarkReleaseAndroidTest \
     -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true \
-    -Pandroid.testInstrumentationRunnerArguments.class=io.github.brainage04.tunemesh.baselineprofile.HostileLibraryBenchmark
+    -Pandroid.testInstrumentationRunnerArguments.class=io.github.brainage04.spotless.baselineprofile.HostileLibraryBenchmark
   ```
 
   Results (JSON) and a Perfetto trace per iteration land in

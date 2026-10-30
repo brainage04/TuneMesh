@@ -1,6 +1,6 @@
 #!/bin/sh
 # Regenerates THIRD-PARTY-RUST.txt, the licences of every Rust crate linked
-# into tunemesh and tunemesh-worker, from linux/Cargo.lock. Run it after
+# into spotless and spotless-worker, from linux/Cargo.lock. Run it after
 # changing dependencies (CI fails while the file is out of date):
 #
 #   nix shell --inputs-from . nixpkgs#cargo-about nixpkgs#cargo -c packaging/licenses/update-rust-licenses.sh

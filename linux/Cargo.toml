@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/tunemesh-core", "crates/tunemesh", "crates/tunemesh-worker"]
+members = ["crates/spotless-core", "crates/spotless", "crates/spotless-worker"]
 # cargo-fuzz targets: their own workspace, built with nightly (fuzz/README.md).
 exclude = ["fuzz"]
 
@@ -11,7 +11,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-tunemesh-core = { path = "crates/tunemesh-core" }
+spotless-core = { path = "crates/spotless-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 fastrand = "2"
@@ -22,5 +22,5 @@ anyhow = "1"
 lto = "thin"
 codegen-units = 4
 # Unwind, so a panic in a tag parser on a synced file can be caught
-# (tunemesh_core::library::guarded) instead of ending the process.
+# (spotless_core::library::guarded) instead of ending the process.
 panic = "unwind"

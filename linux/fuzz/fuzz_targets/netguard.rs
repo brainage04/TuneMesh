@@ -10,7 +10,7 @@ use std::net::IpAddr;
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tunemesh_worker::netguard::{
+use spotless_worker::netguard::{
     Net, canonical, is_public, refusal, resolve_checked_with, routes_v4, routes_v6,
 };
 

@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::stignore::{RULES, with_rules};
+use spotless_core::stignore::{RULES, with_rules};
 
 /// Whether a line of `text` is `rule`, surrounding white space ignored (as
 /// Syncthing reads it).

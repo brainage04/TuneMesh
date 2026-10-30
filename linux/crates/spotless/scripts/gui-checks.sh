@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# The desktop app's GUI checks, in a private headless sway with its own
+# session bus (never the desktop you are using):
+#
+#   leaks   every page, panel and dialog is freed once closed, and the
+#           user-visible checks in gui_tests::checks (debug build)
+#   stalls  the typical and the hostile library walks stay under the
+#           main-loop stall budget (release build; generates about 2.4 GB
+#           of libraries under /var/tmp)
+#   all     both (the default)
+#
+# Run from the dev shell, with sway and dbus on PATH:
+#   nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#dbus -c \
+#     linux/crates/spotless/scripts/gui-checks.sh [leaks|stalls|all]
+#
+# Extra arguments go to `cargo test`. Environment: SPOTLESS_STALL_BUDGET_MS
+# (default 16.6), SPOTLESS_STALL_ROUNDS (default 20), SPOTLESS_TYPICAL_LIBRARY
+# and SPOTLESS_HOSTILE_LIBRARY (reuse a generated library),
+# SPOTLESS_STALL_REPORT (also write the stall tables next to this file),
+# GSK_RENDERER (default cairo). To draw on a GPU, give the compositor one:
+# WLR_RENDERER=gles2 WLR_RENDER_DRM_DEVICE=/dev/dri/renderD128 GSK_RENDERER=gl.
+set -euo pipefail
+
+what=${1:-all}
+[ $# -gt 0 ] && shift
+case $what in
+leaks | stalls | all) ;;
+*)
+	echo "usage: $0 [leaks|stalls|all] [cargo test arguments]" >&2
+	exit 2
+	;;
+esac
+
+linux=$(cd "$(dirname "$0")/../../.." && pwd)
+run=$(mktemp -d "${TMPDIR:-/tmp}/spotless-gui.XXXXXX")
+sway_pid=
+bus_pid=
+cleanup() {
+	if [ -n "$sway_pid" ]; then
+		kill "$sway_pid" 2>/dev/null || true
+		wait "$sway_pid" 2>/dev/null || true
+	fi
+	if [ -n "$bus_pid" ]; then kill "$bus_pid" 2>/dev/null || true; fi
+	rm -rf "$run"
+}
+trap cleanup EXIT
+
+export XDG_RUNTIME_DIR=$run
+# A session bus that starts no services (no portals, no keyring), shared by
+# sway and the tests. It has to exist before sway starts: nixpkgs' sway
+# wrapper starts its own bus from the system's session.conf when it finds
+# none, and CI runners have no /etc/dbus-1/session.conf.
+cat >"$run/bus.conf" <<EOF
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:dir=$run</listen>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>
+EOF
+exec 3< <(dbus-daemon --nofork --print-address=1 --print-pid=1 --config-file="$run/bus.conf")
+read -r DBUS_SESSION_BUS_ADDRESS <&3
+read -r bus_pid <&3
+export DBUS_SESSION_BUS_ADDRESS
+
+printf '%s\n' 'output HEADLESS-1 resolution 1920x1080' 'default_border none' >"$run/sway.cfg"
+WLR_BACKENDS=headless WLR_RENDERER=${WLR_RENDERER:-pixman} WLR_LIBINPUT_NO_DEVICES=1 \
+	sway --config "$run/sway.cfg" >"$run/sway.log" 2>&1 &
+sway_pid=$!
+for _ in $(seq 100); do
+	[ -S "$run/wayland-1" ] && break
+	if ! kill -0 "$sway_pid" 2>/dev/null; then
+		cat "$run/sway.log" >&2
+		exit 1
+	fi
+	sleep 0.1
+done
+[ -S "$run/wayland-1" ] || {
+	echo "sway did not start" >&2
+	cat "$run/sway.log" >&2
+	exit 1
+}
+export WAYLAND_DISPLAY=wayland-1 GDK_BACKEND=wayland
+unset DISPLAY
+# None of the desktop's GTK settings or portals. Software rendering with
+# cairo unless GSK_RENDERER says otherwise: the headless compositor has no
+# GPU unless WLR_RENDERER gives it one, and GL through llvmpipe spends most
+# of a frame copying pixels.
+export XDG_CONFIG_HOME=$run/config GDK_DEBUG=no-portals GSK_RENDERER=${GSK_RENDERER:-cairo}
+
+cd "$linux"
+if [ "$what" != stalls ]; then
+	cargo test -p spotless "$@" -- --ignored --exact \
+		gui_tests::leaks::closed_pages_are_freed
+	cargo test -p spotless "$@" -- --ignored gui_tests::checks::
+fi
+if [ "$what" != leaks ]; then
+	# One walk at a time: each measures the machine it has to itself.
+	cargo test --release -p spotless "$@" -- --ignored --nocapture --test-threads=1 \
+		gui_tests::stalls::
+fi

@@ -575,7 +575,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
-name = "tunemesh-core"
+name = "spotless-core"
 version = "0.1.0"
 dependencies = [
  "fastrand",
@@ -588,18 +588,18 @@ dependencies = [
 ]
 
 [[package]]
-name = "tunemesh-fuzz"
+name = "spotless-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "libfuzzer-sys",
  "serde_json",
- "tunemesh-core",
- "tunemesh-worker",
+ "spotless-core",
+ "spotless-worker",
 ]
 
 [[package]]
-name = "tunemesh-worker"
+name = "spotless-worker"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -612,7 +612,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "toml",
- "tunemesh-core",
+ "spotless-core",
  "ureq",
 ]
 

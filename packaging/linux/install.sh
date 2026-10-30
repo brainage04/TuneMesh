@@ -1,10 +1,10 @@
 #!/bin/sh
-# Installs (or uninstalls) the TuneMesh desktop app, the download worker and
+# Installs (or uninstalls) the Spotless desktop app, the download worker and
 # their data files in the standard Linux layout. The .deb, .rpm and Arch
 # packages call it with --destdir; from a source checkout it is the
 # "make install" equivalent:
 #
-#   cargo build --release --locked --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker
+#   cargo build --release --locked --manifest-path linux/Cargo.toml -p spotless -p spotless-worker
 #   sudo packaging/linux/install.sh                # installs under /usr/local
 #   sudo packaging/linux/install.sh --uninstall    # removes exactly those files
 #
@@ -32,7 +32,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-app_id=io.github.brainage04.TuneMesh
+app_id=io.github.brainage04.Spotless
 data=$repo/linux/data
 bindir=$prefix/bin
 datadir=$prefix/share
@@ -41,14 +41,14 @@ datadir=$prefix/share
 userunitdir=$prefix/lib/systemd/user
 
 # Destination paths, one per line, in install order.
-files="$bindir/tunemesh
-$bindir/tunemesh-worker
+files="$bindir/spotless
+$bindir/spotless-worker
 $datadir/applications/$app_id.desktop
 $datadir/icons/hicolor/scalable/apps/$app_id.svg
 $datadir/metainfo/$app_id.metainfo.xml
-$userunitdir/tunemesh-worker.service
-$datadir/licenses/tunemesh/LICENSE
-$datadir/licenses/tunemesh/THIRD-PARTY-RUST.txt"
+$userunitdir/spotless-worker.service
+$datadir/licenses/spotless/LICENSE
+$datadir/licenses/spotless/THIRD-PARTY-RUST.txt"
 
 refresh_caches() {
     # Only when installing into the live system; package managers run these
@@ -66,15 +66,15 @@ if $uninstall; then
     echo "$files" | while IFS= read -r f; do
         rm -f "$destdir$f"
     done
-    rmdir "$destdir$datadir/licenses/tunemesh" 2>/dev/null || true
+    rmdir "$destdir$datadir/licenses/spotless" 2>/dev/null || true
     refresh_caches
     exit 0
 fi
 
-for bin in tunemesh tunemesh-worker; do
+for bin in spotless spotless-worker; do
     if [ ! -x "$bin_dir/$bin" ]; then
         echo "install.sh: $bin_dir/$bin is missing; build it first with" >&2
-        echo "  cargo build --release --locked --manifest-path linux/Cargo.toml -p tunemesh -p tunemesh-worker" >&2
+        echo "  cargo build --release --locked --manifest-path linux/Cargo.toml -p spotless -p spotless-worker" >&2
         exit 1
     fi
 done
@@ -93,8 +93,8 @@ if $bad; then
     exit 1
 fi
 
-install -Dm755 "$bin_dir/tunemesh" "$destdir$bindir/tunemesh"
-install -Dm755 "$bin_dir/tunemesh-worker" "$destdir$bindir/tunemesh-worker"
+install -Dm755 "$bin_dir/spotless" "$destdir$bindir/spotless"
+install -Dm755 "$bin_dir/spotless-worker" "$destdir$bindir/spotless-worker"
 install -Dm644 "$data/$app_id.desktop" "$destdir$datadir/applications/$app_id.desktop"
 install -Dm644 "$data/$app_id.svg" "$destdir$datadir/icons/hicolor/scalable/apps/$app_id.svg"
 install -Dm644 "$data/$app_id.metainfo.xml" "$destdir$datadir/metainfo/$app_id.metainfo.xml"
@@ -103,9 +103,9 @@ mkdir -p "$destdir$userunitdir"
 # specifiers) doubled; systemd does not expand $ in the executable path. The
 # template is filled in with awk's index/substr, so nothing in the prefix acts
 # as a pattern or replacement metacharacter.
-worker_exec=$(printf '%s/tunemesh-worker' "$bindir" | sed 's/%/%%/g')
-TUNEMESH_WORKER_EXEC="\"$worker_exec\"" awk '
-    BEGIN { token = "@bindir@/tunemesh-worker"; value = ENVIRON["TUNEMESH_WORKER_EXEC"] }
+worker_exec=$(printf '%s/spotless-worker' "$bindir" | sed 's/%/%%/g')
+SPOTLESS_WORKER_EXEC="\"$worker_exec\"" awk '
+    BEGIN { token = "@bindir@/spotless-worker"; value = ENVIRON["SPOTLESS_WORKER_EXEC"] }
     {
         out = ""
         while ((i = index($0, token)) > 0) {
@@ -114,10 +114,10 @@ TUNEMESH_WORKER_EXEC="\"$worker_exec\"" awk '
         }
         print out $0
     }
-' "$repo/packaging/systemd/tunemesh-worker.service.in" >"$destdir$userunitdir/tunemesh-worker.service"
-chmod 644 "$destdir$userunitdir/tunemesh-worker.service"
-# TuneMesh's licence and those of the Rust crates linked into both binaries.
-install -Dm644 "$repo/LICENSE" "$destdir$datadir/licenses/tunemesh/LICENSE"
+' "$repo/packaging/systemd/spotless-worker.service.in" >"$destdir$userunitdir/spotless-worker.service"
+chmod 644 "$destdir$userunitdir/spotless-worker.service"
+# Spotless's licence and those of the Rust crates linked into both binaries.
+install -Dm644 "$repo/LICENSE" "$destdir$datadir/licenses/spotless/LICENSE"
 install -Dm644 "$repo/packaging/licenses/THIRD-PARTY-RUST.txt" \
-    "$destdir$datadir/licenses/tunemesh/THIRD-PARTY-RUST.txt"
+    "$destdir$datadir/licenses/spotless/THIRD-PARTY-RUST.txt"
 refresh_caches

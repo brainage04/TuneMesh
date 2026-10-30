@@ -1,6 +1,6 @@
 # Library format
 
-Every TuneMesh client and the download worker share one Syncthing folder and
+Every Spotless client and the download worker share one Syncthing folder and
 nothing else. This document is the whole contract between them: if two
 implementations disagree, this file decides.
 
@@ -8,10 +8,10 @@ implementations disagree, this file decides.
 
 | | |
 | --- | --- |
-| Syncthing folder ID | `tunemesh` |
-| Label | `TuneMesh` |
-| Linux | `~/Music/TuneMesh` |
-| Android | `/storage/emulated/0/Music/TuneMesh` |
+| Syncthing folder ID | `spotless` |
+| Label | `Spotless` |
+| Linux | `~/Music/Spotless` |
+| Android | `/storage/emulated/0/Music/Spotless` |
 
 Both apps let the user change the path; these are the defaults. On Android the
 folder must have Syncthing's "Ignore permissions" set: shared storage reports
@@ -29,13 +29,18 @@ turns into conflict copies of request and status files.
   .stignore                                       per device, never synced
 ```
 
+`.tunemesh/` keeps its name from before the app was renamed to Spotless: it is
+part of this format, shared by the desktop app, the Android app and the worker,
+so renaming it would need a format change and would break libraries that are
+already synced.
+
 Symbolic links: any device can put a symlink into the shared folder, so
 implementations never follow one below `<root>`. Playlists, `.tunemesh/` and
 everything in it, and the directories the worker creates or writes into must
 be real directories and regular files; a symlink in their place is refused
 (read as missing or invalid, never written through). Symlinked audio files and
 directories are not part of the library. Desktop and worker open these paths
-with `O_NOFOLLOW` relative to the root (`tunemesh_core::fsx`). Android shared
+with `O_NOFOLLOW` relative to the root (`spotless_core::fsx`). Android shared
 storage cannot hold symlinks.
 
 ## Audio files
@@ -59,7 +64,7 @@ storage cannot hold symlinks.
 - Cover art: the embedded picture; otherwise `cover.jpg`, `cover.png`,
   `folder.jpg` or `folder.png` in the track's directory; otherwise a generated
   placeholder.
-- File and directory names written by TuneMesh never contain
+- File and directory names written by Spotless never contain
   `/ \ : * ? " < > |` or control characters (Android's shared storage rejects
   them), never start with `.` (readers skip hidden names), never end in `.` or
   space, and each component is at most 120 bytes. Replace offending
@@ -91,7 +96,7 @@ storage cannot hold symlinks.
 - `Playlists/Liked Songs.m3u8` is Liked Songs. Liking a track inserts it at the
   top; unliking removes every entry for that track. It cannot be renamed or
   deleted from the UI.
-- Writers write atomically: write `.~tunemesh-<random>.tmp` in the same
+- Writers write atomically: write `.~spotless-<random>.tmp` in the same
   directory, then rename it over the target. Never edit in place.
 - Edits on one machine: a writer re-reads the playlist, changes it and writes
   it while holding an exclusive `flock` on an open handle of the
@@ -133,8 +138,8 @@ it re-read, unless that version is exactly the one this device wrote last
 (then the base stays, so several own edits in a row keep the version they
 started from). After a merge the base is the merged playlist. Bases are
 never inside `<root>`, never synced and not backed up: the desktop app and
-the worker keep them in `$XDG_STATE_HOME/tunemesh/playlist-base/` (default
-`~/.local/state/tunemesh/playlist-base/`), shared by the app and a worker of
+the worker keep them in `$XDG_STATE_HOME/spotless/playlist-base/` (default
+`~/.local/state/spotless/playlist-base/`), shared by the app and a worker of
 the same user and changed under the lock; Android keeps them in app-private
 storage (`filesDir/playlist-base/`). A base follows the playlist limits (a
 too-large playlist has none); renaming a playlist moves its base, deleting
@@ -371,7 +376,7 @@ downloading and every 60 seconds after that:
 - `device`: device name (the host name unless `--device` says otherwise),
   for display; not unique. `machine`: 32 hex characters identifying the
   machine and its process-id namespace (a SHA-256 hash of `/etc/machine-id`,
-  or of a random id kept in `$XDG_DATA_HOME/tunemesh/worker-id`, plus the
+  or of a random id kept in `$XDG_DATA_HOME/spotless/worker-id`, plus the
   namespace), so a sandboxed worker differs from one on the host; may be
   missing in files from older workers. `instance`: random per worker
   process. `pid`: its process id in that namespace. `workerVersion`: the
@@ -393,7 +398,7 @@ downloading and every 60 seconds after that:
 
 ## Worker behaviour
 
-The worker (`tunemesh-worker`) runs on any Linux device that holds the
+The worker (`spotless-worker`) runs on any Linux device that holds the
 library, as a service or as a child process of the desktop app. It:
 
 1. Processes requests oldest first, one at a time, looking at the oldest 500
@@ -465,7 +470,7 @@ library, as a service or as a child process of the desktop app. It:
 
 Every file in `<root>` can come from any device that shares the folder, so
 every reader bounds what it reads, keeps and shows. These are the limits of
-all implementations (Rust: `tunemesh_core::limits`; Android: `Limits`).
+all implementations (Rust: `spotless_core::limits`; Android: `Limits`).
 Real libraries stay far below them. Sizes are bytes of UTF-8; text is cut
 at a character boundary.
 
@@ -528,6 +533,6 @@ desktop app, the Android app and the worker add these rules when missing,
 keeping the user's other lines):
 
 ```text
-// TuneMesh
-(?d).~tunemesh-*
+// Spotless
+(?d).~spotless-*
 ```

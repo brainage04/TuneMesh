@@ -8,9 +8,9 @@
 #   guest.sh test <distro> <package>   install, test and uninstall one package
 set -euo pipefail
 
-APP_ID=io.github.brainage04.TuneMesh
-MPRIS=org.mpris.MediaPlayer2.tunemesh
-LIB=$HOME/Music/TuneMesh
+APP_ID=io.github.brainage04.Spotless
+MPRIS=org.mpris.MediaPlayer2.spotless
+LIB=$HOME/Music/Spotless
 export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
 
 log() { printf '[guest %(%H:%M:%S)T] %s\n' -1 "$*"; }
@@ -57,7 +57,7 @@ context.objects = [
         args = {
             factory.name     = support.null-audio-sink
             node.name        = tm-null
-            node.description = "TuneMesh test null sink"
+            node.description = "Spotless test null sink"
             media.class      = Audio/Sink
             audio.position   = [ FL FR ]
             monitor.channel-volumes = true
@@ -89,7 +89,7 @@ for o in json.load(sys.stdin):
 else:
     sys.exit(1)'
 }
-# Succeeds when a TuneMesh playback stream is running and linked to tm-null.
+# Succeeds when a Spotless playback stream is running and linked to tm-null.
 stream_on_null_sink() {
     pw_json | python3 -c '
 import json, sys
@@ -102,7 +102,7 @@ streams = {
     for o in objs
     if o.get("type") == "PipeWire:Interface:Node"
     and props(o).get("media.class") == "Stream/Output/Audio"
-    and "tunemesh" in (str(props(o).get("application.name", "")) + str(props(o).get("node.name", ""))).lower()
+    and "spotless" in (str(props(o).get("application.name", "")) + str(props(o).get("node.name", ""))).lower()
 }
 links = [
     o for o in objs
@@ -131,18 +131,18 @@ activate() {
         busctl --user call "$APP_ID" "/${APP_ID//.//}" org.gtk.Actions Activate 'sava{sv}' "$1" 0 0
     fi
 }
-leftover_processes() { pgrep -u "$(id -u)" -x 'tunemesh|tunemesh-worker'; }
+leftover_processes() { pgrep -u "$(id -u)" -x 'spotless|spotless-worker'; }
 not_running() { ! leftover_processes; }
-app_gone() { ! pgrep -u "$(id -u)" -x tunemesh; }
-worker_running() { pgrep -u "$(id -u)" -x tunemesh-worker; }
+app_gone() { ! pgrep -u "$(id -u)" -x spotless; }
+worker_running() { pgrep -u "$(id -u)" -x spotless-worker; }
 no_appimage_mount() { ! grep -q '/tmp/.mount_' /proc/mounts; }
 
 # The program's own scopes: `flatpak run` and `snap run` move it out of the
-# service that started it (app-flatpak-<id>-<n>.scope, snap.tunemesh.*.scope),
+# service that started it (app-flatpak-<id>-<n>.scope, snap.spotless.*.scope),
 # so stopping that service alone does not reach it.
-scopes=("app-flatpak-$APP_ID-*.scope" 'snap.tunemesh.*.scope')
+scopes=("app-flatpak-$APP_ID-*.scope" 'snap.spotless.*.scope')
 unit_inactive() { ! systemctl --user is-active --quiet "$1"; }
-# Stops a unit and those scopes (SIGTERM) and waits for TuneMesh to exit.
+# Stops a unit and those scopes (SIGTERM) and waits for Spotless to exit.
 # With $2, that program gets SIGTERM first and the unit a chance to end by
 # itself: `systemctl stop` signals every process of the unit at once, and an
 # AppImage runtime killed that way leaves its FUSE mount behind (or unmounts
@@ -155,7 +155,7 @@ stop_unit() {
         wait_for 15 unit_inactive "$1" || true
     fi
     systemctl --user stop "$1" "${scopes[@]}" 2>/dev/null || true
-    wait_for 15 not_running || fail "TuneMesh still runs 15 s after stopping $1"
+    wait_for 15 not_running || fail "Spotless still runs 15 s after stopping $1"
 }
 
 # ----------------------------------------------------------------- test
@@ -170,8 +170,8 @@ uninstall() {
         *) sudo pacman -Rns --noconfirm "$pkgname" ;;
         esac
         ;;
-    appimage) rm -f ~/Applications/TuneMesh.AppImage ;;
-    snap) sudo snap remove --purge tunemesh ;;
+    appimage) rm -f ~/Applications/Spotless.AppImage ;;
+    snap) sudo snap remove --purge spotless ;;
     flatpak) flatpak uninstall --user -y --noninteractive --delete-data "$APP_ID" ;;
     esac
 }
@@ -182,8 +182,8 @@ uninstall() {
 clean_up_failure() {
     [ $? -ne 0 ] || return 0
     log "cleaning up after the failure"
-    systemctl --user disable tunemesh-worker.service 2>/dev/null || true
-    systemctl --user stop tm-app.service tm-sway.service tunemesh-worker.service "${scopes[@]}" 2>/dev/null || true
+    systemctl --user disable spotless-worker.service 2>/dev/null || true
+    systemctl --user stop tm-app.service tm-sway.service spotless-worker.service "${scopes[@]}" 2>/dev/null || true
     systemctl --user reset-failed 2>/dev/null || true
     [ -z "$kind" ] || uninstall || true
 }
@@ -196,7 +196,7 @@ test_package() {
     trap clean_up_failure EXIT
     local out=~/tm/logs/$name
     mkdir -p "$out"
-    rm -rf ~/.config/tunemesh ~/.local/state/tunemesh ~/.cache/tunemesh "$LIB"
+    rm -rf ~/.config/spotless ~/.local/state/spotless ~/.cache/spotless "$LIB"
 
     # ---- install
     case $name in
@@ -233,18 +233,18 @@ test_package() {
                 pipewire-libs libusb1 shared-mime-info
         fi
         mkdir -p ~/Applications
-        cp "$pkg" ~/Applications/TuneMesh.AppImage
-        chmod +x ~/Applications/TuneMesh.AppImage
-        app=~/Applications/TuneMesh.AppImage
+        cp "$pkg" ~/Applications/Spotless.AppImage
+        chmod +x ~/Applications/Spotless.AppImage
+        app=~/Applications/Spotless.AppImage
         worker="$app worker"
         ;;
     *.snap)
         kind=snap
         sudo snap wait system seed.loaded
         sudo snap install --dangerous "$pkg"
-        snap connections tunemesh >"$out/snap-connections.txt"
-        app=/snap/bin/tunemesh
-        worker=/snap/bin/tunemesh.worker
+        snap connections spotless >"$out/snap-connections.txt"
+        app=/snap/bin/spotless
+        worker=/snap/bin/spotless.worker
         ;;
     *.flatpak)
         kind=flatpak
@@ -252,13 +252,13 @@ test_package() {
         flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
         flatpak install --user -y --noninteractive "$pkg"
         app="flatpak run $APP_ID"
-        worker="flatpak run --command=tunemesh-worker $APP_ID"
+        worker="flatpak run --command=spotless-worker $APP_ID"
         ;;
     *) fail "unknown package type: $name" ;;
     esac
     if [ "$kind" = native ]; then
-        app=tunemesh
-        worker=tunemesh-worker
+        app=spotless
+        worker=spotless-worker
         unit_mode=shipped
     else
         unit_mode=transient
@@ -275,9 +275,9 @@ test_package() {
     mkdir -p "$(dirname "$LIB")"
     cp -a ~/tm/library "$LIB"
     case $kind in
-    flatpak) cfg=~/.var/app/$APP_ID/config/tunemesh ;;
-    snap) cfg=~/snap/tunemesh/current/.config/tunemesh ;;
-    *) cfg=~/.config/tunemesh ;;
+    flatpak) cfg=~/.var/app/$APP_ID/config/spotless ;;
+    snap) cfg=~/snap/spotless/current/.config/spotless ;;
+    *) cfg=~/.config/spotless ;;
     esac
     mkdir -p "$cfg"
     printf 'library_path = "%s"\nsetup_done = true\n' "$LIB" >"$cfg/config.toml"
@@ -285,8 +285,8 @@ test_package() {
     # ---- the worker as a systemd user service
     systemctl --user daemon-reload
     if [ "$unit_mode" = shipped ]; then
-        systemctl --user cat tunemesh-worker.service >"$out/worker-unit.txt"
-        systemctl --user enable --now tunemesh-worker.service
+        systemctl --user cat spotless-worker.service >"$out/worker-unit.txt"
+        systemctl --user enable --now spotless-worker.service
     else
         # No systemd unit in this format: the same command as a transient unit.
         # ExitType=cgroup: the AppImage runtime execs the program in the main
@@ -294,26 +294,26 @@ test_package() {
         # the program exits; by default systemd kills that child as soon as
         # the main process ends, and the mount is left behind.
         # shellcheck disable=SC2086
-        systemd-run --user --unit=tunemesh-worker -p Restart=no -p ExitType=cgroup -- \
+        systemd-run --user --unit=spotless-worker -p Restart=no -p ExitType=cgroup -- \
             $worker --library "$LIB"
     fi
     sleep 15
-    journalctl --user -u tunemesh-worker --no-pager >"$out/worker.log" 2>&1 || true
-    systemctl --user status tunemesh-worker --no-pager || true
-    systemctl --user is-active --quiet tunemesh-worker || fail "tunemesh-worker is not active after 15 s"
-    worker_running >/dev/null || fail "no tunemesh-worker process after 15 s"
-    [ "$(systemctl --user show -p NRestarts --value tunemesh-worker)" = 0 ] ||
-        fail "tunemesh-worker restarted"
-    log "tunemesh-worker active as a user service ($unit_mode)"
+    journalctl --user -u spotless-worker --no-pager >"$out/worker.log" 2>&1 || true
+    systemctl --user status spotless-worker --no-pager || true
+    systemctl --user is-active --quiet spotless-worker || fail "spotless-worker is not active after 15 s"
+    worker_running >/dev/null || fail "no spotless-worker process after 15 s"
+    [ "$(systemctl --user show -p NRestarts --value spotless-worker)" = 0 ] ||
+        fail "spotless-worker restarted"
+    log "spotless-worker active as a user service ($unit_mode)"
     # shellcheck disable=SC2086
     $worker --self-test --work-dir "/tmp/tm-self-test.$$" 2>&1 | tee "$out/self-test.log"
     rm -rf "/tmp/tm-self-test.$$"
-    log "tunemesh-worker --self-test passed"
+    log "spotless-worker --self-test passed"
     if [ "$unit_mode" = transient ]; then
-        stop_unit tunemesh-worker.service tunemesh-worker
+        stop_unit spotless-worker.service spotless-worker
     else
-        systemctl --user disable tunemesh-worker.service
-        stop_unit tunemesh-worker.service
+        systemctl --user disable spotless-worker.service
+        stop_unit spotless-worker.service
     fi
     systemctl --user reset-failed 2>/dev/null || true
 
@@ -356,7 +356,7 @@ test_package() {
     [ $((p2 - p1)) -ge 3000000 ] || fail "the MPRIS position did not advance by 3 s in 5 s"
     grep -q 'Tone' "$out/mpris-metadata.txt" || fail "MPRIS metadata has no generated track"
     stream_on_null_sink | tee "$out/pipewire-stream.txt" ||
-        fail "no running TuneMesh stream linked to the tm-null sink"
+        fail "no running Spotless stream linked to the tm-null sink"
     pw-dump >"$out/pw-dump.json" 2>&1 || true
     activate play-pause >/dev/null
     wait_for 5 not_playing || fail "app.play-pause did not pause playback"
@@ -365,9 +365,9 @@ test_package() {
 
     # SIGTERM to the app itself (as `kill` would): it saves its state and
     # exits cleanly.
-    pkill -TERM -u "$(id -u)" -x tunemesh
+    pkill -TERM -u "$(id -u)" -x spotless
     wait_for 15 app_gone || fail "the app did not exit within 15 s of SIGTERM"
-    stop_unit tm-app.service tunemesh
+    stop_unit tm-app.service spotless
     journalctl --user --since "@$app_start" -u tm-app.service -u "${scopes[0]}" -u "${scopes[1]}" \
         --no-pager >"$out/app.log" 2>&1 || true
     if systemctl --user is-failed --quiet tm-app.service; then
@@ -386,11 +386,11 @@ test_package() {
     native)
         bash ~/tm/check-removed.sh "$out/installed.txt"
         systemctl --user daemon-reload
-        if systemctl --user cat tunemesh-worker.service >/dev/null 2>&1; then
-            fail "the tunemesh-worker unit is still known to systemd"
+        if systemctl --user cat spotless-worker.service >/dev/null 2>&1; then
+            fail "the spotless-worker unit is still known to systemd"
         fi
-        [ ! -e ~/.config/systemd/user/default.target.wants/tunemesh-worker.service ] ||
-            fail "the tunemesh-worker enable link is left behind"
+        [ ! -e ~/.config/systemd/user/default.target.wants/spotless-worker.service ] ||
+            fail "the spotless-worker enable link is left behind"
         ;;
     appimage)
         # The runtime unmounts the image after its program exits, a moment
@@ -402,16 +402,16 @@ test_package() {
         fi
         ;;
     snap)
-        if snap list tunemesh >/dev/null 2>&1; then fail "the snap is still installed"; fi
-        [ ! -e ~/snap/tunemesh ] || fail "$HOME/snap/tunemesh is left behind"
-        [ ! -e /snap/tunemesh ] || fail "/snap/tunemesh is left behind"
+        if snap list spotless >/dev/null 2>&1; then fail "the snap is still installed"; fi
+        [ ! -e ~/snap/spotless ] || fail "$HOME/snap/spotless is left behind"
+        [ ! -e /snap/spotless ] || fail "/snap/spotless is left behind"
         ;;
     flatpak)
         if flatpak info --user "$APP_ID" >/dev/null 2>&1; then fail "the Flatpak is still installed"; fi
         [ ! -e ~/.var/app/$APP_ID ] || fail "$HOME/.var/app/$APP_ID is left behind"
         ;;
     esac
-    if leftover_processes; then fail "TuneMesh processes are left running"; fi
+    if leftover_processes; then fail "Spotless processes are left running"; fi
     log "uninstalled $name; nothing left behind"
     rm -rf "$LIB"
     log "PASS $name"

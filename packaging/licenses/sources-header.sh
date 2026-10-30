@@ -10,7 +10,7 @@ version=$2
 cat <<EOF
 # Third-party components and their sources: $artifact
 
-TuneMesh $version is MIT licensed. This $artifact also contains third-party
+Spotless $version is MIT licensed. This $artifact also contains third-party
 software under its own licences. Their licence texts are inside the
 $artifact under \`share/licenses/\` and \`share/doc/<package>/copyright\`.
 
@@ -19,13 +19,13 @@ listed below (URLs, versions and checksums). The same files are also
 available on request: open an issue at
 https://github.com/brainage04/TuneMesh/issues.
 
-## TuneMesh and its Rust crates
+## Spotless and its Rust crates
 
-- TuneMesh: https://github.com/brainage04/TuneMesh/releases/tag/v$version
-  (source tarball \`tunemesh-$version.tar.gz\` on that page). It also contains
+- Spotless: https://github.com/brainage04/TuneMesh/releases/tag/v$version
+  (source tarball \`spotless-$version.tar.gz\` on that page). It also contains
   the build recipes for this $artifact under \`packaging/\`.
-- Rust crates statically linked into \`tunemesh\` and \`tunemesh-worker\`:
-  listed with their licences in \`share/licenses/tunemesh/THIRD-PARTY-RUST.txt\`.
+- Rust crates statically linked into \`spotless\` and \`spotless-worker\`:
+  listed with their licences in \`share/licenses/spotless/THIRD-PARTY-RUST.txt\`.
   Their exact versions and SHA-256 checksums are in \`linux/Cargo.lock\` in the
   source tarball; each crate's source is at
   \`https://crates.io/api/v1/crates/<name>/<version>/download\`. The one crate

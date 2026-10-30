@@ -4,10 +4,10 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_worker::job::{Input, classify};
-use tunemesh_worker::netguard::host_port;
-use tunemesh_worker::spotify::parse_url;
-use tunemesh_worker::ytdlp::{YouTubeList, music_search_url, percent_encode, youtube_list};
+use spotless_worker::job::{Input, classify};
+use spotless_worker::netguard::host_port;
+use spotless_worker::spotify::parse_url;
+use spotless_worker::ytdlp::{YouTubeList, music_search_url, percent_encode, youtube_list};
 
 fn percent_decode(s: &str) -> Vec<u8> {
     let b = s.as_bytes();

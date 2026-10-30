@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace = "io.github.brainage04.tunemesh.baselineprofile"
+    namespace = "io.github.brainage04.spotless.baselineprofile"
     compileSdk = 36
 
     defaultConfig {

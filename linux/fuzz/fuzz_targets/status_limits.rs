@@ -4,8 +4,8 @@
 
 use arbitrary::Arbitrary;
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::limits::MAX_JSON_BYTES;
-use tunemesh_core::request::{Failure, RequestState, Status, parse_status};
+use spotless_core::limits::MAX_JSON_BYTES;
+use spotless_core::request::{Failure, RequestState, Status, parse_status};
 
 const ID: &str = "1791265297123-3f9c2a1b";
 

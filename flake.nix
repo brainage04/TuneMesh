@@ -1,5 +1,5 @@
 {
-  description = "TuneMesh: a Syncthing-backed personal music player and its download worker";
+  description = "Spotless: a Syncthing-backed personal music player and its download worker";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/c5c4a43b0e8056328ec4529f735cabdb8f1942bb";
 
@@ -29,13 +29,13 @@
       # binary cache serves it.
       libmpv = pkgs.mpv-unwrapped;
 
-      tunemesh = pkgs.rustPlatform.buildRustPackage {
-        pname = "tunemesh";
+      spotless = pkgs.rustPlatform.buildRustPackage {
+        pname = "spotless";
         inherit version src;
         cargoLock.lockFile = ./linux/Cargo.lock;
-        cargoBuildFlags = [ "-p" "tunemesh" ];
-        cargoTestFlags = [ "-p" "tunemesh-core" "-p" "tunemesh" ];
-        # tunemesh-core's merge tests read the shared cases from
+        cargoBuildFlags = [ "-p" "spotless" ];
+        cargoTestFlags = [ "-p" "spotless-core" "-p" "spotless" ];
+        # spotless-core's merge tests read the shared cases from
         # docs/test-vectors, which sits outside the ./linux source.
         preCheck = ''
           mkdir -p ../docs
@@ -59,40 +59,40 @@
         '';
 
         postInstall = ''
-          install -Dm644 data/io.github.brainage04.TuneMesh.desktop \
-            $out/share/applications/io.github.brainage04.TuneMesh.desktop
-          install -Dm644 data/io.github.brainage04.TuneMesh.svg \
-            $out/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
-          install -Dm644 data/io.github.brainage04.TuneMesh.metainfo.xml \
-            $out/share/metainfo/io.github.brainage04.TuneMesh.metainfo.xml
+          install -Dm644 data/io.github.brainage04.Spotless.desktop \
+            $out/share/applications/io.github.brainage04.Spotless.desktop
+          install -Dm644 data/io.github.brainage04.Spotless.svg \
+            $out/share/icons/hicolor/scalable/apps/io.github.brainage04.Spotless.svg
+          install -Dm644 data/io.github.brainage04.Spotless.metainfo.xml \
+            $out/share/metainfo/io.github.brainage04.Spotless.metainfo.xml
           mkdir -p $out/lib/systemd/user
-          substitute ${./packaging/systemd/tunemesh-worker.service.in} \
-            $out/lib/systemd/user/tunemesh-worker.service --subst-var-by bindir $out/bin
-          # TuneMesh's licence and the Rust crates linked into both binaries.
-          install -Dm644 ${./LICENSE} $out/share/licenses/tunemesh/LICENSE
+          substitute ${./packaging/systemd/spotless-worker.service.in} \
+            $out/lib/systemd/user/spotless-worker.service --subst-var-by bindir $out/bin
+          # Spotless's licence and the Rust crates linked into both binaries.
+          install -Dm644 ${./LICENSE} $out/share/licenses/spotless/LICENSE
           install -Dm644 ${./packaging/licenses/THIRD-PARTY-RUST.txt} \
-            $out/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
+            $out/share/licenses/spotless/THIRD-PARTY-RUST.txt
         '';
 
         # The app starts the worker from its own bin directory. Linked in after
         # wrapGAppsHook has run, so the worker keeps only its own wrapper.
         postFixup = ''
-          ln -s ${tunemesh-worker}/bin/tunemesh-worker $out/bin/tunemesh-worker
+          ln -s ${spotless-worker}/bin/spotless-worker $out/bin/spotless-worker
         '';
 
         meta = {
           description = "Desktop music player for a Syncthing music library";
-          mainProgram = "tunemesh";
+          mainProgram = "spotless";
           platforms = [ system ];
         };
       };
 
-      tunemesh-worker = pkgs.rustPlatform.buildRustPackage {
-        pname = "tunemesh-worker";
+      spotless-worker = pkgs.rustPlatform.buildRustPackage {
+        pname = "spotless-worker";
         inherit version src;
         cargoLock.lockFile = ./linux/Cargo.lock;
-        cargoBuildFlags = [ "-p" "tunemesh-worker" ];
-        cargoTestFlags = [ "-p" "tunemesh-worker" ];
+        cargoBuildFlags = [ "-p" "spotless-worker" ];
+        cargoTestFlags = [ "-p" "spotless-worker" ];
 
         nativeBuildInputs = [ pkgs.makeWrapper ];
         # tests/ffmpeg_confinement.rs runs the real ffmpeg.
@@ -102,18 +102,18 @@
         # YouTube) and ffmpeg through these variables, so it never downloads
         # its own copies on NixOS.
         postInstall = ''
-          wrapProgram $out/bin/tunemesh-worker \
-            --set-default TUNEMESH_YTDLP ${lib.getExe pkgs.yt-dlp} \
-            --set-default TUNEMESH_DENO ${lib.getExe pkgs.deno} \
-            --set-default TUNEMESH_FFMPEG_DIR ${lib.getBin pkgs.ffmpeg}/bin
-          install -Dm644 ${./LICENSE} $out/share/licenses/tunemesh-worker/LICENSE
+          wrapProgram $out/bin/spotless-worker \
+            --set-default SPOTLESS_YTDLP ${lib.getExe pkgs.yt-dlp} \
+            --set-default SPOTLESS_DENO ${lib.getExe pkgs.deno} \
+            --set-default SPOTLESS_FFMPEG_DIR ${lib.getBin pkgs.ffmpeg}/bin
+          install -Dm644 ${./LICENSE} $out/share/licenses/spotless-worker/LICENSE
           install -Dm644 ${./packaging/licenses/THIRD-PARTY-RUST.txt} \
-            $out/share/licenses/tunemesh-worker/THIRD-PARTY-RUST.txt
+            $out/share/licenses/spotless-worker/THIRD-PARTY-RUST.txt
         '';
 
         meta = {
-          description = "TuneMesh download worker (yt-dlp)";
-          mainProgram = "tunemesh-worker";
+          description = "Spotless download worker (yt-dlp)";
+          mainProgram = "spotless-worker";
           platforms = [ system ];
         };
       };
@@ -128,31 +128,31 @@
     in
     {
       packages.${system} = {
-        inherit tunemesh tunemesh-worker;
-        default = tunemesh;
+        inherit spotless spotless-worker;
+        default = spotless;
       };
 
       checks.${system} = {
-        inherit tunemesh tunemesh-worker;
+        inherit spotless spotless-worker;
         # The app package carries everything the other packages do: the worker
         # next to the app (where the app looks for it) and the user unit.
-        tunemesh-layout = pkgs.runCommand "tunemesh-layout" { } ''
-          test -x ${tunemesh}/bin/tunemesh
-          test -x ${tunemesh}/bin/tunemesh-worker
-          test -f ${tunemesh}/share/applications/io.github.brainage04.TuneMesh.desktop
-          test -f ${tunemesh}/share/icons/hicolor/scalable/apps/io.github.brainage04.TuneMesh.svg
-          grep -qx 'ExecStart=${tunemesh}/bin/tunemesh-worker' \
-            ${tunemesh}/lib/systemd/user/tunemesh-worker.service
-          test -s ${tunemesh}/share/licenses/tunemesh/LICENSE
-          test -s ${tunemesh}/share/licenses/tunemesh/THIRD-PARTY-RUST.txt
+        spotless-layout = pkgs.runCommand "spotless-layout" { } ''
+          test -x ${spotless}/bin/spotless
+          test -x ${spotless}/bin/spotless-worker
+          test -f ${spotless}/share/applications/io.github.brainage04.Spotless.desktop
+          test -f ${spotless}/share/icons/hicolor/scalable/apps/io.github.brainage04.Spotless.svg
+          grep -qx 'ExecStart=${spotless}/bin/spotless-worker' \
+            ${spotless}/lib/systemd/user/spotless-worker.service
+          test -s ${spotless}/share/licenses/spotless/LICENSE
+          test -s ${spotless}/share/licenses/spotless/THIRD-PARTY-RUST.txt
           touch $out
         '';
 
         # The NixOS module's sandbox: the worker service starts and becomes
         # the downloader, and a unit with exactly the worker's sandboxing
-        # runs `tunemesh-worker --self-test` and deno. Needs KVM.
+        # runs `spotless-worker --self-test` and deno. Needs KVM.
         worker-module = pkgs.testers.runNixOSTest {
-          name = "tunemesh-worker-module";
+          name = "spotless-worker-module";
           nodes.machine =
             { config, ... }:
             {
@@ -162,33 +162,33 @@
                 uid = 1000;
               };
               # A library path with a space and `%` (escaping in the unit).
-              systemd.tmpfiles.settings."10-tunemesh-test" = {
+              systemd.tmpfiles.settings."10-spotless-test" = {
                 "/home/alice/Music".d = {
                   user = "alice";
                   group = "users";
                   mode = "0755";
                 };
-                "/home/alice/Music/Tune Mesh 100%%".d = {
+                "/home/alice/Music/Spotless 100%%".d = {
                   user = "alice";
                   group = "users";
                   mode = "0755";
                 };
               };
-              services.tunemesh-worker = {
+              services.spotless-worker = {
                 enable = true;
                 user = "alice";
-                libraryPath = "/home/alice/Music/Tune Mesh 100%";
-                workDir = "/var/cache/tunemesh worker 100%";
-                stateDir = "/var/lib/tunemesh state 100%";
+                libraryPath = "/home/alice/Music/Spotless 100%";
+                workDir = "/var/cache/spotless worker 100%";
+                stateDir = "/var/lib/spotless state 100%";
               };
-              systemd.services.tunemesh-sandbox-check = {
-                inherit (config.systemd.services.tunemesh-worker) environment;
-                serviceConfig = config.systemd.services.tunemesh-worker.serviceConfig // {
+              systemd.services.spotless-sandbox-check = {
+                inherit (config.systemd.services.spotless-worker) environment;
+                serviceConfig = config.systemd.services.spotless-worker.serviceConfig // {
                   Type = "oneshot";
                   Restart = "no";
-                  ExecStart = pkgs.writeShellScript "tunemesh-sandbox-check" ''
+                  ExecStart = pkgs.writeShellScript "spotless-sandbox-check" ''
                     set -eu
-                    ${lib.getExe tunemesh-worker} --self-test --work-dir ${lib.escapeShellArg config.services.tunemesh-worker.workDir}
+                    ${lib.getExe spotless-worker} --self-test --work-dir ${lib.escapeShellArg config.services.spotless-worker.workDir}
                     export DENO_DIR="$XDG_CACHE_HOME/deno"
                     ${lib.getExe pkgs.deno} eval 'console.log("deno " + (6 * 7))'
                     echo "deno: $(echo 'console.log(Deno.version.v8)' | \
@@ -200,11 +200,11 @@
           testScript = ''
             machine.wait_for_unit("multi-user.target")
             machine.wait_until_succeeds(
-                "journalctl -u tunemesh-worker | grep -q 'is now the downloader'", timeout=120
+                "journalctl -u spotless-worker | grep -q 'is now the downloader'", timeout=120
             )
-            machine.succeed("test -s '/home/alice/Music/Tune Mesh 100%/.tunemesh/worker.json'")
-            machine.succeed("systemctl start tunemesh-sandbox-check")
-            out = machine.succeed("journalctl -u tunemesh-sandbox-check")
+            machine.succeed("test -s '/home/alice/Music/Spotless 100%/.tunemesh/worker.json'")
+            machine.succeed("systemctl start spotless-sandbox-check")
+            out = machine.succeed("journalctl -u spotless-sandbox-check")
             print(out)
             assert "self-test passed" in out, "self-test did not pass"
             assert "deno 42" in out, "deno did not run"
@@ -213,20 +213,20 @@
             # which persists: merging a conflict copy keeps the merged
             # playlist as the base, so the next merge does not bring back
             # what was removed.
-            lib = "/home/alice/Music/Tune Mesh 100%"
+            lib = "/home/alice/Music/Spotless 100%"
             copy = f"{lib}/Playlists/Mix.sync-conflict-20261028-080000-ABCDEFG.m3u8"
             machine.succeed(
                 f"runuser -u alice -- mkdir -p '{lib}/Playlists'",
                 f"printf '#EXTM3U\\n../c.opus\\n../b.opus\\n' | runuser -u alice -- tee '{lib}/Playlists/Mix.m3u8'",
                 f"printf '#EXTM3U\\n../d.opus\\n../a.opus\\n../b.opus\\n' | runuser -u alice -- tee '{copy}'",
                 f"touch -d '1 hour ago' '{copy}'",
-                "systemctl restart tunemesh-worker",
+                "systemctl restart spotless-worker",
             )
             machine.wait_until_fails(f"test -e '{copy}'", timeout=120)
             machine.succeed(
-                "grep -qx ../d.opus /var/lib/'tunemesh state 100%'/tunemesh/playlist-base/*/Mix.m3u8"
+                "grep -qx ../d.opus /var/lib/'spotless state 100%'/spotless/playlist-base/*/Mix.m3u8"
             )
-            machine.fail("journalctl -u tunemesh-worker | grep -q 'keeping playlist base'")
+            machine.fail("journalctl -u spotless-worker | grep -q 'keeping playlist base'")
             machine.fail("journalctl -b | grep -q 'status=31/SYS'")
           '';
         };
@@ -235,8 +235,8 @@
       devShells.${system} = {
         default = pkgs.mkShell {
           inputsFrom = [
-            tunemesh
-            tunemesh-worker
+            spotless
+            spotless-worker
           ];
           packages = with pkgs; [
             cargo
@@ -282,20 +282,20 @@
           ...
         }:
         let
-          cfg = config.services.tunemesh-worker;
+          cfg = config.services.spotless-worker;
           # One path in a systemd path list: quoted (spaces), with `%`
           # (specifiers), `"` and `\` escaped.
           systemdPath =
             path: ''"${lib.replaceStrings [ "\\" "\"" "%" ] [ "\\\\" "\\\"" "%%" ] path}"'';
         in
         {
-          options.services.tunemesh-worker = {
-            enable = lib.mkEnableOption "the TuneMesh download worker";
+          options.services.spotless-worker = {
+            enable = lib.mkEnableOption "the Spotless download worker";
             package = lib.mkOption {
               type = lib.types.package;
-              default = self.packages.${pkgs.stdenv.hostPlatform.system}.tunemesh-worker;
-              defaultText = lib.literalExpression "tunemesh.packages.\${system}.tunemesh-worker";
-              description = "The tunemesh-worker package to run.";
+              default = self.packages.${pkgs.stdenv.hostPlatform.system}.spotless-worker;
+              defaultText = lib.literalExpression "spotless.packages.\${system}.spotless-worker";
+              description = "The spotless-worker package to run.";
             };
             user = lib.mkOption {
               type = lib.types.str;
@@ -303,12 +303,12 @@
             };
             libraryPath = lib.mkOption {
               type = lib.types.str;
-              example = "/home/user/Music/TuneMesh";
-              description = "Root of the TuneMesh library (the Syncthing folder).";
+              example = "/home/user/Music/Spotless";
+              description = "Root of the Spotless library (the Syncthing folder).";
             };
             workDir = lib.mkOption {
               type = lib.types.str;
-              default = "/var/cache/tunemesh-worker";
+              default = "/var/cache/spotless-worker";
               description = ''
                 Scratch directory outside the library where downloads are
                 assembled before they are moved into place, and the worker's
@@ -319,12 +319,12 @@
             };
             stateDir = lib.mkOption {
               type = lib.types.str;
-              default = "/var/lib/tunemesh-worker";
+              default = "/var/lib/spotless-worker";
               description = ''
                 The worker's state that must persist (its XDG_STATE_HOME):
                 the playlist bases for merging conflict copies and the final
                 statuses it could not write into the library yet, under
-                `tunemesh/`. Losing it makes the next merge of each playlist
+                `spotless/`. Losing it makes the next merge of each playlist
                 a union (a removal can come back once), and a request whose
                 status was kept runs again. Created for `user` with mode 0700.
               '';
@@ -338,7 +338,7 @@
                 "--min-free-space"
                 "10G"
               ];
-              description = "Extra `tunemesh-worker` options, such as its limits (see `tunemesh-worker --help`).";
+              description = "Extra `spotless-worker` options, such as its limits (see `spotless-worker --help`).";
             };
             memoryMax = lib.mkOption {
               type = lib.types.str;
@@ -374,7 +374,7 @@
 
           config = lib.mkIf cfg.enable {
             # tmpfiles expands `%` specifiers in paths.
-            systemd.tmpfiles.settings."10-tunemesh-worker" = lib.genAttrs (map (lib.replaceStrings [ "%" ] [ "%%" ]) [
+            systemd.tmpfiles.settings."10-spotless-worker" = lib.genAttrs (map (lib.replaceStrings [ "%" ] [ "%%" ]) [
               cfg.workDir
               cfg.stateDir
             ]) (_: {
@@ -385,8 +385,8 @@
               };
             });
 
-            systemd.services.tunemesh-worker = {
-              description = "TuneMesh download worker";
+            systemd.services.spotless-worker = {
+              description = "Spotless download worker";
               wantedBy = [ "multi-user.target" ];
               wants = [ "network-online.target" ];
               after = [ "network-online.target" ];

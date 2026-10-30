@@ -58,11 +58,11 @@ val signing =
 fun signingFile(key: String): File? = signing?.getProperty(key)?.let { rootProject.file(".signing/$it") }
 
 android {
-    namespace = "io.github.brainage04.tunemesh"
+    namespace = "io.github.brainage04.spotless"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.github.brainage04.tunemesh"
+        applicationId = "io.github.brainage04.spotless"
         minSdk = 30
         targetSdk = 36
         versionCode = appVersionCode
@@ -70,7 +70,7 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // The hostile-library stress test (@Stress) runs only with -Pstress, then alone; see AGENTS.md.
-        val stress = "io.github.brainage04.tunemesh.Stress"
+        val stress = "io.github.brainage04.spotless.Stress"
         testInstrumentationRunnerArguments[if (providers.gradleProperty("stress").isPresent) "annotation" else "notAnnotation"] = stress
     }
 
@@ -230,7 +230,7 @@ val fuzzTasks = fuzzTargets.flatMap { (testClass, methods) ->
             testClassesDirs = unitTests.testClassesDirs
             classpath = unitTests.classpath
             useJUnitPlatform()
-            filter.includeTestsMatching("io.github.brainage04.tunemesh.$testClass.$method")
+            filter.includeTestsMatching("io.github.brainage04.spotless.$testClass.$method")
             environment("JAZZER_FUZZ", "1")
             systemProperty("jazzer.max_duration", "${fuzzSeconds.get()}s")
             outputs.upToDateWhen { false }
@@ -374,10 +374,10 @@ abstract class WriteThirdPartyNotice : DefaultTask() {
         val libraries = (json["libraries"] as List<Map<String, Any?>>).sortedBy { it["uniqueId"] as String }
         val licenses = json["licenses"] as Map<String, Map<String, Any?>>
         val text = buildString {
-            appendLine("Third-party software in TuneMesh for Android")
+            appendLine("Third-party software in Spotless for Android")
             appendLine("============================================")
             appendLine()
-            appendLine("TuneMesh is MIT licensed. The app includes the libraries below, each under")
+            appendLine("Spotless is MIT licensed. The app includes the libraries below, each under")
             appendLine("the licence named; the full licence texts follow the list.")
             appendLine()
             for (library in libraries) {

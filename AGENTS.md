@@ -1,4 +1,4 @@
-# TuneMesh agent instructions
+# Spotless agent instructions
 
 - If `AGENTS.local.md` exists (git-ignored, machine-specific notes), read it
   too; it overrides this file.

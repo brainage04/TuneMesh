@@ -1,10 +1,10 @@
-//! File and directory names TuneMesh writes (contract: "Audio files"):
+//! File and directory names Spotless writes (contract: "Audio files"):
 //! whatever the metadata or playlist name, the result is a valid name.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use tunemesh_core::playlist::sanitize_name;
-use tunemesh_core::sanitize::{MAX_COMPONENT_BYTES, component, file_name};
+use spotless_core::playlist::sanitize_name;
+use spotless_core::sanitize::{MAX_COMPONENT_BYTES, component, file_name};
 
 fn assert_valid(name: &str, from: &str) {
     assert!(!name.is_empty(), "{from:?}");
