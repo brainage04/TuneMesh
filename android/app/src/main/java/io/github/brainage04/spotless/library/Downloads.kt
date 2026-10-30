@@ -173,7 +173,7 @@ data class DownloadList(val items: List<DownloadItem>, val older: Int) {
 }
 
 /**
- * `.tunemesh/worker.json`: the device whose worker currently takes requests for this library. The worker also writes `instance`, `pid` and
+ * `.spotless/worker.json`: the device whose worker currently takes requests for this library. The worker also writes `instance`, `pid` and
  * `workerVersion`, which clients do not need.
  */
 @Serializable

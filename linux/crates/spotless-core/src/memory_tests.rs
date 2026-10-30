@@ -90,7 +90,7 @@ fn within(what: &str, retained: usize, file: usize, factor: f64, fixed: usize) {
 
 fn lib() -> tempfile::TempDir {
     let dir = tempfile::tempdir().unwrap();
-    for sub in ["Playlists", ".tunemesh/requests", ".tunemesh/status"] {
+    for sub in ["Playlists", ".spotless/requests", ".spotless/status"] {
         fs::create_dir_all(dir.path().join(sub)).unwrap();
     }
     dir

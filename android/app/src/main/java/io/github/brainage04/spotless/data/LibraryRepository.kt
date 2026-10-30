@@ -51,7 +51,7 @@ data class LibraryState(
     val openPlaylist: PlaylistContents? = null,
     /** Read while the Downloads screen is shown ([LibraryRepository.setDownloadsShown]); null until it first was. */
     val downloads: DownloadList? = null,
-    /** From `.tunemesh/worker.json`, re-evaluated on every downloads refresh. */
+    /** From `.spotless/worker.json`, re-evaluated on every downloads refresh. */
     val downloader: Downloader = Downloader.None,
     /** Why the last downloads refresh failed, shown on the Downloads tab; null after one that worked. */
     val downloadsError: String? = null,

@@ -40,13 +40,13 @@ class MemoryBudgetTest {
         assertTrue("$retained B", retained <= 20L * 1024 * 1024)
 
         // Each format on its own: requests only, then statuses only.
-        File(root, ".tunemesh/status").deleteRecursively()
+        File(root, ".spotless/status").deleteRecursively()
         val requestsOnly = RetainedSize.of(DownloadStore(root).list())
         report("requests", requestsOnly, fileBytes / 2)
         assertTrue("$requestsOnly B", requestsOnly <= Limits.MAX_DOWNLOADS_READ * 4L * 1024)
         val statusRoot = temp.newFolder("statuses")
         HostileFiles.writeDownloads(statusRoot, Limits.MAX_DOWNLOADS_READ)
-        File(statusRoot, ".tunemesh/requests").deleteRecursively()
+        File(statusRoot, ".spotless/requests").deleteRecursively()
         val statusesOnly = RetainedSize.of(DownloadStore(statusRoot).list())
         report("statuses", statusesOnly, fileBytes / 2)
         assertTrue("$statusesOnly B", statusesOnly <= 20L * 1024 * 1024)
@@ -56,8 +56,8 @@ class MemoryBudgetTest {
     fun workerJson() {
         val root = temp.newFolder("lib")
         val text = HostileFiles.worker()
-        File(root, ".tunemesh").mkdirs()
-        File(root, ".tunemesh/worker.json").writeText(text)
+        File(root, ".spotless").mkdirs()
+        File(root, ".spotless/worker.json").writeText(text)
         val info = DownloadStore(root).worker()!!
         val fresh = info.copy(heartbeatAt = "2026-10-06T05:00:00Z")
         val downloader = Downloader.of(fresh, Instant.parse("2026-10-06T05:01:00Z"))

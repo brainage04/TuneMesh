@@ -404,7 +404,7 @@ fn exited(pid: i32) -> bool {
     rc != 0 || unsafe { info.si_pid() } == pid
 }
 
-// ---- `.tunemesh/worker.json` --------------------------------------------
+// ---- `.spotless/worker.json` --------------------------------------------
 
 pub use spotless_core::worker::active as active_worker;
 

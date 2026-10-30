@@ -352,7 +352,7 @@ pub fn make_track(
 /// Walks the library below `root` through directory handles: every
 /// subdirectory is opened with `O_NOFOLLOW` relative to its parent, so a
 /// directory swapped for a symlink while the walk runs is skipped, never
-/// followed. Hidden names, conflict copies, `Playlists/` and `.tunemesh/`
+/// followed. Hidden names, conflict copies, `Playlists/` and `.spotless/`
 /// are left out. `visit` gets each directory's handle, its root-relative
 /// path ("" for the root) and its regular files. Directories deeper than
 /// `MAX_DEPTH` are skipped with a log line, and so are the entries of a
@@ -902,7 +902,7 @@ mod tests {
     fn track_path_rules() {
         assert!(is_track_path("A/B/c.OPUS"));
         assert!(!is_track_path("Playlists/x.mp3"));
-        assert!(!is_track_path(".tunemesh/requests/x.mp3"));
+        assert!(!is_track_path(".spotless/requests/x.mp3"));
         assert!(!is_track_path("A/.hidden/c.mp3"));
         assert!(!is_track_path("A/c.sync-conflict-20260101-000000-ABC.mp3"));
         assert!(!is_track_path("A/c.txt"));
@@ -920,7 +920,7 @@ mod tests {
             "Art/Alb/notes.txt",
             "Art/Alb/one.sync-conflict-20260101-010101-AAAAAAA.mp3",
             "Playlists/p.mp3",
-            ".tunemesh/requests/r.mp3",
+            ".spotless/requests/r.mp3",
             ".hidden/h.mp3",
             "root.flac",
         ] {

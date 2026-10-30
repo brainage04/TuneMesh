@@ -1,6 +1,6 @@
 //! One downloader per library (contract: "One downloader per library").
 //!
-//! The active worker rewrites `.tunemesh/worker.json` every minute. A worker
+//! The active worker rewrites `.spotless/worker.json` every minute. A worker
 //! that finds another worker's heartbeat younger than three minutes stays
 //! idle and checks again on every poll; it takes over once that heartbeat
 //! goes stale (or at once when the other worker runs on this machine, in the
@@ -62,9 +62,8 @@ impl State {
             return false;
         }
         // Another worker on this machine whose process is gone has crashed.
-        // Device names are not unique, so only the machine id counts; a
-        // heartbeat without one is honoured until it goes stale.
-        other.machine.is_empty() || other.machine != self.me.machine || pid_alive(other.pid)
+        // Device names are not unique, so only the machine id counts.
+        other.machine != self.me.machine || pid_alive(other.pid)
     }
 
     fn write_beat(&mut self) {
@@ -231,8 +230,7 @@ mod tests {
     }
 
     /// Two machines that share a device name: a fresh heartbeat whose pid
-    /// does not exist here belongs to the other machine and is honoured, as
-    /// is one from an older worker without a machine id.
+    /// does not exist here belongs to the other machine and is honoured.
     #[test]
     fn same_device_name_on_another_machine_blocks() {
         let lib = tempfile::tempdir().unwrap();
@@ -245,13 +243,6 @@ mod tests {
         )
         .unwrap();
         assert!(!leader.may_work());
-        worker::write(
-            root,
-            &other_on("fedora", "", dead, spotless_core::now_rfc3339()),
-        )
-        .unwrap();
-        assert!(!leader.may_work());
-        assert_eq!(worker::read(root).unwrap().machine, "");
     }
 
     /// Review item 9: after `release` the heartbeat thread writes nothing.

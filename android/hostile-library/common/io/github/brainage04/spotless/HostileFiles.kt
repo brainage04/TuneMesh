@@ -80,12 +80,12 @@ object HostileFiles {
     }
 
     /**
-     * Writes [count] requests ([request]) and a status for each (alternating [longStatus] and [manyStatus]) below `<root>/.tunemesh/`: what
+     * Writes [count] requests ([request]) and a status for each (alternating [longStatus] and [manyStatus]) below `<root>/.spotless/`: what
      * clients list at most (contract: the newest 200 ids), every file just under 1 MiB. Returns the bytes written.
      */
     fun writeDownloads(root: File, count: Int = 200): Long {
-        val requests = File(root, ".tunemesh/requests").apply { mkdirs() }
-        val statuses = File(root, ".tunemesh/status").apply { mkdirs() }
+        val requests = File(root, ".spotless/requests").apply { mkdirs() }
+        val statuses = File(root, ".spotless/status").apply { mkdirs() }
         var bytes = 0L
         for (i in 0 until count) {
             val id = "${1_700_000_000_000L + i}-${i.toString(16).padStart(8, '0')}"

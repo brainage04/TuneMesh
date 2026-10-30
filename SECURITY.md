@@ -16,7 +16,7 @@ playlist, so Spotless does not try to protect the library from them. It does
 try to stop such a device from reaching anything outside the library:
 
 - **Files outside the library.** Symlinks below the library root are never
-  followed. Playlists, `.tunemesh/` and every directory the worker writes
+  followed. Playlists, `.spotless/` and every directory the worker writes
   into are opened relative to the root with `O_NOFOLLOW`; symlinked audio
   files and directories are not part of the library.
 - **The downloader's network.** Download requests are URLs or search text

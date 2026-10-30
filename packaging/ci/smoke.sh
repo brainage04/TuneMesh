@@ -23,7 +23,7 @@ mkdir -p "$parent"
 lib=$(mktemp -d "$parent/spotless-smoke.XXXXXX")
 work=$(mktemp -d "${TMPDIR:-/tmp}/spotless-work.XXXXXX")
 trap 'rm -rf "$lib" "$work"' EXIT
-mkdir -p "$lib/.tunemesh/requests" "$lib/Playlists"
+mkdir -p "$lib/.spotless/requests" "$lib/Playlists"
 
 fail() { echo "smoke: FAIL: $*" >&2; exit 1; }
 

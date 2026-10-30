@@ -38,7 +38,7 @@ struct ListState {
 }
 
 /// Re-renders the request list if the Downloads page is open (called when
-/// files below `.tunemesh/` change); the form keeps its input.
+/// files below `.spotless/` change); the form keeps its input.
 pub fn refresh_if_shown() {
     if let Some(state) = LIST.with(|l| l.borrow().upgrade()) {
         state.render();

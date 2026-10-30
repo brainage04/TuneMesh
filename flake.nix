@@ -202,7 +202,7 @@
             machine.wait_until_succeeds(
                 "journalctl -u spotless-worker | grep -q 'is now the downloader'", timeout=120
             )
-            machine.succeed("test -s '/home/alice/Music/Spotless 100%/.tunemesh/worker.json'")
+            machine.succeed("test -s '/home/alice/Music/Spotless 100%/.spotless/worker.json'")
             machine.succeed("systemctl start spotless-sandbox-check")
             out = machine.succeed("journalctl -u spotless-sandbox-check")
             print(out)

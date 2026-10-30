@@ -102,6 +102,14 @@ sudo packaging/linux/install.sh        # installs to /usr/local
 Android: `cd android && ./gradlew :app:assembleRelease`.
 </details>
 
+## Starting fresh
+
+Spotless is pre-release software and does not migrate anything from earlier
+versions: set it up as on a new device. Choose the library folder, share it in
+Syncthing (remove the old folder there if you no longer use it), enable
+`spotless-worker` on the computer that downloads, and install the app on the
+phone. Songs, playlists and likes stay in the library folder.
+
 ## Set up
 
 1. **First computer.** Start Spotless. The setup assistant asks for the
@@ -206,7 +214,7 @@ music. Deleting songs **inside** a synced folder deletes them on every device.
 | `~/.local/state/spotless/` | Queue, position, volume; playlist bases (`playlist-base/`: this device's copy of each playlist from before its own latest edits, for merging Syncthing conflict copies); final download statuses the downloader could not write into the library yet (`unwritten/`) |
 | `~/.cache/spotless/` | Library scan cache, covers, downloader scratch space (`worker/`) |
 | `~/.local/share/spotless/` | The downloader's yt-dlp and deno |
-| Library folder | Songs (`<Artist>/<Album>/<Title> [<id>].<ext>`), `Playlists/*.m3u8`, `.tunemesh/` (download requests and status), `.stignore` |
+| Library folder | Songs (`<Artist>/<Album>/<Title> [<id>].<ext>`), `Playlists/*.m3u8`, `.spotless/` (download requests and status), `.stignore` |
 
 Flatpak keeps the first four under `~/.var/app/io.github.brainage04.Spotless/`,
 Snap under `~/snap/spotless/`.

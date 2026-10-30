@@ -5,8 +5,6 @@ import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 
 /** The audio files a scan found: library-relative path, size and modification time of each, without an object per file. */
 class FoundFiles {
@@ -102,29 +100,4 @@ object LibraryScan {
         }
         return builder.build()
     }
-
-    /**
-     * The tag cache earlier versions kept as JSON (`tag-cache.json`), as an index, or null when it is not one or belongs to another [root].
-     * Read once, when there is no saved index yet, so an update does not read every file's tags again.
-     */
-    fun fromJsonTagCache(text: String, root: String): LibraryIndex? {
-        val cache =
-            try {
-                Json { ignoreUnknownKeys = true }.decodeFromString<JsonTagCache>(text).takeIf { it.root == root }
-            } catch (_: IllegalArgumentException) {
-                null
-            }
-        return cache?.let {
-            val builder = LibraryIndexBuilder()
-            // Filtered like a scan, so an entry an older version kept under laxer rules is read again if it is still there.
-            for ((path, entry) in it.entries) {
-                if (LibraryFormat.isAudioPath(path)) builder.add(Track.fromTags(path, entry.tags, entry.size, entry.modifiedMs))
-            }
-            builder.build()
-        }
-    }
-
-    @Serializable internal data class JsonTagCacheEntry(val size: Long, val modifiedMs: Long, val tags: RawTags)
-
-    @Serializable internal data class JsonTagCache(val root: String, val entries: Map<String, JsonTagCacheEntry>)
 }

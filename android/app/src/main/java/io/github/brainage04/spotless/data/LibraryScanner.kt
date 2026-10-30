@@ -26,36 +26,14 @@ class ScanResult(val index: LibraryIndex, val directories: DirectoryStamps)
  * index it is given keeps that track. The index of the last scan is saved in app storage ([LibraryIndexFile], in [directory]), so a start
  * shows it at once; it is the only copy of the tags the app keeps.
  */
-class LibraryScanner(private val directory: File) {
+class LibraryScanner(directory: File) {
     private val cacheFile = File(directory, CACHE_FILE)
 
     /** What [cacheFile] holds. */
     private var saved: LibraryIndex? = null
 
-    /**
-     * The index the last scan of [root] saved, or null. With none saved yet, the JSON tag cache of earlier versions is converted once (and
-     * deleted), so an update does not read every file's tags again.
-     */
-    @Synchronized
-    fun cached(root: File): LibraryIndex? {
-        val rootPath = root.absolutePath
-        val legacy = File(directory, LEGACY_CACHE_FILE)
-        val index =
-            readSaved(rootPath)
-                ?: legacy
-                    .takeIf { it.isFile }
-                    ?.let { file ->
-                        val migrated =
-                            try {
-                                LibraryScan.fromJsonTagCache(file.readText(), rootPath)
-                            } catch (_: IOException) {
-                                null
-                            }
-                        migrated?.also { save(it, rootPath) }
-                    }
-        legacy.delete()
-        return index
-    }
+    /** The index the last scan of [root] saved, or null. */
+    @Synchronized fun cached(root: File): LibraryIndex? = readSaved(root.absolutePath)
 
     private fun readSaved(root: String): LibraryIndex? =
         try {
@@ -139,9 +117,6 @@ class LibraryScanner(private val directory: File) {
     companion object {
         /** The saved index's file name in the app's files directory. */
         const val CACHE_FILE = "library-index.bin"
-
-        /** The JSON tag cache of earlier versions. */
-        private const val LEGACY_CACHE_FILE = "tag-cache.json"
 
         fun readTags(file: File): RawTags =
             MediaMetadataRetriever().use { retriever ->

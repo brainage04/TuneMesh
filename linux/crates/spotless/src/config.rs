@@ -12,14 +12,9 @@ pub struct Config {
     /// "This device downloads songs": run `spotless-worker` as a child.
     #[serde(default)]
     pub downloader: bool,
-    /// Whether the setup assistant was finished or skipped. A config file
-    /// written before the assistant existed counts as set up.
-    #[serde(default = "yes")]
+    /// Whether the setup assistant was finished or skipped.
+    #[serde(default)]
     pub setup_done: bool,
-}
-
-fn yes() -> bool {
-    true
 }
 
 impl Default for Config {
@@ -139,7 +134,7 @@ impl Config {
 }
 
 /// This device's name: shown as `requestedBy`, and the name the worker
-/// writes into `.tunemesh/worker.json` (both use the host name).
+/// writes into `.spotless/worker.json` (both use the host name).
 pub fn device_name() -> String {
     glib::host_name().to_string()
 }
@@ -147,14 +142,6 @@ pub fn device_name() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn old_config_counts_as_set_up() {
-        let c: Config = toml::from_str("library_path = \"/srv/music\"").unwrap();
-        assert!(c.setup_done);
-        assert!(!c.downloader);
-        assert!(!Config::default().setup_done);
-    }
 
     #[test]
     fn new_keys_round_trip() {

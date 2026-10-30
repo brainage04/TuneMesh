@@ -140,22 +140,22 @@ class HostileLibrary(private val root: File, private val scale: Scale) {
         for (i in 0 until scale.requests) {
             val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
             val bytes = if (i >= scale.requests - 210) HostileFiles.FILE_BYTES else 61 * 1024
-            writeBytes(".tunemesh/requests/$id.json", HostileFiles.request(id, bytes).toByteArray())
+            writeBytes(".spotless/requests/$id.json", HostileFiles.request(id, bytes).toByteArray())
         }
         for (i in 10_000 until 10_000 + scale.statuses) {
             val id = "${1_700_000_000_000L + i}-%08x".format(Locale.ROOT, i)
             val text = if (i % 2 == 0) HostileFiles.longStatus(id) else HostileFiles.manyStatus(id)
-            writeBytes(".tunemesh/status/$id.json", text.toByteArray())
+            writeBytes(".spotless/status/$id.json", text.toByteArray())
         }
-        write(".tunemesh/requests/${1_700_000_900_000L}-hostile0.json") { out -> padded(out, 2 * 1024 * 1024) }
+        write(".spotless/requests/${1_700_000_900_000L}-hostile0.json") { out -> padded(out, 2 * 1024 * 1024) }
         val longInput = "y".repeat(9 * 1024)
         writeBytes(
-            ".tunemesh/requests/${1_700_000_900_001L}-hostile1.json",
+            ".spotless/requests/${1_700_000_900_001L}-hostile1.json",
             """{"version":1,"id":"x","input":"$longInput","playlist":null,"playlistFromSource":false,"requestedBy":"h","requestedAt":"x"}"""
                 .toByteArray(),
         )
-        write(".tunemesh/status/${1_700_000_900_002L}-hostile2.json") { out -> padded(out, 2 * 1024 * 1024) }
-        writeBytes(".tunemesh/worker.json", HostileFiles.worker().toByteArray())
+        write(".spotless/status/${1_700_000_900_002L}-hostile2.json") { out -> padded(out, 2 * 1024 * 1024) }
+        writeBytes(".spotless/worker.json", HostileFiles.worker().toByteArray())
     }
 
     private fun padded(out: OutputStream, bytes: Int) {

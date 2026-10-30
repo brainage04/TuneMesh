@@ -85,7 +85,7 @@ class DeviceTest {
     @Test
     fun scannerReadsDurationAppliesFallbacksAndCachesTags() {
         writeWav(File(root, "Test Artist/Test Album/Tone [abc123].wav"), seconds = 3)
-        writeWav(File(root, ".tunemesh/requests/ignored.wav"), seconds = 1)
+        writeWav(File(root, ".spotless/requests/ignored.wav"), seconds = 1)
         writeWav(File(root, "Playlists/ignored.wav"), seconds = 1)
         // Names with line breaks are not part of the library (an m3u8 line could not name them).
         writeWav(File(root, "Test Artist/Test Album/Two\nLines.wav"), seconds = 1)

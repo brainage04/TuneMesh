@@ -24,10 +24,9 @@ pub use request::{Request, RequestState, Status};
 
 /// Directory below the root holding playlists.
 pub const PLAYLISTS_DIR: &str = "Playlists";
-/// Directory below the root holding requests and status files. The name is
-/// part of the library format (`docs/library-format.md`); it predates the
-/// Spotless rename and stays `.tunemesh`.
-pub const STATE_DIR: &str = ".tunemesh";
+/// Directory below the root holding requests and status files (part of the
+/// library format, `docs/library-format.md`).
+pub const STATE_DIR: &str = ".spotless";
 
 /// RFC 3339 UTC timestamp with second precision, as used in requests and
 /// status files.

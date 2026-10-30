@@ -1,4 +1,4 @@
-//! `.tunemesh/worker.json`: which device downloads for the library
+//! `.spotless/worker.json`: which device downloads for the library
 //! (contract: "One downloader per library").
 
 use std::io;
@@ -31,17 +31,13 @@ bounded_struct! {
         pub device: Bounded<MAX_DEVICE_BYTES>,
         /// Hashed id of the machine and its process-id namespace. Only a worker
         /// with the same `machine` may treat this heartbeat as stale because
-        /// `pid` no longer exists; empty in files from older workers.
-        #[serde(default)]
+        /// `pid` no longer exists.
         pub machine: WorkerId,
         /// Random per-process id, telling two workers on one device apart.
-        #[serde(default)]
         pub instance: WorkerId,
         /// Process id of that worker on `device`.
-        #[serde(default)]
         pub pid: u32,
         /// `spotless-worker --version` of that worker.
-        #[serde(default)]
         pub worker_version: WorkerId,
         /// RFC 3339 time of the last heartbeat.
         pub heartbeat_at: Bounded<MAX_TIMESTAMP_BYTES>,
@@ -133,7 +129,7 @@ mod tests {
         write(dir.path(), &i).unwrap();
         assert_eq!(active(dir.path()), Some(i));
         let v: serde_json::Value = serde_json::from_slice(
-            &std::fs::read(dir.path().join(".tunemesh/worker.json")).unwrap(),
+            &std::fs::read(dir.path().join(".spotless/worker.json")).unwrap(),
         )
         .unwrap();
         assert!(v.get("heartbeatAt").is_some() && v.get("workerVersion").is_some());
@@ -155,6 +151,24 @@ mod tests {
             assert_eq!(f.len(), MAX_WORKER_ID_BYTES);
         }
         assert_eq!(w.heartbeat_at.len(), MAX_TIMESTAMP_BYTES);
-        assert!(parse(br#"{"version":1,"device":"d","heartbeatAt":"t","pid":-1}"#).is_none());
+        assert!(
+            parse(
+                br#"{"version":1,"device":"d","machine":"m","instance":"i","pid":-1,"workerVersion":"v","heartbeatAt":"t"}"#
+            )
+            .is_none()
+        );
+    }
+
+    /// A `worker.json` without every field of this format (one written by an
+    /// earlier version) is not read.
+    #[test]
+    fn a_file_without_the_current_fields_is_not_read() {
+        for json in [
+            r#"{"version":1,"device":"d","heartbeatAt":"t"}"#,
+            r#"{"version":1,"device":"d","pid":7,"heartbeatAt":"t"}"#,
+            r#"{"version":1,"device":"d","machine":"m","heartbeatAt":"t"}"#,
+        ] {
+            assert!(parse(json.as_bytes()).is_none(), "{json}");
+        }
     }
 }

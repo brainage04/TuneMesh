@@ -152,7 +152,7 @@ fun DownloadsScreen(contentPadding: PaddingValues) {
 fun effectiveSaveAsPlaylists(input: String, choice: Boolean?): Boolean =
     choice ?: DownloadInputs.saveAsPlaylistsByDefault(DownloadInputs.lines(input))
 
-/** Which device downloads requests, from `.tunemesh/worker.json`. Shared by the Downloads tab and the share sheet. */
+/** Which device downloads requests, from `.spotless/worker.json`. Shared by the Downloads tab and the share sheet. */
 @Composable
 fun DownloaderBanner(downloader: Downloader, modifier: Modifier = Modifier) {
     val active = downloader is Downloader.Active

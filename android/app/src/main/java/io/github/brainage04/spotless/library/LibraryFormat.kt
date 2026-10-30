@@ -6,7 +6,7 @@ import java.util.Locale
 /** Rules from `docs/library-format.md` that do not touch the file system. */
 object LibraryFormat {
     const val PLAYLISTS_DIR = "Playlists"
-    const val STATE_DIR = ".tunemesh"
+    const val STATE_DIR = ".spotless"
     const val PLAYLIST_EXTENSION = ".m3u8"
     const val LIKED_SONGS = "Liked Songs"
     const val UNKNOWN_ALBUM = "Unknown Album"

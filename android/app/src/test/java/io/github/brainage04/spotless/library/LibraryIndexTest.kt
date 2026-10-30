@@ -2,7 +2,6 @@ package io.github.brainage04.spotless.library
 
 import java.io.ByteArrayOutputStream
 import kotlin.random.Random
-import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
@@ -156,29 +155,5 @@ class LibraryIndexTest {
             previous.searchTracks("debut").filter { it.path != tracks[0].path && it.path != changed.path }.toSet(),
             index.searchTracks("debut").filter { it.path != changed.path }.toSet(),
         )
-    }
-
-    @Test
-    fun theJsonTagCacheOfEarlierVersionsIsConverted() {
-        val cache =
-            LibraryScan.JsonTagCache(
-                "/lib",
-                mapOf(
-                    "A/B/one.mp3" to LibraryScan.JsonTagCacheEntry(10, 20, RawTags(title = "One", artist = "A", trackNumber = 1)),
-                    "A/B/two [x].flac" to LibraryScan.JsonTagCacheEntry(11, 21, RawTags()),
-                    "A/B/cover.jpg" to LibraryScan.JsonTagCacheEntry(1, 1, RawTags()),
-                ),
-            )
-        val text = Json.encodeToString(LibraryScan.JsonTagCache.serializer(), cache)
-        val index = LibraryScan.fromJsonTagCache(text, "/lib")!!
-        assertEquals(
-            setOf(
-                Track.fromTags("A/B/one.mp3", RawTags(title = "One", artist = "A", trackNumber = 1), 10, 20),
-                Track.fromTags("A/B/two [x].flac", RawTags(), 11, 21),
-            ),
-            index.tracks.toSet(),
-        )
-        assertNull(LibraryScan.fromJsonTagCache(text, "/other"))
-        assertNull(LibraryScan.fromJsonTagCache("{", "/lib"))
     }
 }

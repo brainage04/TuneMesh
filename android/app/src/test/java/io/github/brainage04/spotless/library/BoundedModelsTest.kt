@@ -145,11 +145,6 @@ class BoundedModelsTest {
                     "discNumber" to Scalar,
                     "durationMs" to Scalar,
                 ),
-            // The JSON tag cache of earlier versions, converted once (LibraryScan.fromJsonTagCache) and deleted.
-            LibraryScan.JsonTagCache::class.java to
-                mapOf("root" to Elsewhere("compared, not kept"), "entries" to Elsewhere("converted into the library index")),
-            LibraryScan.JsonTagCacheEntry::class.java to
-                mapOf("size" to Scalar, "modifiedMs" to Scalar, "tags" to Elsewhere("bounded in Track.fromTags")),
             Track::class.java to
                 mapOf(
                     "path" to Elsewhere("a path within the folder depth limit"),

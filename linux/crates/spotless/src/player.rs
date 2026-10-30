@@ -122,7 +122,6 @@ pub enum Repeat {
 pub struct QueueItem {
     pub path: String,
     /// Added with "Play next"/"Add to queue" rather than from the context.
-    #[serde(default)]
     pub user: bool,
 }
 

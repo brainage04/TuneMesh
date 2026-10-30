@@ -163,7 +163,7 @@ qemu-img create -q -f qcow2 -F qcow2 -b "$image" "$work/disk.qcow2" 24G
 
 # A generated library: tagged tones, never real music (AGENTS.md).
 lib=$work/payload/library
-mkdir -p "$lib/Spotless Test Artist/Tone Album" "$lib/Playlists" "$lib/.tunemesh/requests"
+mkdir -p "$lib/Spotless Test Artist/Tone Album" "$lib/Playlists" "$lib/.spotless/requests"
 for n in 1 2; do
     ffmpeg -nostdin -loglevel error -f lavfi -i "sine=frequency=$((330 * n)):duration=60" \
         -c:a libopus -b:a 48k -metadata title="Tone $n" -metadata artist="Spotless Test Artist" \

@@ -30,7 +30,7 @@ pub enum StoreChange {
     /// A playlist (not Liked Songs) changed, was created, renamed or deleted.
     Playlists,
     Liked,
-    /// Something below `.tunemesh/` changed.
+    /// Something below `.spotless/` changed.
     Downloads,
     Scanning,
 }

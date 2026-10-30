@@ -266,7 +266,7 @@ fn requests_at(
             request_json(&id(i), 0)
         };
         write(
-            &root.join(format!(".tunemesh/requests/{}.json", id(i))),
+            &root.join(format!(".spotless/requests/{}.json", id(i))),
             json.as_bytes(),
         )?;
     }
@@ -276,7 +276,7 @@ fn requests_at(
 fn statuses_at(root: &Path, ids: std::ops::Range<usize>) -> io::Result<()> {
     for i in ids {
         write(
-            &root.join(format!(".tunemesh/status/{}.json", id(i))),
+            &root.join(format!(".spotless/status/{}.json", id(i))),
             status_json(i, MAX_FILE).as_bytes(),
         )?;
     }
@@ -291,8 +291,8 @@ pub fn album_track(i: usize) -> String {
 /// Generates the library under `root` (which should be empty).
 pub fn generate(root: &Path, o: &Options) -> io::Result<()> {
     fs::create_dir_all(root.join("Playlists"))?;
-    fs::create_dir_all(root.join(".tunemesh/requests"))?;
-    fs::create_dir_all(root.join(".tunemesh/status"))?;
+    fs::create_dir_all(root.join(".spotless/requests"))?;
+    fs::create_dir_all(root.join(".spotless/status"))?;
 
     // One huge album, track numbers shuffled against path order.
     let mut numbers: Vec<u32> = (1..=o.album_tracks as u32).collect();
@@ -354,7 +354,7 @@ pub fn generate(root: &Path, o: &Options) -> io::Result<()> {
     // worker.json, .stignore and a playlist of over-long labels: at their
     // limits, every field filled.
     write(
-        &root.join(".tunemesh/worker.json"),
+        &root.join(".spotless/worker.json"),
         worker_json(MAX_FILE).as_bytes(),
     )?;
     let mut stignore = String::from("// Spotless\n(?d).~spotless-*\n");
@@ -470,16 +470,16 @@ fn huge(root: &Path) -> io::Result<()> {
     let pad = "p".repeat(2 * mib);
     let json = |extra: serde_json::Value| extra.to_string();
     write(
-        &root.join(format!(".tunemesh/requests/{}.json", id(900_000))),
+        &root.join(format!(".spotless/requests/{}.json", id(900_000))),
         json(serde_json::json!({"version": 1, "id": id(900_000), "input": pad})).as_bytes(),
     )?;
     write(
-        &root.join(format!(".tunemesh/requests/{}.json", id(900_001))),
+        &root.join(format!(".spotless/requests/{}.json", id(900_001))),
         json(serde_json::json!({"version": 1, "id": id(900_001), "input": "q".repeat(9 * 1024)}))
             .as_bytes(),
     )?;
     write(
-        &root.join(format!(".tunemesh/status/{}.json", id(900_002))),
+        &root.join(format!(".spotless/status/{}.json", id(900_002))),
         status_json(0, 2 * mib).as_bytes(),
     )?;
     write(
@@ -564,7 +564,7 @@ mod tests {
     #[cfg_attr(miri, ignore = "file system")]
     fn tags_and_covers_are_bounded() {
         let dir = tempfile::tempdir().unwrap();
-        for sub in ["Playlists", ".tunemesh/requests", ".tunemesh/status"] {
+        for sub in ["Playlists", ".spotless/requests", ".spotless/status"] {
             fs::create_dir_all(dir.path().join(sub)).unwrap();
         }
         huge(dir.path()).unwrap();

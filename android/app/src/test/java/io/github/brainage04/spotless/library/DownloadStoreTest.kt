@@ -23,7 +23,7 @@ class DownloadStoreTest {
     @Test
     fun requestFileMatchesTheContract() {
         val request = DownloadStore(temp.root).submit("  https://www.youtube.com/watch?v=jNQXAC9IVRw ", null, false, "pixel-8", now)
-        val file = File(temp.root, ".tunemesh/requests/${request.id}.json")
+        val file = File(temp.root, ".spotless/requests/${request.id}.json")
         assertTrue(file.isFile)
         assertTrue(Regex("1791262897123-[0-9a-f]{8}").matches(request.id))
         val json = Json.parseToJsonElement(file.readText()).jsonObject
@@ -38,7 +38,7 @@ class DownloadStoreTest {
         assertEquals(JsonPrimitive(false), json["playlistFromSource"])
         assertEquals(JsonPrimitive("pixel-8"), json["requestedBy"])
         assertEquals(JsonPrimitive("2026-10-06T05:01:37Z"), json["requestedAt"])
-        assertEquals(listOf("${request.id}.json"), File(temp.root, ".tunemesh/requests").list()!!.toList())
+        assertEquals(listOf("${request.id}.json"), File(temp.root, ".spotless/requests").list()!!.toList())
     }
 
     @Test
@@ -50,7 +50,7 @@ class DownloadStoreTest {
         val fromSource = store.submit("https://open.spotify.com/album/abc", " ", true, "x", now)
         assertEquals(null, fromSource.playlist)
         assertTrue(fromSource.playlistFromSource)
-        val json = Json.parseToJsonElement(File(temp.root, ".tunemesh/requests/${fromSource.id}.json").readText()) as JsonObject
+        val json = Json.parseToJsonElement(File(temp.root, ".spotless/requests/${fromSource.id}.json").readText()) as JsonObject
         assertEquals(JsonPrimitive(true), json["playlistFromSource"])
     }
 
@@ -59,7 +59,7 @@ class DownloadStoreTest {
         val store = DownloadStore(temp.root)
         val waiting = store.submit("first", null, false, "x", Instant.ofEpochMilli(1000))
         val running = store.submit("second", null, false, "x", Instant.ofEpochMilli(2000))
-        val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val status = File(temp.root, ".spotless/status").apply { mkdirs() }
         File(status, "${running.id}.json")
             .writeText(
                 """{"version":1,"id":"${running.id}","input":"second","state":"downloading","title":"Song","progress":0.42,"message":null,"tracks":[],"updatedAt":"2026-10-06T05:01:52Z","future":"ignored"}"""
@@ -86,7 +86,7 @@ class DownloadStoreTest {
 
     @Test
     fun statusProgressFieldsAreReadAndOptional() {
-        val status = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val status = File(temp.root, ".spotless/status").apply { mkdirs() }
         File(status, "1000-aaaaaaaa.json")
             .writeText(
                 """{"version":1,"id":"1000-aaaaaaaa","input":"x","state":"downloading","itemsDone":3,"itemsTotal":12,""" +
@@ -155,7 +155,7 @@ class DownloadStoreTest {
         val store = DownloadStore(temp.root)
         assertEquals(null, store.worker())
         assertEquals(Downloader.None, Downloader.of(store.worker(), now))
-        val state = File(temp.root, ".tunemesh").apply { mkdirs() }
+        val state = File(temp.root, ".spotless").apply { mkdirs() }
         File(state, "worker.json")
             .writeText(
                 """{"version":1,"device":"home-server","instance":"5f0c1d2e3a4b6c7d","pid":41234,"workerVersion":"0.1.0","heartbeatAt":"2026-10-06T05:00:00Z"}"""
@@ -192,7 +192,7 @@ class DownloadStoreTest {
     /** R2-opus-1: a request, status or worker file over 1 MiB is skipped, without reading it whole. */
     @Test
     fun filesOverTheJsonLimitAreSkipped() {
-        val state = File(temp.root, ".tunemesh").apply { mkdirs() }
+        val state = File(temp.root, ".spotless").apply { mkdirs() }
         val status = File(state, "status").apply { mkdirs() }
         val requests = File(state, "requests").apply { mkdirs() }
         File(status, "1000-aaaaaaaa.json").writeText("""{"version":1,"id":"1000-aaaaaaaa","state":"done"}""")
@@ -261,8 +261,8 @@ class DownloadStoreTest {
     /** "Limits": only the newest 200 ids are read; a request with its status counts once; older are counted. */
     @Test
     fun onlyTheNewestRequestsAreRead() {
-        val requests = File(temp.root, ".tunemesh/requests").apply { mkdirs() }
-        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val requests = File(temp.root, ".spotless/requests").apply { mkdirs() }
+        val statuses = File(temp.root, ".spotless/status").apply { mkdirs() }
         for (n in 1..250) {
             val id = "${1000 + n}-aaaaaaaa"
             File(requests, "$id.json")
@@ -280,7 +280,7 @@ class DownloadStoreTest {
     /** R3-Opus-1: the list keeps a track count, never the paths, and none of the other texts uncut. */
     @Test
     fun statusTracksAreCountedNotKept() {
-        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val statuses = File(temp.root, ".spotless/status").apply { mkdirs() }
         val tracks = (1..12_000).joinToString(",") { "\"A/$it.mp3\"" }
         File(statuses, "1000-aaaaaaaa.json").writeText("""{"version":1,"id":"1000-aaaaaaaa","state":"done","tracks":[$tracks]}""")
         File(statuses, "2000-bbbbbbbb.json").writeText("""{"version":1,"id":"x","state":"done","tracks":["one"]}""")
@@ -315,14 +315,14 @@ class DownloadStoreTest {
         assertEquals(fits, store.submit("  $fits  ", null, false, "x", now).input)
         val error = assertThrows(IllegalArgumentException::class.java) { store.submitAll("ok\n${fits}é", null, false, "x", now) }
         assertTrue(error.message!!.contains("8 KiB"))
-        assertEquals(1, File(temp.root, ".tunemesh/requests").list()!!.size)
+        assertEquals(1, File(temp.root, ".spotless/requests").list()!!.size)
     }
 
     /** Contract "Download status" ("Clear"): every final status whose request file is gone goes, not only the 200 listed. */
     @Test
     fun clearFinishedClearsBeyondTheList() {
-        val requests = File(temp.root, ".tunemesh/requests").apply { mkdirs() }
-        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val requests = File(temp.root, ".spotless/requests").apply { mkdirs() }
+        val statuses = File(temp.root, ".spotless/status").apply { mkdirs() }
         for (n in 1..300) File(statuses, "$n-aaaaaaaa.json").writeText("""{"version":1,"id":"x","state":"done"}""")
         File(statuses, "1000-running.json").writeText("""{"version":1,"id":"x","state":"downloading"}""")
         File(statuses, "1001-pending.json").writeText("""{"version":1,"id":"x","state":"done"}""")
@@ -347,7 +347,7 @@ class DownloadStoreTest {
         val store = DownloadStore(temp.root)
         val first = store.submit("first", null, false, "x", Instant.ofEpochMilli(1000))
         val second = store.submit("second", null, false, "x", Instant.ofEpochMilli(2000))
-        val statuses = File(temp.root, ".tunemesh/status").apply { mkdirs() }
+        val statuses = File(temp.root, ".spotless/status").apply { mkdirs() }
         fun status(id: String, state: String) =
             AtomicFiles.write(File(statuses, "$id.json"), """{"version":1,"id":"$id","state":"$state"}""")
         status(second.id, "queued")
@@ -368,7 +368,7 @@ class DownloadStoreTest {
         assertTrue(finished[second.id] === changed[second.id])
 
         // worker.json too.
-        val worker = File(temp.root, ".tunemesh/worker.json")
+        val worker = File(temp.root, ".spotless/worker.json")
         AtomicFiles.write(worker, """{"version":1,"device":"pc","heartbeatAt":"2026-10-06T05:00:00Z"}""")
         assertEquals("pc", store.worker()?.device)
         AtomicFiles.write(worker, """{"version":1,"device":"laptop","heartbeatAt":"2026-10-06T05:00:00Z"}""")
@@ -377,5 +377,5 @@ class DownloadStoreTest {
         assertEquals(null, store.worker())
     }
 
-    private fun requests() = File(temp.root, ".tunemesh/requests")
+    private fun requests() = File(temp.root, ".spotless/requests")
 }

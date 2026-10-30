@@ -1,7 +1,7 @@
-//! `.tunemesh/requests/<id>.json` and `.tunemesh/status/<id>.json`
+//! `.spotless/requests/<id>.json` and `.spotless/status/<id>.json`
 //! (contract: "Download requests", "Download status").
 //!
-//! All access goes through `fsx`, so a symlinked `.tunemesh`, `requests` or
+//! All access goes through `fsx`, so a symlinked `.spotless`, `requests` or
 //! `status` directory, or a symlinked request or status file, is refused
 //! rather than followed.
 
@@ -220,7 +220,7 @@ fn file_name(id: &str) -> String {
     format!("{id}.json")
 }
 
-/// `.tunemesh/<sub>`, refusing symlinks on the way.
+/// `.spotless/<sub>`, refusing symlinks on the way.
 fn open_dir(root: &Path, sub: &str, create: bool) -> io::Result<Dir> {
     Dir::open(root)?.sub(&format!("{STATE_DIR}/{sub}"), create)
 }
@@ -334,7 +334,7 @@ fn shed<T: Serialize>(mut pop: impl FnMut() -> Option<T>, mut excess: usize) -> 
 }
 
 /// Whether a request was cancelled: its request file no longer exists (or is
-/// no longer a regular file in a real `.tunemesh/requests` directory).
+/// no longer a regular file in a real `.spotless/requests` directory).
 pub fn is_cancelled(root: &Path, id: &str) -> bool {
     !open_dir(root, REQUESTS, false).is_ok_and(|d| d.is_file(&file_name(id)))
 }
@@ -736,7 +736,7 @@ mod tests {
         assert_eq!(r.id, "2-00000000");
     }
 
-    /// Audit finding 2: a symlinked `.tunemesh/status` or `requests`
+    /// Audit finding 2: a symlinked `.spotless/status` or `requests`
     /// directory must not let the worker write or delete files elsewhere.
     #[test]
     #[cfg_attr(miri, ignore = "file system")]
@@ -767,7 +767,7 @@ mod tests {
         assert!(remove_status(root, "settings").is_err());
         assert!(outside.path().join("settings.json").exists());
 
-        // A symlinked .tunemesh is refused the same way.
+        // A symlinked .spotless is refused the same way.
         fs::remove_dir_all(root.join(STATE_DIR)).unwrap();
         symlink(outside.path(), root.join(STATE_DIR)).unwrap();
         assert!(s.write(root).is_err());

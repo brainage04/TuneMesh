@@ -191,7 +191,7 @@ Each request shows its progress (songs done of the total), failed songs and
 warnings. A line longer than 8 KiB is refused and stays in the box.
 
 One device per library downloads. The page and Settings show which device
-that is (from `.tunemesh/worker.json`). With "This device downloads songs"
+that is (from `.spotless/worker.json`). With "This device downloads songs"
 on, the app runs `spotless-worker --library <library> --work-dir
 ~/.cache/spotless/worker` as a child process while it is open, restarts it
 with a growing delay (up to a minute) if it stops unexpectedly, and stops it
@@ -285,11 +285,11 @@ after each request), `tmp/`, `cache/yt-dlp/` and `spotify-queries.json`; in
 `$XDG_STATE_HOME/spotless/` (default `~/.local/state/spotless/`) the playlist
 bases and `unwritten/` (final statuses it could not write into the library
 yet, so their requests are not run again); in the library the downloaded
-tracks, playlists, `.tunemesh/status/*.json` and `.tunemesh/worker.json`.
+tracks, playlists, `.spotless/status/*.json` and `.spotless/worker.json`.
 
 How it works:
 
-- Polls `<root>/.tunemesh/requests/`, gives every new request a `queued`
+- Polls `<root>/.spotless/requests/`, gives every new request a `queued`
   status, and processes them oldest first by the id's millisecond prefix, one
   at a time, while it is the library's downloader. Requests left unfinished
   are processed again; finished tracks are found by id, so nothing downloads
@@ -300,7 +300,7 @@ How it works:
   directory is on another filesystem the move goes through a
   `.~spotless-*.tmp` file next to the target.
 - Never follows a symlink below the library root: artist and album
-  directories, `Playlists/`, `.tunemesh/` and the files in them are opened with
+  directories, `Playlists/`, `.spotless/` and the files in them are opened with
   `O_NOFOLLOW` relative to the root, and anything else is refused.
 - All network traffic of yt-dlp, its ffmpeg and the worker's own HTTP client
   goes through an egress proxy inside the worker (127.0.0.1, random port,

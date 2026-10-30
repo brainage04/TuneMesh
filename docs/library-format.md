@@ -23,19 +23,18 @@ turns into conflict copies of request and status files.
   <Artist>/<Album>/<Title> [<source id>].<ext>   audio downloaded by the worker
   ...any other audio, at any depth...             files the user added by hand
   Playlists/<Name>.m3u8                           playlists, including Liked Songs
-  .tunemesh/requests/<id>.json                    download requests (clients write)
-  .tunemesh/status/<id>.json                      download status (worker writes)
-  .tunemesh/worker.json                           which device downloads (worker writes)
+  .spotless/requests/<id>.json                    download requests (clients write)
+  .spotless/status/<id>.json                      download status (worker writes)
+  .spotless/worker.json                           which device downloads (worker writes)
   .stignore                                       per device, never synced
 ```
 
-`.tunemesh/` keeps its name from before the app was renamed to Spotless: it is
-part of this format, shared by the desktop app, the Android app and the worker,
-so renaming it would need a format change and would break libraries that are
-already synced.
+`.spotless/` holds the download requests, the statuses and the downloader
+record; it is part of this format, shared by the desktop app, the Android app
+and the worker.
 
 Symbolic links: any device can put a symlink into the shared folder, so
-implementations never follow one below `<root>`. Playlists, `.tunemesh/` and
+implementations never follow one below `<root>`. Playlists, `.spotless/` and
 everything in it, and the directories the worker creates or writes into must
 be real directories and regular files; a symlink in their place is refused
 (read as missing or invalid, never written through). Symlinked audio files and
@@ -47,7 +46,7 @@ storage cannot hold symlinks.
 
 - Audio is any regular file under `<root>` with extension `opus`, `ogg`,
   `oga`, `m4a`, `mp4`, `aac`, `mp3`, `flac`, `wav` or `webm` (case-insensitive),
-  excluding everything below `.tunemesh/` and `Playlists/`, hidden files and
+  excluding everything below `.spotless/` and `Playlists/`, hidden files and
   directories (leading `.`), Syncthing conflict copies (name contains
   `.sync-conflict-`), and any file or directory whose name contains a line
   break (LF or CR; such a path cannot be written as a playlist line), with
@@ -228,7 +227,7 @@ them.
 ## Download requests
 
 A client asks for a download by creating
-`.tunemesh/requests/<id>.json` (atomically, as above):
+`.spotless/requests/<id>.json` (atomically, as above):
 
 ```json
 {
@@ -286,7 +285,7 @@ downloaded alone.
 
 ## Download status
 
-Only the worker writes `.tunemesh/status/<id>.json` (atomically):
+Only the worker writes `.spotless/status/<id>.json` (atomically):
 
 ```json
 {
@@ -358,7 +357,7 @@ Only the worker writes `.tunemesh/status/<id>.json` (atomically):
 ## One downloader per library
 
 Any number of devices may run the worker; one downloads at a time. The
-active worker writes `.tunemesh/worker.json` (atomically) when it starts
+active worker writes `.spotless/worker.json` (atomically) when it starts
 downloading and every 60 seconds after that:
 
 ```json
@@ -377,8 +376,8 @@ downloading and every 60 seconds after that:
   for display; not unique. `machine`: 32 hex characters identifying the
   machine and its process-id namespace (a SHA-256 hash of `/etc/machine-id`,
   or of a random id kept in `$XDG_DATA_HOME/spotless/worker-id`, plus the
-  namespace), so a sandboxed worker differs from one on the host; may be
-  missing in files from older workers. `instance`: random per worker
+  namespace), so a sandboxed worker differs from one on the host.
+  `instance`: random per worker
   process. `pid`: its process id in that namespace. `workerVersion`: the
   worker's version. Readers ignore fields they do not know.
 - A heartbeat is fresh when `heartbeatAt` is less than 3 minutes from now (in

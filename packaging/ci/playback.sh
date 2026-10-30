@@ -43,7 +43,7 @@ le32() {
     printf "\\$(printf %03o $(($1 & 255)))\\$(printf %03o $(($1 >> 8 & 255)))"
     printf "\\$(printf %03o $(($1 >> 16 & 255)))\\$(printf %03o $(($1 >> 24 & 255)))"
 }
-mkdir -p "$lib/.tunemesh/requests" "$lib/Playlists" "$lib/Smoke Artist/Smoke Album"
+mkdir -p "$lib/.spotless/requests" "$lib/Playlists" "$lib/Smoke Artist/Smoke Album"
 track="$lib/Smoke Artist/Smoke Album/Tone.wav"
 bytes=320000
 {

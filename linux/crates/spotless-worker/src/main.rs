@@ -1,7 +1,7 @@
 //! Spotless download worker (contract: "Worker behaviour").
 //!
-//! Polls `<root>/.tunemesh/requests/`, processes requests oldest first, one
-//! at a time, and reports progress in `<root>/.tunemesh/status/`. See
+//! Polls `<root>/.spotless/requests/`, processes requests oldest first, one
+//! at a time, and reports progress in `<root>/.spotless/status/`. See
 //! `--help` for the options.
 
 use std::collections::{HashMap, HashSet};

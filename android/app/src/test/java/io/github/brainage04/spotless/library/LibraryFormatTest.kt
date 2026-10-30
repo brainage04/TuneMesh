@@ -81,7 +81,7 @@ class LibraryFormatTest {
         assertTrue(LibraryFormat.isAudioPath("a/b/c/d/deep.FLAC"))
         assertFalse(LibraryFormat.isAudioPath("Artist/Album/cover.jpg"))
         assertFalse(LibraryFormat.isAudioPath("Playlists/x.mp3"))
-        assertFalse(LibraryFormat.isAudioPath(".tunemesh/requests/x.opus"))
+        assertFalse(LibraryFormat.isAudioPath(".spotless/requests/x.opus"))
         assertFalse(LibraryFormat.isAudioPath("Artist/.hidden/song.mp3"))
         assertFalse(LibraryFormat.isAudioPath("Artist/Album/.song.mp3"))
         assertFalse(LibraryFormat.isAudioPath("Artist/Album/Song.sync-conflict-20261006-101010-ABCDEFG.opus"))
