@@ -119,11 +119,20 @@ Android: `cd android && ./gradlew :app:assembleRelease`.
 The assistant can be opened again from Settings or with `spotless --setup`.
 Every step can be skipped and done in Syncthing's own web interface instead.
 
-If Syncthing already shares the library folder (or a folder around or inside
-it) under another folder ID, remove that folder in Syncthing on every device
-first; removing a folder keeps its files. Syncthing cannot share the same
-files in two folders, so the assistant does not add `spotless` there until
-the other folder is gone.
+Syncthing cannot share the same files in two folders, so the assistant does
+not add `spotless` while another Syncthing folder is on the library folder,
+inside it or around it, and says what to do:
+
+- **A folder left from TuneMesh or an earlier setup** (folder ID or label
+  `tunemesh` or `spotless`) on the library folder or inside it: remove it in
+  Syncthing on every device first (removing a folder keeps its files).
+- **A folder around the library** (a share of all of `~/Music`, say): it
+  already syncs the library. Skip the Syncthing step, or choose a library
+  folder outside it. Do not remove it: that stops syncing everything else in
+  it.
+- **Any other folder** on the library folder or inside it: choose another
+  library folder (or, when it is on the library folder itself, skip the
+  step, since it already syncs the library).
 
 Coming from TuneMesh, the earlier name of Spotless: follow
 [Switching from TuneMesh](docs/release-notes/v0.1.0.md#switching-from-tunemesh).

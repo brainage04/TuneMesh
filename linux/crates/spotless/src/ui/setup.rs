@@ -538,7 +538,7 @@ impl Setup {
                 });
                 row.add_suffix(&share);
             }
-            Some(f) if same_dir(Path::new(&f.path), &root) => {
+            Some(f) if syncthing::is_at(&f.path, &root) => {
                 row.set_subtitle(&format!("Shared from {}", f.path));
                 row.add_suffix(&gtk::Image::from_icon_name("object-select-symbolic"));
             }
@@ -552,7 +552,7 @@ impl Setup {
                     .label("Use That Folder")
                     .valign(gtk::Align::Center)
                     .build();
-                let (s, path) = (Rc::downgrade(self), PathBuf::from(&f.path));
+                let (s, path) = (Rc::downgrade(self), syncthing::local_path(&f.path));
                 use_it.connect_clicked(move |_| {
                     let Some(s) = s.upgrade() else { return };
                     if !path.is_dir() {
@@ -570,21 +570,28 @@ impl Setup {
             }
         }
         folder_group.add(&row);
-        // Another folder on the library's files (a `tunemesh` folder left
-        // from TuneMesh, or one around or inside it): never add a second
-        // folder there; the user removes that one first.
+        // Another folder on the library's files: never add a second folder
+        // there. What to do depends on the folder (`Clash::advice`): remove
+        // one an earlier setup left, otherwise choose another library folder
+        // or, when it already syncs the library, skip this step.
         if !clashes.is_empty() {
-            let list: Vec<String> = clashes.iter().map(ToString::to_string).collect();
             let clash = adw::ActionRow::builder()
                 .title("Another Syncthing folder holds these files")
-                .subtitle(format!(
-                    "{}. Two Syncthing folders cannot share the same files. Remove that folder in Syncthing on every device (its files stay), then check again.",
-                    list.join(", ")
-                ))
+                .subtitle(syncthing::clash_advice(&clashes))
                 .subtitle_selectable(true)
                 .use_markup(false)
                 .build();
             clash.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            if clashes.iter().any(|c| !c.remove_it()) {
+                let choose = gtk::Button::builder()
+                    .label("Choose Another Folder")
+                    .valign(gtk::Align::Center)
+                    .build();
+                choose.connect_clicked(on(self, |s| {
+                    s.nav.pop();
+                }));
+                clash.add_suffix(&choose);
+            }
             let again = gtk::Button::builder()
                 .label("Check Again")
                 .valign(gtk::Align::Center)
