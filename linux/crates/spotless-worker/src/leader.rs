@@ -19,11 +19,23 @@ use spotless_core::worker::{self, HEARTBEAT_INTERVAL, WorkerInfo};
 
 use crate::{config, log, signals};
 
-static LOST: AtomicBool = AtomicBool::new(false);
+/// Set while a worker that was downloading has lost the downloader role to
+/// another one; running downloads poll it (`job::Job::stop_reason`) and hand
+/// their request back. One per `Leader`, not per process: tests run several
+/// leaders in one process, and a process-wide flag let one leader's takeover
+/// clear another's loss.
+#[derive(Clone, Default)]
+pub struct Lost(Arc<AtomicBool>);
 
-/// Whether this worker lost the downloader role while working.
-pub fn lost() -> bool {
-    LOST.load(Ordering::SeqCst)
+impl Lost {
+    /// Whether the worker lost the downloader role while working.
+    pub fn get(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn set(&self, lost: bool) {
+        self.0.store(lost, Ordering::SeqCst);
+    }
 }
 
 struct State {
@@ -33,6 +45,7 @@ struct State {
     last_beat: Option<Instant>,
     /// Device last reported as the downloader, to log changes only.
     waiting_for: Option<String>,
+    lost: Lost,
 }
 
 #[derive(Clone)]
@@ -87,7 +100,7 @@ impl State {
             );
             self.active = false;
             self.waiting_for = Some(other.device.to_string());
-            LOST.store(true, Ordering::SeqCst);
+            self.lost.set(true);
             return;
         }
         self.write_beat();
@@ -111,6 +124,7 @@ impl Leader {
             active: false,
             last_beat: None,
             waiting_for: None,
+            lost: Lost::default(),
         })));
         let l = leader.clone();
         thread::Builder::new()
@@ -142,6 +156,11 @@ impl Leader {
         self.0.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// This worker's lost-the-role flag, for the downloads to poll.
+    pub fn lost(&self) -> Lost {
+        self.lock().lost.clone()
+    }
+
     /// Whether this worker may process requests now; takes over the role when
     /// no other worker holds it.
     pub fn may_work(&self) -> bool {
@@ -161,7 +180,7 @@ impl Leader {
         log!("this worker ({}) is now the downloader", s.me.device);
         s.active = true;
         s.waiting_for = None;
-        LOST.store(false, Ordering::SeqCst);
+        s.lost.set(false);
         s.write_beat();
         true
     }
@@ -213,7 +232,7 @@ mod tests {
         // Another device's beat appearing while active makes this one yield.
         worker::write(root, &other("laptop", 1, spotless_core::now_rfc3339())).unwrap();
         leader.lock().beat();
-        assert!(lost());
+        assert!(leader.lost().get());
         assert!(!leader.may_work());
 
         // Same machine, process gone: taken over at once.
@@ -224,7 +243,7 @@ mod tests {
         )
         .unwrap();
         assert!(leader.may_work());
-        assert!(!lost());
+        assert!(!leader.lost().get());
         leader.release();
         assert!(worker::read(root).is_none());
     }
@@ -257,5 +276,30 @@ mod tests {
         leader.lock().last_beat = None;
         leader.tick();
         assert!(worker::read(root).is_none());
+    }
+
+    /// The lost flag was one process-wide static, so another leader taking
+    /// over (here `b`, as `no_heartbeat_after_release` does in parallel with
+    /// `defers_to_a_fresh_worker_and_takes_over_stale_or_dead_ones`) cleared
+    /// the loss of `a` between its yielding and the check. Each leader keeps
+    /// its own.
+    #[test]
+    fn one_leaders_takeover_does_not_clear_anothers_loss() {
+        let lib_a = tempfile::tempdir().unwrap();
+        let lib_b = tempfile::tempdir().unwrap();
+        let a = Leader::new(lib_a.path(), "pc".into(), "machine-a".into());
+        let b = Leader::new(lib_b.path(), "pc".into(), "machine-a".into());
+        let a_lost = a.lost();
+        assert!(a.may_work());
+        worker::write(
+            lib_a.path(),
+            &other("laptop", 1, spotless_core::now_rfc3339()),
+        )
+        .unwrap();
+        a.lock().beat();
+        assert!(a_lost.get());
+        assert!(b.may_work());
+        assert!(a_lost.get(), "b's takeover cleared a's loss");
+        assert!(!b.lost().get());
     }
 }

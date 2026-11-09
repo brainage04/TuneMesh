@@ -75,6 +75,8 @@ pub struct Ctx {
     pub kept: Kept,
     /// When a request's status problem was last logged, by id.
     pub reported: HashMap<String, Instant>,
+    /// Set when this worker lost the downloader role; running downloads stop.
+    pub lost: leader::Lost,
 }
 
 /// How often the same request's status problem is logged again.
@@ -303,7 +305,7 @@ fn human_bytes(n: u64) -> String {
 impl Job<'_> {
     /// Why the current work should stop, if it should.
     pub fn stop_reason(&self) -> Option<Stop> {
-        if signals::stop_requested() || leader::lost() {
+        if signals::stop_requested() || self.ctx.lost.get() {
             return Some(Stop::Interrupted);
         }
         if request::is_cancelled(self.root, &self.req.id) {
@@ -867,6 +869,7 @@ pub mod tests {
             bases: Bases::none(),
             kept: Kept::new(work, root),
             reported: HashMap::new(),
+            lost: leader::Lost::default(),
         }
     }
 
@@ -897,6 +900,23 @@ pub mod tests {
         fs::create_dir_all(p.parent().unwrap()).unwrap();
         fs::write(&p, b"x").unwrap();
         p
+    }
+
+    /// A download stops (and its request goes back to the queue) when this
+    /// context's worker lost the downloader role, and only then.
+    #[test]
+    fn stops_when_its_worker_lost_the_role() {
+        let lib = tempfile::tempdir().unwrap();
+        let work = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(lib.path(), work.path());
+        let job = test_job(&ctx, work.path());
+        // A request file, so the request does not count as cancelled.
+        let requests = request::requests_dir(lib.path());
+        fs::create_dir_all(&requests).unwrap();
+        fs::write(requests.join(format!("{}.json", job.req.id)), b"{}").unwrap();
+        assert_eq!(job.stop_reason(), None);
+        ctx.lost.set(true);
+        assert_eq!(job.stop_reason(), Some(Stop::Interrupted));
     }
 
     /// R3Deepseek-3: every request walked the whole library first, even one

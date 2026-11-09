@@ -134,6 +134,7 @@ fn run(args: Args) -> Result<(), Fatal> {
         bases,
         kept,
         reported: HashMap::new(),
+        lost: leader.lost(),
     };
 
     let mut reported_bad: HashSet<String> = HashSet::new();
