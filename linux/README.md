@@ -122,14 +122,20 @@ real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
 generates a library of sine and noise tracks with placeholder names, its
 download requests and a downloader heartbeat, and a throwaway Syncthing
 that shares it, then runs `gui_tests::screenshots` in a private headless
-sway and saves the output with grim. It runs in user, mount, UTS and
+sway and saves the output with grim. It runs in user, mount, UTS, PID and
 network namespaces (home shown as `/home/user`, host name `desktop-pc`, no
-network), so it touches neither your library nor your Syncthing:
+network, nothing left running afterwards), so it touches neither your
+library nor your Syncthing. Two runs give the same pictures: the covers
+are fixed gradients, the app's clock is set to 2026-10-19 14:30 UTC with
+faketime, and Syncthing uses the throwaway key in
+`crates/spotless/scripts/screenshots-syncthing/`. The tools must come from
+the Nix store, as below: `/home` is hidden inside the namespaces.
 
 ```sh
 # from the repository root, through heavy on a shared machine (--mem 6G)
 nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#grim nixpkgs#dbus \
-  nixpkgs#syncthing nixpkgs#ffmpeg nixpkgs#curl nixpkgs#iproute2 nixpkgs#util-linux -c \
+  nixpkgs#syncthing nixpkgs#ffmpeg nixpkgs#curl nixpkgs#iproute2 nixpkgs#util-linux \
+  nixpkgs#libfaketime -c \
   linux/crates/spotless/scripts/screenshots.sh   # or: ... screenshots.sh <out-dir>
 ```
 

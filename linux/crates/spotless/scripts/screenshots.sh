@@ -4,21 +4,27 @@
 # generates a library of sine and noise tracks with placeholder names, its
 # download requests and a downloader heartbeat, and a throwaway Syncthing
 # that shares it, then runs gui_tests::screenshots in a private headless
-# sway. Everything runs in user, mount, UTS and network namespaces: the home
-# folder is a scratch folder shown as /home/user, the host name is
-# desktop-pc, and Syncthing and the app reach nothing but each other. Never
-# touches your library, your Syncthing or your desktop.
+# sway. Everything runs in user, mount, UTS, PID and network namespaces: the
+# home folder is a scratch folder shown as /home/user, the host name is
+# desktop-pc, Syncthing and the app reach nothing but each other, and
+# whatever the script started ends with it. Never touches your library,
+# your Syncthing or your desktop.
+#
+# Two runs make the same pictures: the covers are fixed gradients, the app's
+# clock is set to 2026-10-19 14:30 UTC with faketime, and Syncthing uses the
+# throwaway key in screenshots-syncthing/ (so the same device ID and QR code).
 #
 # Run from the dev shell with the tools on PATH:
 #   nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#grim \
 #     nixpkgs#dbus nixpkgs#syncthing nixpkgs#ffmpeg nixpkgs#curl \
-#     nixpkgs#iproute2 nixpkgs#util-linux -c \
+#     nixpkgs#iproute2 nixpkgs#util-linux nixpkgs#libfaketime -c \
 #     linux/crates/spotless/scripts/screenshots.sh [OUT-DIR]
 #
 # OUT-DIR defaults to docs/screenshots.
 set -euo pipefail
 
-linux=$(cd "$(dirname "$0")/../../.." && pwd)
+scripts=$(cd "$(dirname "$0")" && pwd)
+linux=$(cd "$scripts/../../.." && pwd)
 out=$(realpath -m "${1:-$linux/../docs/screenshots}")
 mkdir -p "$out"
 base=/var/tmp
@@ -47,8 +53,10 @@ covers=$run/covers
 mkdir -p "$lib/Playlists" "$covers"
 
 cover() { # name color0 color1
+	# The end point must lie inside the frame (0..499) and the seed be set:
+	# otherwise the gradients source picks random ones on every run.
 	ffmpeg -loglevel error -y -f lavfi \
-		-i "gradients=s=500x500:c0=$2:c1=$3:x0=0:y0=0:x1=500:y1=500:speed=0:d=1" -frames:v 1 "$covers/$1.png"
+		-i "gradients=s=500x500:c0=$2:c1=$3:x0=0:y0=0:x1=499:y1=499:speed=0:d=1:seed=1" -frames:v 1 "$covers/$1.png"
 }
 
 track() { # artist album title n total ext source seconds cover id
@@ -106,9 +114,14 @@ for album in "Velvet Static/Dusk Signals" "The Oscillators/Square Days" "Nova Fi
 done
 
 # ---- a throwaway Syncthing ------------------------------------------------
+# Its key is a fixed throwaway one, kept with this script, so the device ID
+# (and the QR code in the setup picture) is the same on every run; generate
+# keeps an existing key.
 st=$home/.local/state/syncthing
 mkdir -p "$st"
-syncthing generate --home "$st" --no-port-probing >/dev/null
+cp "$scripts/screenshots-syncthing/cert.pem" "$scripts/screenshots-syncthing/key.pem" "$st/"
+chmod 600 "$st/key.pem"
+syncthing generate --home "$st" --no-port-probing >/dev/null 2>&1
 sed -i -e 's#<address>127.0.0.1:8384</address>#<address>127.0.0.1:18384</address>#' \
 	-e 's#<listenAddress>default</listenAddress>#<listenAddress>tcp://127.0.0.1:22999</listenAddress>#' \
 	-e 's#AnnounceEnabled>true#AnnounceEnabled>false#g' -e 's#<relaysEnabled>true#<relaysEnabled>false#' \
@@ -149,6 +162,27 @@ cat >"$run/inside.sh" <<'EOF'
 # Runs as the namespace's root: $1 is the scratch folder, $2 the output.
 set -euo pipefail
 run=$1 out=$2
+# This shell is PID 1 of its own PID namespace: everything it starts ends
+# when it exits. Stop Syncthing first anyway, so it can close its database,
+# and show the logs when something failed. As PID 1 the shell gets no
+# default handlers for INT and TERM, hence the explicit traps.
+st_pid=
+finish() {
+	local rc=$?
+	trap - EXIT
+	if [ -n "$st_pid" ]; then
+		kill "$st_pid" 2>/dev/null || true
+		wait "$st_pid" 2>/dev/null || true
+	fi
+	if [ "$rc" != 0 ]; then
+		echo "screenshots.sh: failed (exit $rc); the last lines of the logs:" >&2
+		tail -n 30 "$run/sway.log" "$run/syncthing.log" >&2 2>/dev/null || true
+	fi
+	exit "$rc"
+}
+trap finish EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 hostname desktop-pc
 ip link set lo up
 mount -t tmpfs tmpfs /home
@@ -168,8 +202,17 @@ STNODEFAULTFOLDER=1 STNOUPGRADE=1 syncthing serve --home "$XDG_STATE_HOME/syncth
 st_pid=$!
 key=$(sed -n 's#.*<apikey>\(.*\)</apikey>.*#\1#p' "$XDG_STATE_HOME/syncthing/config.xml")
 api() { curl -sf -H "X-API-Key: $key" "$@"; }
-for _ in $(seq 100); do api http://127.0.0.1:18384/rest/system/status >/dev/null && break; sleep 0.2; done
-my_id=$(api http://127.0.0.1:18384/rest/system/status | sed -n 's/.*"myID": *"\([^"]*\)".*/\1/p')
+status=
+for _ in $(seq 100); do
+	status=$(api http://127.0.0.1:18384/rest/system/status 2>/dev/null) && break
+	status=
+	sleep 0.2
+done
+if [ -z "$status" ]; then
+	echo "screenshots.sh: the throwaway Syncthing's API at http://127.0.0.1:18384 did not answer within 20 s" >&2
+	exit 1
+fi
+my_id=$(printf '%s' "$status" | sed -n 's/.*"myID": *"\([^"]*\)".*/\1/p')
 api -X PUT -H 'Content-Type: application/json' \
 	-d "{\"id\":\"spotless\",\"label\":\"Spotless\",\"path\":\"$lib\",\"type\":\"sendreceive\",\"devices\":[{\"deviceID\":\"$my_id\"}]}" \
 	http://127.0.0.1:18384/rest/config/folders/spotless >/dev/null
@@ -178,7 +221,8 @@ api -X PUT -H 'Content-Type: application/json' \
 # downloader on home-server.
 state=$lib/.spotless
 mkdir -p "$state/requests" "$state/status"
-now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+# The app's clock (faketime, below) starts at this time too.
+now=2026-10-19T14:30:00Z
 printf '{"version":1,"device":"home-server","machine":"0f3c9a1b2d4e5f600f3c9a1b2d4e5f60","instance":"0f3c9a1b2d4e5f60","pid":4242,"workerVersion":"0.1.0","heartbeatAt":"%s"}\n' "$now" >"$state/worker.json"
 request() { # id input requestedBy playlistFromSource
 	printf '{"version":1,"id":"%s","input":"%s","playlist":null,"playlistFromSource":%s,"requestedBy":"%s","requestedAt":"%s"}\n' \
@@ -213,7 +257,6 @@ cat >"$run/bus.conf" <<CONF
 CONF
 printf '%s\n' 'output HEADLESS-1 resolution 1440x900 scale 1' 'default_border none' 'xwayland disable' \
 	'seat seat0 hide_cursor 100' >"$run/sway.cfg"
-rc=0
 dbus-run-session --config-file="$run/bus.conf" -- bash -c '
 	set -euo pipefail
 	run=$1 out=$2
@@ -224,17 +267,18 @@ dbus-run-session --config-file="$run/bus.conf" -- bash -c '
 	export WAYLAND_DISPLAY=wayland-1 GDK_BACKEND=wayland GDK_DEBUG=no-portals GSK_RENDERER=cairo GTK_A11Y=none
 	unset DISPLAY
 	rc=0
-	SPOTLESS_SHOTS_LIBRARY=$HOME/Music/Spotless SPOTLESS_SHOTS_OUT=$run/shots \
+	# A fixed wall clock for the app (the Home greeting, the times on the
+	# Downloads page); the monotonic clock and file times stay real.
+	TZ=UTC DONT_FAKE_MONOTONIC=1 NO_FAKE_STAT=1 \
+		SPOTLESS_SHOTS_LIBRARY=$HOME/Music/Spotless SPOTLESS_SHOTS_OUT=$run/shots \
+		faketime -f "@2026-10-19 14:30:00" \
 		"$run/spotless-tests" --ignored --exact --nocapture gui_tests::screenshots::docs_screenshots || rc=$?
 	kill "$sway_pid"; wait "$sway_pid" 2>/dev/null || true
 	exit "$rc"
-' bash "$run" "$out" || rc=$?
-kill "$st_pid"
-wait "$st_pid" 2>/dev/null || true
-[ "$rc" = 0 ] || tail -n 30 "$run/sway.log" "$run/syncthing.log" >&2
-exit "$rc"
+' bash "$run" "$out"
 EOF
 chmod +x "$run/inside.sh"
-unshare --map-root-user --mount --uts --net "$run/inside.sh" "$run" "$out"
+unshare --map-root-user --mount --uts --net --pid --fork --kill-child --mount-proc \
+	"$run/inside.sh" "$run" "$out"
 for name in home album downloads setup-syncthing; do cp "$run/shots/$name.png" "$out/"; done
 echo "wrote home, album, downloads and setup-syncthing.png to $out"
