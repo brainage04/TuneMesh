@@ -115,6 +115,24 @@ font map until exit; anything with a `spotless` frame in its stack is a
 real leak. For symbol names set `ASAN_SYMBOLIZER_PATH` to
 `llvm-symbolizer` (`nixpkgs#llvm`).
 
+### Screenshots
+
+`crates/spotless/scripts/screenshots.sh` retakes the four pictures in
+`docs/screenshots/` (1440x900; the metainfo and the README use them): it
+generates a library of sine and noise tracks with placeholder names, its
+download requests and a downloader heartbeat, and a throwaway Syncthing
+that shares it, then runs `gui_tests::screenshots` in a private headless
+sway and saves the output with grim. It runs in user, mount, UTS and
+network namespaces (home shown as `/home/user`, host name `desktop-pc`, no
+network), so it touches neither your library nor your Syncthing:
+
+```sh
+# from the repository root, through heavy on a shared machine (--mem 6G)
+nix develop -c nix shell --inputs-from . nixpkgs#sway nixpkgs#grim nixpkgs#dbus \
+  nixpkgs#syncthing nixpkgs#ffmpeg nixpkgs#curl nixpkgs#iproute2 nixpkgs#util-linux -c \
+  linux/crates/spotless/scripts/screenshots.sh   # or: ... screenshots.sh <out-dir>
+```
+
 ## The app
 
 ```sh

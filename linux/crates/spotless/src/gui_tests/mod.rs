@@ -7,13 +7,17 @@
 //!   memory).
 //! - `stalls`: the longest main-loop stall per action on a typical library
 //!   and on the hostile one (release build).
+//! - `screenshots`: the Downloads and setup pictures in `docs/screenshots/`
+//!   (not a check).
 //!
 //! All need a display and are `#[ignore]`d; `scripts/gui-checks.sh` starts a
-//! headless compositor and runs them. GTK may only be used from one thread,
-//! so every test hands its body to [`on_gtk`].
+//! headless compositor and runs the checks, `scripts/screenshots.sh` the
+//! screenshots. GTK may only be used from one thread, so every test hands
+//! its body to [`on_gtk`].
 
 mod checks;
 mod leaks;
+mod screenshots;
 mod stalls;
 mod typical;
 
