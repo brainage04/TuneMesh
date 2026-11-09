@@ -94,7 +94,7 @@ fun SettingsScreen(contentPadding: PaddingValues) {
             Spacer(Modifier.height(12.dp))
             Text("Syncthing", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "How to get the library from your computer onto this phone with Syncthing-Fork.",
+                "How to get the library from your computer onto this phone with Syncthing.",
                 color = TextSecondary,
                 style = MaterialTheme.typography.bodyMedium,
             )
@@ -164,8 +164,9 @@ private fun openUrl(context: Context, url: String) {
 }
 
 /**
- * Second onboarding step, after All files access: how to sync the library folder with Syncthing-Fork. Skippable, shown once, and reachable
- * again from Settings. Spotless itself never talks to Syncthing.
+ * Second onboarding step, after All files access: how to sync the library folder with whichever Syncthing runs on the phone
+ * (Syncthing-Fork, or Syncthing in Termux). Skippable, shown once, and reachable again from Settings. Spotless itself never talks to
+ * Syncthing.
  */
 @Composable
 fun SyncthingSetupScreen(onDone: () -> Unit) {
@@ -188,12 +189,17 @@ fun SyncthingSetupScreen(onDone: () -> Unit) {
         Text("Sync your library", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Spotless plays what Syncthing copies to this phone. With Syncthing on your computer and Syncthing-Fork " +
-                "here, both keep the same library folder.",
+            "Spotless plays what Syncthing copies to this phone. With Syncthing on your computer and on this phone, " +
+                "both keep the same library folder.",
             color = TextSecondary,
         )
         Spacer(Modifier.height(20.dp))
-        SetupStep(1, "Install Syncthing-Fork", "Get it from F-Droid or from its GitHub releases.") {
+        SetupStep(
+            1,
+            "Install Syncthing on this phone",
+            "Syncthing-Fork from F-Droid or its GitHub releases is the usual app. Syncthing in Termux (pkg install syncthing) " +
+                "works too. Skip this step if the phone already runs Syncthing.",
+        ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { openUrl(context, SYNCTHING_FDROID) }) { Text("F-Droid") }
                 OutlinedButton(onClick = { openUrl(context, SYNCTHING_GITHUB) }) { Text("GitHub") }
@@ -202,20 +208,23 @@ fun SyncthingSetupScreen(onDone: () -> Unit) {
         SetupStep(
             2,
             "Connect to your computer",
-            "On the computer, open Syncthing (http://127.0.0.1:8384) and choose Actions → Show ID. In Syncthing-Fork, " +
-                "open Devices, tap + and scan that QR code. Accept the phone on the computer when Syncthing asks.",
+            "On the computer, open Syncthing (http://127.0.0.1:8384) and choose Actions → Show ID. On the phone, add " +
+                "that ID as a device: in Syncthing-Fork, open Devices, tap + and scan that QR code; in Syncthing in " +
+                "Termux, open its Web GUI (http://127.0.0.1:8384 on the phone) and choose Add Remote Device. Accept the " +
+                "phone on the computer when Syncthing asks.",
         )
         SetupStep(
             3,
             "Accept the spotless folder",
-            "On the computer, share the folder with ID \"spotless\" with the phone. When Syncthing-Fork offers it, " +
+            "On the computer, share the folder with ID \"spotless\" with the phone. When Syncthing on the phone offers it, " +
                 "accept it and set its directory to $root.",
         )
         SetupStep(
             4,
             "Turn on \"Ignore permissions\"",
             "Android reports the same permissions for every file; without this, Syncthing keeps syncing them back " +
-                "as changes. Syncthing-Fork turns it on for folders it adds; in its Web GUI it is under Edit → Advanced.",
+                "as changes. Syncthing-Fork turns it on for folders it adds; in any Syncthing's Web GUI it is under " +
+                "Edit → Advanced.",
         )
         Spacer(Modifier.height(12.dp))
         launch?.let { intent ->

@@ -61,7 +61,8 @@ Notes:
   `sudo dnf install syncthing`, `sudo pacman -S syncthing`, or see
   [syncthing.net](https://syncthing.net/downloads/). Start it with
   `systemctl --user enable --now syncthing`. On Android use
-  [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingfork/).
+  [Syncthing-Fork](https://f-droid.org/packages/com.github.catfriend1.syncthingfork/),
+  or Syncthing in [Termux](https://termux.dev/) (`pkg install syncthing`).
 - The downloader fetches and updates its own copies of yt-dlp and deno (the
   JavaScript runtime yt-dlp needs for YouTube); ffmpeg comes with the package.
   The Nix packages instead use the yt-dlp, deno and ffmpeg of the nixpkgs
@@ -111,8 +112,9 @@ Android: `cd android && ./gradlew :app:assembleRelease`.
    computer that should do the downloading.
 2. **Other computers.** Install Spotless, run the assistant, and add each
    other's device IDs. Accept the shared `spotless` folder in Syncthing.
-3. **Phone.** Install Spotless and Syncthing-Fork. The app asks for All files
-   access, then walks you through Syncthing: scan the computer's QR code,
+3. **Phone.** Install Spotless and Syncthing (Syncthing-Fork, or Syncthing in
+   Termux). The app asks for All files access, then walks you through
+   Syncthing: add the computer's device ID (Syncthing-Fork scans its QR code),
    accept the folder `spotless` at `/storage/emulated/0/Music/Spotless`, and
    keep **Ignore permissions** on.
 
