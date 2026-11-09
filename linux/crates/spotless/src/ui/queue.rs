@@ -240,11 +240,15 @@ impl QueuePanel {
         match shown.item(li.position() as usize) {
             Some(QItem::Heading(text)) => {
                 q.heading.set_label(&limits::clip_line(text));
-                li.set_child(Some(&q.heading));
+                if li.child().as_ref() != Some(q.heading.upcast_ref()) {
+                    li.set_child(Some(&q.heading));
+                }
                 li.set_activatable(false);
             }
             Some(QItem::Track { index, current }) => {
-                li.set_child(Some(&q.row));
+                if li.child().as_ref() != Some(q.row.upcast_ref()) {
+                    li.set_child(Some(&q.row));
+                }
                 li.set_activatable(!current);
                 q.remove.set_visible(!current);
                 if current {

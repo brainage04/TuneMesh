@@ -7,8 +7,8 @@
 //!   memory).
 //! - `stalls`: the longest main-loop stall per action on a typical library
 //!   and on the hostile one (release build).
-//! - `screenshots`: the Downloads and setup pictures in `docs/screenshots/`
-//!   (not a check).
+//! - `screenshots`: the four pictures in `docs/screenshots/` (Home, an album,
+//!   Downloads and the setup assistant's Syncthing step); not a check.
 //!
 //! All need a display and are `#[ignore]`d; `scripts/gui-checks.sh` starts a
 //! headless compositor and runs the checks, `scripts/screenshots.sh` the

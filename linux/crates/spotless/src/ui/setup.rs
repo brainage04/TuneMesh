@@ -2,7 +2,6 @@
 //! Shown on first run and from Settings; every step can be skipped.
 
 use std::cell::{Cell, RefCell};
-use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
@@ -143,13 +142,6 @@ fn heading(text: &str) -> gtk::Label {
         .build()
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
-    match (a.canonicalize(), b.canonicalize()) {
-        (Ok(x), Ok(y)) => x == y,
-        _ => a == b,
-    }
-}
-
 /// A QR code of `text` as a texture, `scale` pixels per module.
 fn qr_texture(text: &str, scale: usize) -> Option<gdk::MemoryTexture> {
     let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
@@ -264,7 +256,7 @@ impl Setup {
                 s.toast(&format!("Could not create {}: {err}", path.display()));
                 return;
             }
-            if !same_dir(&path, &s.app.store.root()) {
+            if !syncthing::same_dir(&path, &s.app.store.root()) {
                 s.app.set_library_path(path);
                 s.app.refresh();
             }

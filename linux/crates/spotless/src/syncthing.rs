@@ -181,10 +181,15 @@ pub fn local_path(folder_path: &str) -> PathBuf {
 /// Whether a Syncthing folder's path names the directory `dir`, with `~`
 /// expanded and, where both exist, symlinks resolved.
 pub fn is_at(folder_path: &str, dir: &Path) -> bool {
-    let folder = local_path(folder_path);
-    match (folder.canonicalize(), dir.canonicalize()) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => folder == dir,
+    same_dir(&local_path(folder_path), dir)
+}
+
+/// Whether `a` and `b` name the same directory: symlinks resolved where both
+/// exist, otherwise compared as written.
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
     }
 }
 
