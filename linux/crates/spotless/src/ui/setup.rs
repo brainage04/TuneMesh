@@ -491,7 +491,14 @@ impl Setup {
             .title(format!("Folder ID “{}”", syncthing::FOLDER_ID))
             .use_markup(false)
             .build();
+        let clashes = syncthing::overlapping(&o.folders, &root);
         match &o.folder {
+            None if !clashes.is_empty() => {
+                row.set_subtitle(&format!(
+                    "Not set up yet. {} cannot be shared under this ID while another Syncthing folder holds it.",
+                    root.display()
+                ));
+            }
             None => {
                 row.set_subtitle(&format!(
                     "Not set up yet. Share {} under this ID so your other devices can join it.",
@@ -563,6 +570,29 @@ impl Setup {
             }
         }
         folder_group.add(&row);
+        // Another folder on the library's files (a `tunemesh` folder left
+        // from TuneMesh, or one around or inside it): never add a second
+        // folder there; the user removes that one first.
+        if !clashes.is_empty() {
+            let list: Vec<String> = clashes.iter().map(ToString::to_string).collect();
+            let clash = adw::ActionRow::builder()
+                .title("Another Syncthing folder holds these files")
+                .subtitle(format!(
+                    "{}. Two Syncthing folders cannot share the same files. Remove that folder in Syncthing on every device (its files stay), then check again.",
+                    list.join(", ")
+                ))
+                .subtitle_selectable(true)
+                .use_markup(false)
+                .build();
+            clash.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
+            let again = gtk::Button::builder()
+                .label("Check Again")
+                .valign(gtk::Align::Center)
+                .build();
+            again.connect_clicked(on(self, |s| s.probe()));
+            clash.add_suffix(&again);
+            folder_group.add(&clash);
+        }
         b.append(&folder_group);
 
         // This device's ID, to enter on the other devices.
