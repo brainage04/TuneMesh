@@ -39,6 +39,12 @@ jobs:
               echo "::error::tag $GITHUB_REF_NAME does not match linux/Cargo.toml version $cargo"
               exit 1
             fi
+            # The checkout's tag ref points at the commit; fetch the tag
+            # itself for an annotated tag's date.
+            git fetch --force --depth=1 origin "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+            # The metainfo and rpm changelog dates match the tag's, and the
+            # release notes exist.
+            packaging/ci/check-release.sh "$GITHUB_REF_NAME"
           fi
           echo "version=$cargo" >>"$GITHUB_OUTPUT"
 
