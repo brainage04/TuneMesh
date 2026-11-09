@@ -172,133 +172,20 @@ pub struct Device {
     pub name: String,
 }
 
-/// A folder in Syncthing's configuration, as `/rest/config/folders` lists it.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ConfiguredFolder {
-    pub id: String,
-    #[serde(default)]
-    pub label: String,
-    pub path: String,
-}
-
-impl std::fmt::Display for ConfiguredFolder {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.label.is_empty() || self.label == self.id {
-            write!(f, "“{}” at {}", self.id, self.path)
-        } else {
-            write!(f, "“{}” (ID “{}”) at {}", self.label, self.id, self.path)
-        }
-    }
-}
-
-impl ConfiguredFolder {
-    /// A library folder an earlier setup made: ID or label `tunemesh` or
-    /// `spotless`, in any case (the `spotless` ID itself is never a clash).
-    pub fn is_old_library(&self) -> bool {
-        [&self.id, &self.label]
-            .iter()
-            .any(|s| s.eq_ignore_ascii_case("tunemesh") || s.eq_ignore_ascii_case("spotless"))
-    }
-}
-
 /// A Syncthing folder's path on this machine: a leading `~` is this user's
-/// home folder, as Syncthing expands it (it stores `~/…` as typed).
+/// home folder, as Syncthing expands it (it keeps a path typed as `~/…`).
 pub fn local_path(folder_path: &str) -> PathBuf {
     config::expand_home(folder_path)
 }
 
-/// `p` with symlinks and `..` resolved when it exists, else as given. A
-/// path that does not exist holds no files, so leaving it unresolved
-/// cannot hide an overlap.
-fn resolved(p: &Path) -> PathBuf {
-    p.canonicalize().unwrap_or_else(|_| p.to_path_buf())
-}
-
-/// Whether a Syncthing folder's path names the directory `dir`.
+/// Whether a Syncthing folder's path names the directory `dir`, with `~`
+/// expanded and, where both exist, symlinks resolved.
 pub fn is_at(folder_path: &str, dir: &Path) -> bool {
-    resolved(&local_path(folder_path)) == resolved(dir)
-}
-
-/// How another Syncthing folder overlaps the library folder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Overlap {
-    /// The same directory.
-    Same,
-    /// A directory inside the library.
-    Inside,
-    /// A directory that holds the library (a share of `~/Music`, say).
-    Around,
-}
-
-/// Another folder on the library's files, and what the user can do.
-#[derive(Debug, Clone, Copy)]
-pub struct Clash<'a> {
-    pub folder: &'a ConfiguredFolder,
-    pub overlap: Overlap,
-}
-
-impl Clash<'_> {
-    /// Whether removing the other folder is the advice: only for a folder
-    /// an earlier setup left on the library or inside it. Removing any other
-    /// folder would stop syncing whatever else it holds on every device.
-    pub fn remove_it(&self) -> bool {
-        self.overlap != Overlap::Around && self.folder.is_old_library()
+    let folder = local_path(folder_path);
+    match (folder.canonicalize(), dir.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => folder == dir,
     }
-
-    /// What to do, in one or two sentences.
-    pub fn advice(&self) -> String {
-        let f = self.folder;
-        match self.overlap {
-            _ if self.remove_it() => format!(
-                "{f} is left from an earlier setup: remove it in Syncthing on every device (its files stay), then share the library again."
-            ),
-            Overlap::Same => format!(
-                "{f} already syncs your library folder: skip this step and keep using it, or choose another library folder."
-            ),
-            Overlap::Inside => format!(
-                "{f} is inside your library folder: choose a library folder that does not hold it."
-            ),
-            Overlap::Around => format!(
-                "{f} holds your library folder and already syncs it: skip this step, or choose a library folder outside it."
-            ),
-        }
-    }
-}
-
-/// The folders other than `spotless` whose path is `path`, lies inside it or
-/// holds it. Two Syncthing folders must never share files: each would index
-/// the other's files, temporary files and deletions. Syncthing checks for
-/// this only in its web interface, not in the REST API
-/// (syncthing/syncthing#9400), so the assistant checks before it adds the
-/// folder. Paths are compared with symlinks resolved and `~` expanded.
-pub fn overlapping<'a>(folders: &'a [ConfiguredFolder], path: &Path) -> Vec<Clash<'a>> {
-    let path = resolved(path);
-    folders
-        .iter()
-        .filter(|f| f.id != FOLDER_ID)
-        .filter_map(|folder| {
-            let other = resolved(&local_path(&folder.path));
-            let overlap = if other == path {
-                Overlap::Same
-            } else if other.starts_with(&path) {
-                Overlap::Inside
-            } else if path.starts_with(&other) {
-                Overlap::Around
-            } else {
-                return None;
-            };
-            Some(Clash { folder, overlap })
-        })
-        .collect()
-}
-
-/// What the assistant says about `clashes` (not empty).
-pub fn clash_advice(clashes: &[Clash<'_>]) -> String {
-    let advice: Vec<String> = clashes.iter().map(Clash::advice).collect();
-    format!(
-        "Two Syncthing folders cannot share the same files. {}",
-        advice.join(" ")
-    )
 }
 
 /// What the setup assistant shows once connected.
@@ -309,8 +196,6 @@ pub struct Overview {
     pub folder: Option<Folder>,
     /// Other devices the Spotless folder is shared with, with their names.
     pub shared_with: Vec<Device>,
-    /// Every folder in Syncthing's configuration, for [`overlapping`].
-    pub folders: Vec<ConfiguredFolder>,
 }
 
 impl Client {
@@ -433,24 +318,11 @@ impl Client {
             version,
             folder,
             shared_with,
-            folders: self.folders()?,
         })
     }
 
-    /// Every folder in Syncthing's configuration.
-    pub fn folders(&self) -> Result<Vec<ConfiguredFolder>, Error> {
-        Ok(self.get("/rest/config/folders")?.unwrap_or_default())
-    }
-
     /// Adds the `spotless` folder at `path`, shared with no other device yet.
-    /// Refuses when another folder overlaps `path` ([`overlapping`]), with
-    /// what to do about it ([`clash_advice`]).
     pub fn create_folder(&self, path: &Path, my_id: &str) -> Result<(), Error> {
-        let folders = self.folders()?;
-        let clashes = overlapping(&folders, path);
-        if !clashes.is_empty() {
-            return Err(Error::Other(clash_advice(&clashes)));
-        }
         let body = json!({
             "id": FOLDER_ID,
             "label": FOLDER_LABEL,
@@ -876,239 +748,6 @@ mod tests {
         assert_eq!(c.share_with("REMOTE", "phone").unwrap(), "REMOTE");
     }
 
-    fn configured(id: &str, path: &str) -> ConfiguredFolder {
-        ConfiguredFolder {
-            id: id.into(),
-            label: String::new(),
-            path: path.into(),
-        }
-    }
-
-    /// Another folder on the same path, inside it or around it overlaps,
-    /// each as its kind; the `spotless` folder itself and a sibling with a
-    /// longer name do not.
-    #[test]
-    fn folders_on_or_around_the_library_overlap() {
-        let lib = Path::new("/nonexistent-spotless-test/Music/Spotless");
-        let folders = [
-            configured("tunemesh", "/nonexistent-spotless-test/Music/Spotless/"),
-            configured("music", "/nonexistent-spotless-test/Music"),
-            configured("covers", "/nonexistent-spotless-test/Music/Spotless/Covers"),
-            configured("spotless", "/nonexistent-spotless-test/Music/Spotless"),
-            configured("other", "/nonexistent-spotless-test/Music/Spotless2"),
-            configured("photos", "/nonexistent-spotless-test/Photos"),
-        ];
-        let found: Vec<(&str, Overlap)> = overlapping(&folders, lib)
-            .iter()
-            .map(|c| (c.folder.id.as_str(), c.overlap))
-            .collect();
-        assert_eq!(
-            found,
-            [
-                ("tunemesh", Overlap::Same),
-                ("music", Overlap::Around),
-                ("covers", Overlap::Inside),
-            ]
-        );
-
-        // Syncthing expands a leading `~` to the home folder.
-        let home_lib = config::real_home().join("nonexistent-spotless-test-lib");
-        let tilde = [configured("tunemesh", "~/nonexistent-spotless-test-lib")];
-        assert_eq!(overlapping(&tilde, &home_lib).len(), 1);
-    }
-
-    /// A library reached through a symlink overlaps a folder on the link's
-    /// target, and a folder on the target is "at" the library.
-    #[test]
-    fn a_library_behind_a_symlink_overlaps_the_folder_on_its_target() {
-        let dir = std::env::temp_dir().join(format!("spotless-st-link-{}", std::process::id()));
-        let target = dir.join("data").join("TuneMesh");
-        std::fs::create_dir_all(&target).unwrap();
-        std::fs::create_dir_all(dir.join("Music")).unwrap();
-        let link = dir.join("Music").join("Spotless");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let folders = [configured("tunemesh", &target.to_string_lossy())];
-        let clashes = overlapping(&folders, &link);
-        assert_eq!(clashes.len(), 1);
-        assert_eq!(clashes[0].overlap, Overlap::Same);
-        assert!(is_at(&target.to_string_lossy(), &link));
-        std::fs::remove_dir_all(&dir).unwrap();
-    }
-
-    /// A Syncthing path given as `~/…` is the same directory as the expanded
-    /// one, for "Shared from" and Use That Folder.
-    #[test]
-    fn folder_paths_with_a_tilde_are_in_the_home_folder() {
-        let home = config::real_home();
-        assert_eq!(local_path("~/Music/Spotless"), home.join("Music/Spotless"));
-        assert_eq!(local_path("/srv/music"), PathBuf::from("/srv/music"));
-        assert!(is_at(
-            "~/nonexistent-spotless-test",
-            &home.join("nonexistent-spotless-test")
-        ));
-        assert!(!is_at(
-            "~/nonexistent-spotless-test",
-            Path::new("/nonexistent-spotless-test")
-        ));
-    }
-
-    /// Removing the other folder is the advice only for one an earlier
-    /// setup left on the library or inside it; a folder around the library
-    /// (a share of ~/Music) or any other folder is never to be removed.
-    #[test]
-    fn advice_depends_on_the_folder() {
-        let lib = Path::new("/nonexistent-spotless-test/Music/Spotless");
-        let mut old_inside = configured("abcd-1234", "/nonexistent-spotless-test/Music/Spotless/x");
-        old_inside.label = "Spotless".into();
-        let folders = [
-            configured("tunemesh", "/nonexistent-spotless-test/Music/Spotless"),
-            old_inside,
-            configured("TuneMesh", "/nonexistent-spotless-test"),
-            configured("music", "/nonexistent-spotless-test/Music"),
-            configured("music-lib", "/nonexistent-spotless-test/Music/Spotless"),
-            configured("covers", "/nonexistent-spotless-test/Music/Spotless/Covers"),
-        ];
-        let clashes = overlapping(&folders, lib);
-        let by_id = |id: &str| clashes.iter().find(|c| c.folder.id == id).unwrap();
-
-        for id in ["tunemesh", "abcd-1234"] {
-            let c = by_id(id);
-            assert!(c.remove_it(), "{id}");
-            assert!(
-                c.advice()
-                    .contains("remove it in Syncthing on every device"),
-                "{id}"
-            );
-        }
-        for id in ["TuneMesh", "music", "music-lib", "covers"] {
-            let c = by_id(id);
-            assert!(!c.remove_it(), "{id}");
-            assert!(!c.advice().contains("remove"), "{id}: {}", c.advice());
-        }
-        for id in ["TuneMesh", "music"] {
-            let a = by_id(id).advice();
-            assert!(
-                a.contains(
-                    "already syncs it: skip this step, or choose a library folder outside it"
-                ),
-                "{a}"
-            );
-        }
-        let a = by_id("music-lib").advice();
-        assert!(
-            a.contains("already syncs your library folder: skip this step"),
-            "{a}"
-        );
-        let a = by_id("covers").advice();
-        assert!(
-            a.contains("choose a library folder that does not hold it"),
-            "{a}"
-        );
-        assert!(
-            clash_advice(&clashes)
-                .starts_with("Two Syncthing folders cannot share the same files.")
-        );
-    }
-
-    /// A fake Syncthing whose folder list is `folders` (a full HTTP answer);
-    /// `wrote` turns true on any PUT or PATCH.
-    fn syncthing_with_folders(
-        folders: String,
-        wrote: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    ) -> Client {
-        fake(move |line| {
-            if line.starts_with("PUT ") || line.starts_with("PATCH ") {
-                wrote.store(true, std::sync::atomic::Ordering::SeqCst);
-                return ok("");
-            }
-            match line.split(' ').nth(1).unwrap_or("") {
-                "/rest/system/status" => ok(r#"{"myID":"LOCAL"}"#),
-                "/rest/system/version" => ok(r#"{"version":"v2.0.0"}"#),
-                "/rest/config/devices" => ok("[]"),
-                "/rest/config/folders" => folders.clone(),
-                _ => NOT_FOUND.to_owned(),
-            }
-        })
-    }
-
-    /// The assistant never adds the `spotless` folder on the path of another
-    /// folder (a `tunemesh` folder left from TuneMesh): it refuses, names the
-    /// folder, says to remove it and sends no write. Under a folder around
-    /// the library it refuses too, without telling the user to remove it.
-    #[test]
-    fn sharing_refuses_a_path_another_folder_has() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let wrote = std::sync::Arc::new(AtomicBool::new(false));
-        let c = syncthing_with_folders(
-            ok(
-                r#"[{"id":"tunemesh","label":"TuneMesh","path":"/nonexistent-spotless-test/TuneMesh/"},{"id":"music","label":"Music","path":"/nonexistent-spotless-test/Music"}]"#,
-            ),
-            wrote.clone(),
-        );
-        let err = c
-            .create_folder(Path::new("/nonexistent-spotless-test/TuneMesh"), "LOCAL")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("“TuneMesh” (ID “tunemesh”)"), "{err}");
-        assert!(
-            err.contains("remove it in Syncthing on every device"),
-            "{err}"
-        );
-        let err = c
-            .create_folder(
-                Path::new("/nonexistent-spotless-test/Music/Spotless"),
-                "LOCAL",
-            )
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("“Music” (ID “music”)"), "{err}");
-        assert!(err.contains("choose a library folder outside it"), "{err}");
-        assert!(!err.contains("remove"), "{err}");
-        assert!(!wrote.load(Ordering::SeqCst), "a folder was written");
-        // Another path is added.
-        c.create_folder(Path::new("/nonexistent-spotless-test/Spotless"), "LOCAL")
-            .unwrap();
-        assert!(wrote.load(Ordering::SeqCst));
-    }
-
-    /// When Syncthing cannot list its folders, nothing is added: the check
-    /// fails closed, and so does the overview the assistant shows.
-    #[test]
-    fn a_folder_list_that_fails_blocks_sharing() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        let wrote = std::sync::Arc::new(AtomicBool::new(false));
-        let c = syncthing_with_folders(
-            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\nConnection: close\r\n\r\nboom"
-                .to_owned(),
-            wrote.clone(),
-        );
-        assert!(c.folders().is_err());
-        assert!(
-            c.create_folder(Path::new("/nonexistent-spotless-test/Spotless"), "LOCAL")
-                .is_err()
-        );
-        assert!(!wrote.load(Ordering::SeqCst), "a folder was written");
-        assert!(c.overview().is_err());
-    }
-
-    /// The overview carries Syncthing's folders, which the assistant checks
-    /// for clashes before it offers Share Folder.
-    #[test]
-    fn the_overview_lists_every_folder() {
-        let c = syncthing_with_folders(
-            ok(r#"[{"id":"tunemesh","path":"/nonexistent-spotless-test/TuneMesh"}]"#),
-            Default::default(),
-        );
-        let o = c.overview().unwrap();
-        assert!(o.folder.is_none());
-        assert_eq!(o.folders.len(), 1);
-        assert_eq!(o.folders[0].id, "tunemesh");
-        assert_eq!(
-            overlapping(&o.folders, Path::new("/nonexistent-spotless-test/TuneMesh")).len(),
-            1
-        );
-    }
-
     /// The device ID comes from the first configured Syncthing that
     /// answers; a missing or dead one is skipped.
     #[test]
@@ -1142,6 +781,32 @@ mod tests {
         ]);
         assert_eq!(found.as_deref(), Some("ABCDEFG-HIJKLMN"));
         assert_eq!(device_id_from([dir.join("dead.xml")]), None);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// Syncthing keeps a folder path typed as `~/…`: "Shared from" and Use
+    /// That Folder expand it to the home folder, existing or not.
+    #[test]
+    fn folder_paths_with_a_tilde_are_in_the_home_folder() {
+        let home = config::real_home();
+        assert_eq!(local_path("~/Music/Spotless"), home.join("Music/Spotless"));
+        assert_eq!(local_path("/srv/music"), PathBuf::from("/srv/music"));
+        assert!(is_at(
+            "~/nonexistent-spotless-test",
+            &home.join("nonexistent-spotless-test")
+        ));
+        assert!(!is_at(
+            "~/nonexistent-spotless-test",
+            Path::new("/nonexistent-spotless-test")
+        ));
+        // An existing folder, reached through a symlink.
+        let dir = std::env::temp_dir().join(format!("spotless-st-at-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("real")).unwrap();
+        std::os::unix::fs::symlink(dir.join("real"), dir.join("link")).unwrap();
+        assert!(is_at(
+            &dir.join("real").to_string_lossy(),
+            &dir.join("link")
+        ));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

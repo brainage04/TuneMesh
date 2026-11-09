@@ -177,16 +177,6 @@ downloader needs `spotless-worker` in the same directory as `spotless` (or on
    library's `.stignore` when missing, shows this device's ID with a QR code,
    and shares the folder with other device IDs you enter. When Syncthing is
    not installed or not running it shows how to install and start it.
-   It does not add `spotless` while another Syncthing folder is on the
-   library path, inside it or around it (Syncthing's REST API does not check
-   this; its web interface only warns). Instead it names that folder and
-   says what to do: remove it when it is left from an earlier setup (folder
-   ID or label `tunemesh` or `spotless`) and on the library or inside it;
-   otherwise choose another library folder, or skip the step when that
-   folder is on the library or around it, since it already syncs the
-   library. Removing a folder around the library would stop syncing the
-   rest of it, so the assistant never suggests that. Folder paths are
-   compared with `~` expanded and symlinks resolved.
 3. Downloads: the "This device downloads songs" switch.
 
 Every step can be skipped.

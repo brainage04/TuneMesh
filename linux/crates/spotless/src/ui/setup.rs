@@ -2,7 +2,7 @@
 //! Shown on first run and from Settings; every step can be skipped.
 
 use std::cell::{Cell, RefCell};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::{Rc, Weak};
 
 use adw::prelude::*;
@@ -491,14 +491,7 @@ impl Setup {
             .title(format!("Folder ID “{}”", syncthing::FOLDER_ID))
             .use_markup(false)
             .build();
-        let clashes = syncthing::overlapping(&o.folders, &root);
         match &o.folder {
-            None if !clashes.is_empty() => {
-                row.set_subtitle(&format!(
-                    "Not set up yet. {} cannot be shared under this ID while another Syncthing folder holds it.",
-                    root.display()
-                ));
-            }
             None => {
                 row.set_subtitle(&format!(
                     "Not set up yet. Share {} under this ID so your other devices can join it.",
@@ -570,36 +563,6 @@ impl Setup {
             }
         }
         folder_group.add(&row);
-        // Another folder on the library's files: never add a second folder
-        // there. What to do depends on the folder (`Clash::advice`): remove
-        // one an earlier setup left, otherwise choose another library folder
-        // or, when it already syncs the library, skip this step.
-        if !clashes.is_empty() {
-            let clash = adw::ActionRow::builder()
-                .title("Another Syncthing folder holds these files")
-                .subtitle(syncthing::clash_advice(&clashes))
-                .subtitle_selectable(true)
-                .use_markup(false)
-                .build();
-            clash.add_prefix(&gtk::Image::from_icon_name("dialog-warning-symbolic"));
-            if clashes.iter().any(|c| !c.remove_it()) {
-                let choose = gtk::Button::builder()
-                    .label("Choose Another Folder")
-                    .valign(gtk::Align::Center)
-                    .build();
-                choose.connect_clicked(on(self, |s| {
-                    s.nav.pop();
-                }));
-                clash.add_suffix(&choose);
-            }
-            let again = gtk::Button::builder()
-                .label("Check Again")
-                .valign(gtk::Align::Center)
-                .build();
-            again.connect_clicked(on(self, |s| s.probe()));
-            clash.add_suffix(&again);
-            folder_group.add(&clash);
-        }
         b.append(&folder_group);
 
         // This device's ID, to enter on the other devices.
