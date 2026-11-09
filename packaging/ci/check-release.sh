@@ -29,15 +29,19 @@ fi
 
 spec=packaging/rpm/spotless.spec
 entry=$(sed -n '/^%changelog/,$ { /^\* /{ p; q; } }' "$spec")
-# "* Mon Oct 19 2026 Name <mail> - 0.1.0-1": the date is fields 3-5.
+# "* Mon Oct 19 2026 Name <mail> - 0.1.0-1": the weekday is field 2, the
+# date fields 3-5; the weekday must fit the date too.
+entry_weekday=$(echo "$entry" | awk '{ print $2 }')
 entry_date=$(echo "$entry" | awk '{ print $3, $4, $5 }')
 entry_date=$(LC_ALL=C date -d "$entry_date" +%F 2>/dev/null || true)
+weekday=$(LC_ALL=C date -d "$date" +%a)
 case $entry in
     *" - $version-"*) entry_version=$version ;;
     *) entry_version= ;;
 esac
-if [ "$entry_date" != "$date" ] || [ "$entry_version" != "$version" ]; then
-    echo "::error file=$spec::the newest %changelog entry is \"$entry\"; it must be for $version, dated $date"
+if [ "$entry_date" != "$date" ] || [ "$entry_weekday" != "$weekday" ] ||
+    [ "$entry_version" != "$version" ]; then
+    echo "::error file=$spec::the newest %changelog entry is \"$entry\"; it must be for $version, dated $weekday $(LC_ALL=C date -d "$date" '+%b %d %Y')"
     fail=1
 fi
 
