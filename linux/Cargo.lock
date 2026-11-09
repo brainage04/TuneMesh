@@ -40,9 +40,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -1735,6 +1735,62 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
+name = "spotless"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "fastrand",
+ "glib-build-tools",
+ "glib-unix",
+ "gtk4",
+ "image",
+ "libadwaita",
+ "libc",
+ "mpris-server",
+ "notify",
+ "qrcode",
+ "roxmltree",
+ "serde",
+ "serde_json",
+ "spotless-core",
+ "toml",
+ "ureq",
+]
+
+[[package]]
+name = "spotless-core"
+version = "0.1.0"
+dependencies = [
+ "fastrand",
+ "humantime",
+ "lofty",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "spotless-worker"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fastrand",
+ "flate2",
+ "humantime",
+ "libc",
+ "lofty",
+ "serde",
+ "serde_json",
+ "sha2",
+ "spotless-core",
+ "tempfile",
+ "toml",
+ "ureq",
+]
+
+[[package]]
 name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1961,62 +2017,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "spotless"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "fastrand",
- "glib-build-tools",
- "glib-unix",
- "gtk4",
- "image",
- "libadwaita",
- "libc",
- "mpris-server",
- "notify",
- "qrcode",
- "roxmltree",
- "serde",
- "serde_json",
- "toml",
- "spotless-core",
- "ureq",
-]
-
-[[package]]
-name = "spotless-core"
-version = "0.1.0"
-dependencies = [
- "fastrand",
- "humantime",
- "lofty",
- "rustix",
- "serde",
- "serde_json",
- "tempfile",
- "unicode-normalization",
-]
-
-[[package]]
-name = "spotless-worker"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "fastrand",
- "flate2",
- "humantime",
- "libc",
- "lofty",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "toml",
- "spotless-core",
- "ureq",
 ]
 
 [[package]]
