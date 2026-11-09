@@ -102,14 +102,6 @@ sudo packaging/linux/install.sh        # installs to /usr/local
 Android: `cd android && ./gradlew :app:assembleRelease`.
 </details>
 
-## Starting fresh
-
-Spotless is pre-release software and does not migrate anything from earlier
-versions: set it up as on a new device. Choose the library folder, share it in
-Syncthing (remove the old folder there if you no longer use it), enable
-`spotless-worker` on the computer that downloads, and install the app on the
-phone. Songs, playlists and likes stay in the library folder.
-
 ## Set up
 
 1. **First computer.** Start Spotless. The setup assistant asks for the
@@ -126,6 +118,15 @@ phone. Songs, playlists and likes stay in the library folder.
 
 The assistant can be opened again from Settings or with `spotless --setup`.
 Every step can be skipped and done in Syncthing's own web interface instead.
+
+If Syncthing already shares the library folder (or a folder around or inside
+it) under another folder ID, remove that folder in Syncthing on every device
+first; removing a folder keeps its files. Syncthing cannot share the same
+files in two folders, so the assistant does not add `spotless` there until
+the other folder is gone.
+
+Coming from TuneMesh, the earlier name of Spotless: follow
+[Switching from TuneMesh](docs/release-notes/v0.1.0.md#switching-from-tunemesh).
 
 ### Downloading on an always-on machine
 
