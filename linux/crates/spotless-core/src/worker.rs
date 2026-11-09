@@ -160,15 +160,24 @@ mod tests {
     }
 
     /// A `worker.json` without every field of this format (one written by an
-    /// earlier version) is not read.
+    /// earlier version) is not read: a complete file is read, and the same
+    /// file without any one of its fields is not.
     #[test]
     fn a_file_without_the_current_fields_is_not_read() {
-        for json in [
-            r#"{"version":1,"device":"d","heartbeatAt":"t"}"#,
-            r#"{"version":1,"device":"d","pid":7,"heartbeatAt":"t"}"#,
-            r#"{"version":1,"device":"d","machine":"m","heartbeatAt":"t"}"#,
-        ] {
-            assert!(parse(json.as_bytes()).is_none(), "{json}");
+        let complete = serde_json::json!({
+            "version": 1, "device": "d", "machine": "m", "instance": "i",
+            "pid": 7, "workerVersion": "v", "heartbeatAt": "t",
+        });
+        assert!(parse(complete.to_string().as_bytes()).is_some());
+        let fields: Vec<String> = complete.as_object().unwrap().keys().cloned().collect();
+        assert_eq!(fields.len(), 7);
+        for field in fields {
+            let mut json = complete.clone();
+            json.as_object_mut().unwrap().remove(&field);
+            assert!(
+                parse(json.to_string().as_bytes()).is_none(),
+                "read without {field}"
+            );
         }
     }
 }

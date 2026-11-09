@@ -153,4 +153,14 @@ mod tests {
         let back: Config = toml::from_str(&toml::to_string(&c).unwrap()).unwrap();
         assert!(back.downloader && back.setup_done);
     }
+
+    /// A config without `setup_done` (or none at all) is not set up: the
+    /// assistant opens, and the library path is kept.
+    #[test]
+    fn a_config_without_setup_done_opens_the_assistant() {
+        let c: Config = toml::from_str("library_path = \"/srv/music\"").unwrap();
+        assert!(!c.setup_done);
+        assert_eq!(c.library_path, PathBuf::from("/srv/music"));
+        assert!(!Config::default().setup_done);
+    }
 }
