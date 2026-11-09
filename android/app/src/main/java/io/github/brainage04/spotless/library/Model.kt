@@ -53,7 +53,8 @@ data class Track(
         fun albumKey(albumArtist: String, album: String): String = "$albumArtist\u0000$album"
 
         fun fromTags(path: String, tags: RawTags, size: Long, modifiedMs: Long): Track {
-            // Bounded here too, so tags cached by an older version follow the limits as well.
+            // Bounded here too: every track's tags pass through here, whatever read them (LibraryScanner.readTags already cuts texts,
+            // tags given to LibraryScan in tests are not cut), and the number of artists is bounded only here.
             fun text(value: String?) = value?.let(RawTags::boundedText)?.takeIf { it.isNotEmpty() }
             val title = text(tags.title) ?: LibraryFormat.titleFromFileName(path.substringAfterLast('/'))
             val artist = text(tags.artist)?.let(RawTags::boundedArtists)?.takeIf { it.isNotBlank() } ?: LibraryFormat.fallbackArtist(path)

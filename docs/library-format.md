@@ -380,13 +380,19 @@ downloading and every 60 seconds after that:
   `instance`: random per worker
   process. `pid`: its process id in that namespace. `workerVersion`: the
   worker's version. Readers ignore fields they do not know.
+- A worker writes every field above. A worker, and the Linux app (which
+  reads the file with the worker's code), treat a file that lacks any of
+  them, or holds one of the wrong type, as no heartbeat at all: the Linux
+  app shows that no device is downloading, and a worker takes over at once.
+  A client that only shows who downloads needs `device` and `heartbeatAt`,
+  and may read just those (the Android app does, taking a missing `version`
+  as 1).
 - A heartbeat is fresh when `heartbeatAt` is less than 3 minutes from now (in
   either direction; device clocks must be roughly in sync).
 - A worker does not process requests while the file holds a fresh heartbeat
   of another worker. It keeps running and takes over once that heartbeat is
-  stale, or at once when the other heartbeat has the same non-empty
-  `machine` as its own and that `pid` no longer exists. Device names never
-  decide this.
+  stale, or at once when the other heartbeat has the same `machine` as its
+  own and that `pid` no longer exists. Device names never decide this.
 - An active worker that finds another worker's fresh heartbeat in the file
   (two started at once and Syncthing kept the other write) hands its current
   request back (`queued`) and stops downloading.
